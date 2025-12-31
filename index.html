@@ -1,0 +1,1325 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>日記帳 Pro - カレンダー完全修正版</title>
+    <style>
+
+.editor-content {
+  flex: 1;
+  padding: var(--space-16);
+  border: none;
+  font-size: 16px;
+  font-family: inherit;
+  background-color: var(--color-surface);
+  color: var(--color-text);
+  outline: none;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+.editor-content:empty:before {
+  content: attr(data-placeholder);
+  color: var(--color-text-secondary);
+}
+.editor-content table { border-collapse: collapse; }
+.editor-content td, .editor-content th { border: 1px solid var(--color-border); padding: 6px; }
+
+
+
+
+
+        :root {
+            --color-primary: rgb(33, 128, 141);
+            --color-primary-hover: rgb(29, 116, 128);
+            --color-background: rgba(252, 252, 249, 1);
+            --color-surface: rgba(255, 255, 253, 1);
+            --color-text: rgba(19, 52, 59, 1);
+            --color-text-secondary: rgba(98, 108, 113, 1);
+            --color-border: rgba(94, 82, 64, 0.2);
+            --color-success: rgb(33, 128, 141);
+            --color-error: rgb(192, 21, 47);
+            --color-warning: rgb(168, 75, 47);
+            --space-8: 8px;
+            --space-12: 12px;
+            --space-16: 16px;
+            --space-20: 20px;
+            --space-24: 24px;
+            --radius-base: 8px;
+            --radius-lg: 12px;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --color-background: rgba(31, 33, 33, 1);
+                --color-surface: rgba(38, 40, 40, 1);
+                --color-text: rgba(245, 245, 245, 1);
+                --color-text-secondary: rgba(167, 169, 169, 0.7);
+                --color-primary: rgb(50, 184, 198);
+                --color-primary-hover: rgb(45, 166, 178);
+            }
+        }
+
+        * { box-sizing: border-box; }
+        html { font-size: 14px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+        body { margin: 0; padding: 0; background-color: var(--color-background); color: var(--color-text); transition: background-color 0.3s, color 0.3s; }
+        .container { display: flex; height: 100vh; flex-direction: column; }
+        .header { background-color: var(--color-surface); border-bottom: 1px solid var(--color-border); padding: var(--space-16); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: var(--space-12); }
+        .header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+        .header-actions { display: flex; gap: var(--space-8); align-items: center; flex-wrap: wrap; }
+        .btn { padding: var(--space-8) var(--space-16); border: none; border-radius: var(--radius-base); cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.2s; display: inline-flex; align-items: center; gap: var(--space-8); }
+        .btn-primary { background-color: var(--color-primary); color: white; }
+        .btn-primary:hover { background-color: var(--color-primary-hover); transform: translateY(-2px); }
+        .btn-secondary { background-color: rgba(94, 82, 64, 0.12); color: var(--color-text); }
+        .btn-secondary:hover { background-color: rgba(94, 82, 64, 0.2); }
+        .btn-sm { padding: var(--space-6) var(--space-12); font-size: 13px; }
+        .main { display: flex; flex: 1; overflow: hidden; gap: var(--space-16); padding: var(--space-16); flex-direction: column; }
+        @media (min-width: 768px) { .main { flex-direction: row; } }
+        .sidebar { background-color: var(--color-surface); border-radius: var(--radius-lg); padding: var(--space-16); border: 1px solid var(--color-border); min-width: 340px; width: 340px; flex-shrink: 0; max-height: 400px; overflow-y: auto; }
+        @media (min-width: 768px) { .sidebar { max-height: 100%; width: 340px; min-width: 340px; } }
+        .sidebar h2 { margin: 0 0 var(--space-12) 0; font-size: 14px; font-weight: 600; text-transform: uppercase; color: var(--color-text-secondary); }
+        .view-tabs { display: flex; gap: var(--space-4); margin-bottom: var(--space-16); border-bottom: 1px solid var(--color-border); }
+        .view-tab { flex: 1; padding: var(--space-8) var(--space-12); border: none; background: none; cursor: pointer; color: var(--color-text-secondary); border-bottom: 2px solid transparent; font-weight: 500; font-size: 13px; transition: all 0.2s; }
+        .view-tab:hover { color: var(--color-text); }
+        .view-tab.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+        .calendar-container { display: none; width: 100%; }
+        .calendar-container.active { display: block; }
+        .calendar-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-16); }
+        .calendar-header button { background: none; border: none; cursor: pointer; font-size: 18px; color: var(--color-text); padding: var(--space-4) var(--space-8); border-radius: var(--radius-base); transition: all 0.2s; }
+        .calendar-header button:hover { background-color: rgba(33, 128, 141, 0.1); }
+        .calendar-title { font-size: 16px; font-weight: 600; }
+        .calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(36px, 1fr)); gap: 4px; width: 100%; overflow-x: auto; }
+        #calendarDays { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(7, minmax(36px, 1fr)); gap: 4px; }
+        @media (max-width: 767px) { #calendarDays { grid-template-columns: repeat(7, 1fr); gap: 2px; } }
+        .calendar-day-header { text-align: center; font-size: 11px; font-weight: 600; color: var(--color-text-secondary); padding: 4px 0; }
+        .calendar-day { height: 40px; display: flex; align-items: center; justify-content: center; border-radius: var(--radius-base); font-size: 13px; cursor: pointer; transition: all 0.2s; position: relative; background-color: var(--color-background); border: 1px solid transparent; }
+        .calendar-day:hover:not(.other-month) { background-color: rgba(33, 128, 141, 0.1); transform: scale(1.05); z-index: 1; }
+        .calendar-day.other-month { color: var(--color-text-secondary); opacity: 0.3; cursor: default; }
+        .calendar-day.today { border-color: var(--color-primary); font-weight: 700; }
+        .calendar-day.has-entry { background-color: rgba(33, 128, 141, 0.15); font-weight: 600; color: var(--color-primary); }
+        .calendar-day.has-entry::after { content: ''; position: absolute; bottom: 4px; width: 4px; height: 4px; background-color: var(--color-primary); border-radius: 50%; }
+        .calendar-day.selected { background-color: var(--color-primary); color: white; font-weight: 700; }
+        .calendar-day.selected::after { background-color: white; }
+        .list-container { display: none; }
+        .list-container.active { display: block; }
+        .search-box { margin-bottom: var(--space-16); }
+        .search-box input { width: 100%; padding: var(--space-8) var(--space-12); border: 1px solid var(--color-border); border-radius: var(--radius-base); font-size: 14px; background-color: var(--color-background); color: var(--color-text); }
+        .search-box input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(33, 128, 141, 0.1); }
+        .filter-section { margin-bottom: var(--space-16); }
+        .filter-label { font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--color-text-secondary); margin-bottom: var(--space-8); display: block; }
+        .tag-filter-list { display: flex; flex-wrap: wrap; gap: var(--space-6); margin-bottom: var(--space-12); }
+        .tag-filter-item { display: inline-flex; align-items: center; gap: var(--space-4); padding: var(--space-6) var(--space-10); background-color: rgba(33, 128, 141, 0.1); border: 1px solid rgba(33, 128, 141, 0.3); border-radius: var(--radius-base); font-size: 12px; cursor: pointer; transition: all 0.2s; }
+        .tag-filter-item:hover { background-color: rgba(33, 128, 141, 0.2); border-color: var(--color-primary); }
+        .tag-filter-item.active { background-color: var(--color-primary); color: white; border-color: var(--color-primary); }
+        .entries-list { list-style: none; margin: 0; padding: 0; }
+        .entry-item { padding: var(--space-12); margin-bottom: var(--space-8); background-color: var(--color-background); border: 1px solid var(--color-border); border-radius: var(--radius-base); cursor: pointer; transition: all 0.2s; }
+        .entry-item:hover { background-color: rgba(33, 128, 141, 0.1); border-color: var(--color-primary); }
+        .entry-item.active { background-color: rgba(33, 128, 141, 0.15); border-color: var(--color-primary); font-weight: 600; }
+        .entry-date { font-size: 12px; color: var(--color-text-secondary); margin-bottom: 4px; }
+        .entry-title { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .editor-section { flex: 1; display: flex; flex-direction: column; background-color: var(--color-surface); border-radius: var(--radius-lg); border: 1px solid var(--color-border); overflow: hidden; }
+        .editor-toolbar { display: flex; gap: var(--space-8); padding: var(--space-12); border-bottom: 1px solid var(--color-border); flex-wrap: wrap; background-color: rgba(94, 82, 64, 0.05); }
+        .editor-toolbar button { padding: var(--space-6) var(--space-10); background-color: var(--color-primary); color: white; border: none; border-radius: var(--radius-base); cursor: pointer; font-size: 13px; font-weight: 500; transition: all 0.2s; }
+        .editor-toolbar button:hover { background-color: var(--color-primary-hover); transform: translateY(-2px); }
+        .editor-textarea { flex: 1; padding: var(--space-16); border: none; font-size: 16px; font-family: inherit; resize: none; background-color: var(--color-surface); color: var(--color-text); outline: none; }
+        .editor-textarea::placeholder { color: var(--color-text-secondary); }
+        .editor-footer { display: flex; justify-content: space-between; align-items: center; padding: var(--space-12); border-top: 1px solid var(--color-border); background-color: rgba(94, 82, 64, 0.05); flex-wrap: wrap; gap: var(--space-12); }
+        .char-count { font-size: 12px; color: var(--color-text-secondary); }
+        .footer-actions { display: flex; gap: var(--space-8); flex-wrap: wrap; }
+        .tags-section { padding: var(--space-12); border-top: 1px solid var(--color-border); border-bottom: 1px solid var(--color-border); background-color: rgba(94, 82, 64, 0.03); }
+        .tags-label { font-size: 13px; font-weight: 600; margin-bottom: var(--space-12); color: var(--color-text); }
+        .tags-display { display: flex; flex-wrap: wrap; gap: var(--space-8); align-items: center; min-height: 28px; margin-bottom: var(--space-12); }
+        .tag-pill { display: inline-flex; align-items: center; gap: var(--space-6); padding: var(--space-6) var(--space-12); background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover)); color: white; border-radius: 9999px; font-size: 13px; font-weight: 500; white-space: nowrap; box-shadow: 0 2px 4px rgba(33, 128, 141, 0.2); transition: all 0.2s; }
+        .tag-pill:hover { transform: translateY(-2px); box-shadow: 0 4px 8px rgba(33, 128, 141, 0.3); }
+        .tag-remove { cursor: pointer; font-size: 18px; line-height: 1; opacity: 0.9; transition: opacity 0.2s; font-weight: bold; }
+        .tag-remove:hover { opacity: 1; }
+        .tags-input-wrapper { display: flex; gap: var(--space-8); padding: var(--space-10); background-color: var(--color-background); border: 2px solid var(--color-primary); border-radius: var(--radius-base); transition: all 0.2s; }
+        .tags-input-wrapper:focus-within { border-color: var(--color-primary-hover); box-shadow: 0 0 0 3px rgba(33, 128, 141, 0.1); }
+        .tags-input { flex: 1; padding: var(--space-6) var(--space-8); border: none; background: transparent; font-size: 14px; outline: none; color: var(--color-text); }
+        .tags-input::placeholder { color: var(--color-text-secondary); font-style: italic; }
+        .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: var(--space-24); text-align: center; color: var(--color-text-secondary); }
+        .empty-state-icon { font-size: 48px; margin-bottom: var(--space-12); }
+        .modal { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(0, 0, 0, 0.5); z-index: 1000; justify-content: center; align-items: center; }
+        .modal.active { display: flex; }
+        .modal-content { background-color: var(--color-surface); border-radius: var(--radius-lg); padding: var(--space-24); max-width: 500px; width: 90%; max-height: 80vh; overflow-y: auto; }
+        .modal-header { font-size: 18px; font-weight: 600; margin-bottom: var(--space-16); }
+        .modal-body { margin-bottom: var(--space-16); }
+        .form-group { margin-bottom: var(--space-16); }
+        .form-label { display: block; font-size: 14px; font-weight: 500; margin-bottom: var(--space-8); }
+        .form-input { width: 100%; padding: var(--space-8) var(--space-12); border: 1px solid var(--color-border); border-radius: var(--radius-base); font-size: 14px; background-color: var(--color-background); color: var(--color-text); }
+        .form-input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(33, 128, 141, 0.1); }
+        .modal-footer { display: flex; gap: var(--space-12); justify-content: flex-end; }
+        .toast { position: fixed; bottom: 20px; right: 20px; background-color: var(--color-primary); color: white; padding: var(--space-12) var(--space-16); border-radius: var(--radius-base); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); animation: slideIn 0.3s ease-out; z-index: 2000; max-width: 300px; }
+        .toast.error { background-color: var(--color-error); }
+        .toast.success { background-color: var(--color-success); }
+        .toast.warning { background-color: var(--color-warning); }
+        @keyframes slideIn { from { transform: translateX(400px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        .stats-section { background-color: var(--color-surface); border-radius: var(--radius-lg); padding: var(--space-16); border: 1px solid var(--color-border); margin-bottom: var(--space-16); }
+        .stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-12); }
+        .stat-item { background-color: var(--color-background); padding: var(--space-12); border-radius: var(--radius-base); text-align: center; }
+        .stat-value { font-size: 18px; font-weight: 600; color: var(--color-primary); }
+        .stat-label { font-size: 12px; color: var(--color-text-secondary); margin-top: 4px; }
+        .export-tab { position: relative; }
+        .export-tab.active { color: var(--color-primary); border-bottom-color: var(--color-primary) !important; }
+        .export-tab-content { animation: fadeIn 0.2s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .toggle-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+        .toggle-input { display: none; }
+        .toggle-slider { width: 36px; height: 20px; background-color: var(--color-border); border-radius: 9999px; position: relative; transition: 0.2s; }
+        .toggle-slider::before { content: ''; position: absolute; width: 16px; height: 16px; background-color: white; border-radius: 50%; top: 2px; left: 2px; transition: 0.2s; }
+        .toggle-input:checked + .toggle-slider { background-color: var(--color-primary); }
+        .toggle-input:checked + .toggle-slider::before { transform: translateX(16px); }
+        .sync-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 4px 8px; border-radius: 99px; background-color: rgba(94, 82, 64, 0.1); color: var(--color-text-secondary); margin-left: 8px; }
+        .sync-badge.active { background-color: rgba(33, 128, 141, 0.15); color: var(--color-primary); font-weight: 600; }
+        @media (max-width: 767px) {
+            .main { padding: var(--space-12); gap: var(--space-12); }
+            .sidebar { max-height: 400px; width: 100%; min-width: auto; }
+            .header { padding: var(--space-12); }
+            .header h1 { font-size: 18px; }
+            .calendar-grid { grid-template-columns: repeat(7, 1fr); gap: 2px; }
+            .calendar-day { height: 34px; font-size: 11px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div style="display: flex; align-items: center;">
+                <h1>📔 日記帳 Pro</h1>
+                <div id="syncStatus" class="sync-badge" style="display: none;">🔄 自動同期中</div>
+            </div>
+            <div class="header-actions">
+                <button class="btn btn-secondary btn-sm" onclick="openSecurityModal()">🔐 セキュリティ</button>
+                <button class="btn btn-secondary btn-sm" onclick="openExportModal()">💾 エクスポート</button>
+                <button class="btn btn-primary btn-sm" onclick="openNewEntryModal()">➕ 新規作成</button>
+            </div>
+        </div>
+
+        <div class="main">
+            <div class="sidebar">
+                <div class="stats-section">
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <div class="stat-value" id="totalEntries">0</div>
+                            <div class="stat-label">総投稿数</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="totalChars">0</div>
+                            <div class="stat-label">総文字数</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="thisMonthEntries">0</div>
+                            <div class="stat-label">今月投稿</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="weeklyAvg">0</div>
+                            <div class="stat-label">週平均投稿</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="view-tabs">
+                    <button class="view-tab" onclick="switchView('list')">📋 リスト</button>
+                    <button class="view-tab active" onclick="switchView('calendar')">📅 カレンダー</button>
+                </div>
+
+                <div id="calendarView" class="calendar-container active">
+                    <div class="calendar-header">
+                        <button onclick="changeMonth(-1)">◀</button>
+                        <div class="calendar-title" id="calendarTitle"></div>
+                        <button onclick="changeMonth(1)">▶</button>
+                    </div>
+                    <div class="calendar-grid">
+                        <div class="calendar-day-header">日</div>
+                        <div class="calendar-day-header">月</div>
+                        <div class="calendar-day-header">火</div>
+                        <div class="calendar-day-header">水</div>
+                        <div class="calendar-day-header">木</div>
+                        <div class="calendar-day-header">金</div>
+                        <div class="calendar-day-header">土</div>
+                        <div id="calendarDays"></div>
+                    </div>
+                </div>
+
+                <div id="listView" class="list-container">
+                    <div class="search-box">
+                        <input type="text" id="searchInput" placeholder="🔍 タイトル/本文検索..." onkeyup="filterEntries()">
+                    </div>
+                    <div class="filter-section">
+                        <label class="filter-label">タグフィルタ</label>
+                        <div class="tag-filter-list" id="tagFilterList"></div>
+                    </div>
+                    <h2>最近の投稿</h2>
+                    <ul class="entries-list" id="entriesList"></ul>
+                </div>
+            </div>
+
+            <div class="editor-section" id="editorSection">
+                <div class="empty-state">
+                    <div class="empty-state-icon">📝</div>
+                    <p>カレンダーで日付を選ぶか、新規作成ボタンで始めましょう</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="securityModal">
+        <div class="modal-content">
+            <div class="modal-header">🔐 セキュリティ設定</div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">暗号化ステータス</label>
+                    <p style="margin: 0; font-size: 13px; color: var(--color-text-secondary);">ローカル保存のため暗号化は不要です</p>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">すべてのデータをエクスポート</label>
+                    <button class="btn btn-primary" onclick="exportAllData()" style="width: 100%;">ダウンロード</button>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">データをインポート</label>
+                    <button class="btn btn-secondary" style="width: 100%;" onclick="closeModal('securityModal'); openExportModal(); switchExportTab('import');">インポート画面を開く</button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('securityModal')">閉じる</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="exportModal">
+        <div class="modal-content">
+            <div class="modal-header">💾 エクスポート</div>
+            <div class="modal-body">
+                <div style="display: flex; gap: var(--space-8); margin-bottom: var(--space-16); border-bottom: 1px solid var(--color-border);">
+                    <button class="export-tab active" onclick="switchExportTab('local')" style="padding: var(--space-8) var(--space-12); border: none; background: none; cursor: pointer; color: var(--color-text); border-bottom: 2px solid transparent; font-weight: 500;">💻 ローカル保存</button>
+                    <button class="export-tab" onclick="switchExportTab('drive')" style="padding: var(--space-8) var(--space-12); border: none; background: none; cursor: pointer; color: var(--color-text); border-bottom: 2px solid transparent; font-weight: 500;">☁️ Drive</button>
+                    <button class="export-tab" onclick="switchExportTab('import')" style="padding: var(--space-8) var(--space-12); border: none; background: none; cursor: pointer; color: var(--color-text); border-bottom: 2px solid transparent; font-weight: 500;">📥 インポート</button>
+                </div>
+
+                <div id="localExportTab" class="export-tab-content">
+                    <div class="form-group">
+                        <button class="btn btn-primary" onclick="exportJSON()" style="width: 100%; margin-bottom: var(--space-8);">JSON（復元可能）</button>
+                        <button class="btn btn-secondary" onclick="exportMarkdown()" style="width: 100%;">Markdown（読取用）</button>
+                    </div>
+                </div>
+
+                <div id="driveExportTab" class="export-tab-content" style="display: none;">
+                    <div class="form-group">
+                        <div style="display: flex; gap: var(--space-8);">
+                            <button class="btn btn-primary" onclick="switchDriveMethod('sync')" style="width: 100%;">A) 同期フォルダ</button>
+                            <button class="btn btn-secondary" onclick="switchDriveMethod('api')" style="width: 100%;">B) Drive API</button>
+                        </div>
+                    </div>
+
+                    <div id="driveMethodA" style="display: none; margin-top: var(--space-16);">
+                        <div style="margin-bottom: var(--space-12);">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="autoSyncA" class="toggle-input" onchange="toggleAutoSyncA()">
+                                <span class="toggle-slider"></span>
+                                <span style="font-size: 13px;">保存時に自動書き出しする</span>
+                            </label>
+                        </div>
+                        <div id="syncControls">
+                            <div style="display: flex; gap: var(--space-8); margin-bottom: var(--space-8);">
+                                <input type="text" id="syncFolderPath" placeholder="フォルダ未設定" readonly style="flex: 1; padding: var(--space-8) var(--space-12); border: 1px solid var(--color-border); border-radius: var(--radius-base); background-color: var(--color-background); color: var(--color-text);">
+                                <button class="btn btn-secondary btn-sm" onclick="pickSyncFolderA()">選択</button>
+                            </div>
+                            <button id="reconnectBtn" class="btn btn-sm" onclick="reconnectSyncFolderA()" style="width: 100%; margin-bottom: var(--space-8); display: none; background-color: var(--color-warning); color: white;">⚠️ 前回フォルダに再接続</button>
+                        </div>
+                        <button class="btn btn-primary" onclick="exportToSyncFolderA('json')" style="width: 100%; margin-bottom: var(--space-8);">🔄 JSON書き出し</button>
+                    </div>
+
+                    <div id="driveMethodB" style="display: none; margin-top: var(--space-16);">
+                        <div style="font-size: 13px; color: var(--color-text-secondary); margin-bottom: var(--space-12);">Google Drive（appDataFolder）に diary.json を保存して、スマホ/PCで同期します。</div>
+                        <div class="form-group">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="autoSyncDrive" class="toggle-input" onchange="toggleAutoSyncDrive()">
+                                <span class="toggle-slider"></span>
+                                <span style="font-size: 13px;">保存時にDriveへ自動同期</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <button class="btn btn-secondary" onclick="driveConnect()" style="width: 100%; margin-bottom: var(--space-8);">Google認証（Drive）</button>
+                            <button class="btn btn-primary" onclick="drivePullAndMerge()" style="width: 100%; margin-bottom: var(--space-8);">Driveから読み込み（マージ）</button>
+                            <button class="btn btn-secondary" onclick="drivePushAll()" style="width: 100%;">Driveへ保存（上書き）</button>
+                        </div>
+                        <div style="font-size: 12px; color: var(--color-text-secondary); line-height: 1.5;">⚠️ 注意：このページは https で配信する必要があります（file:// 直開きではOAuthが動かないことがあります）。</div>
+                    </div>
+                </div>
+
+                <div id="importExportTab" class="export-tab-content" style="display: none;">
+                    <div class="form-group">
+                        <div style="font-size: 13px; color: var(--color-text-secondary); margin-bottom: var(--space-8);">JSON（復元可能）を読み込んで日記データを取り込みます</div>
+                        <input type="file" id="importFileExport" accept=".json" style="width: 100%; cursor: pointer;">
+                        <button class="btn btn-primary" onclick="importDataFrom('importFileExport', 'exportModal')" style="width: 100%; margin-top: var(--space-8);">インポート実行</button>
+                        <div style="font-size: 12px; color: var(--color-text-secondary); margin-top: var(--space-8); line-height: 1.5;">現仕様：entriesのIDが既存と重複するものはスキップ（追加のみ）</div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('exportModal')">閉じる</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="newEntryModal">
+        <div class="modal-content">
+            <div class="modal-header">新規作成</div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">日付</label>
+                    <input type="date" class="form-input" id="entryDate">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">タイトル</label>
+                    <input type="text" class="form-input" id="entryTitle" placeholder="例：今日の出来事">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('newEntryModal')">キャンセル</button>
+                <button class="btn btn-primary" onclick="createNewEntry()">作成</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const DB_NAME = 'DiaryDB';
+        const STORE_NAME = 'handles';
+        const dbPromise = new Promise((resolve, reject) => {
+            const request = indexedDB.open(DB_NAME, 1);
+            request.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains(STORE_NAME)) {
+                    db.createObjectStore(STORE_NAME);
+                }
+            };
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+
+        async function saveHandle(key, handle) {
+            const db = await dbPromise;
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_NAME, 'readwrite');
+                const store = tx.objectStore(STORE_NAME);
+                store.put(handle, key);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        async function getHandle(key) {
+            const db = await dbPromise;
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_NAME, 'readonly');
+                const store = tx.objectStore(STORE_NAME);
+                const req = store.get(key);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        let entries = [];
+        let currentEntry = null;
+        let currentFilters = { tags: [], searchText: '' };
+        let autoSyncAEnabled = false;
+        let syncFolderHandleA = null;
+        let currentView = 'calendar';
+        let currentYear = new Date().getFullYear();
+        let currentMonth = new Date().getMonth();
+        let selectedDate = null;
+
+// ---- Phase1: autosave + dirty indicator + navigation guard ----
+// ---- Phase1: autosave + dirty indicator + navigation guard ----
+let isDirty = false;
+let autoSaveTimer = null;
+let lastSavedAt = null;
+
+function updateSaveStatus() {
+  const el = document.getElementById('saveStatus');
+  if (!el) return;
+
+  if (!currentEntry) { el.textContent = ''; return; }
+
+  if (isDirty) {
+    el.textContent = '未保存';
+    el.style.color = 'var(--color-warning)';
+    return;
+  }
+
+  el.textContent = lastSavedAt ? `保存済み (${lastSavedAt})` : '保存済み';
+  el.style.color = 'var(--color-text-secondary)';
+}
+
+function markDirty() {
+  isDirty = true;
+  updateSaveStatus();
+}
+
+function scheduleAutoSave() {
+  if (!currentEntry) return;
+  if (autoSaveTimer) clearTimeout(autoSaveTimer);
+
+  autoSaveTimer = setTimeout(() => {
+    if (!isDirty) return;
+    saveEntry(true); // quiet
+  }, 800);
+}
+
+function ensureSavedOrConfirmLoseChanges(actionLabel = '移動') {
+  if (!currentEntry) return true;
+  if (!isDirty) return true;
+
+  try {
+    saveEntry(true); // quiet
+    return true;
+  } catch (e) {
+    return confirm(`未保存の変更があります。保存できなかったため、このまま${actionLabel}すると変更が失われます。続行しますか？`);
+  }
+}
+
+window.addEventListener('beforeunload', (e) => {
+  if (!isDirty) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
+
+
+        async function init() {
+            loadEntriesFromStorage();
+            updateStats();
+            autoSyncAEnabled = localStorage.getItem('autoSyncA') === 'true';
+            if (document.getElementById('autoSyncA')) {
+                document.getElementById('autoSyncA').checked = autoSyncAEnabled;
+            }
+            await checkSyncHandleA();
+            renderCalendar();
+            renderEntriesList();
+        }
+
+        function loadEntriesFromStorage() {
+            const stored = localStorage.getItem('diaryEntries');
+            entries = stored ? JSON.parse(stored) : [];
+        }
+
+        function saveEntriesToStorage() {
+            localStorage.setItem('diaryEntries', JSON.stringify(entries));
+            updateStats();
+        }
+
+        function updateStats() {
+            const now = new Date();
+            const month = now.getMonth();
+            const year = now.getFullYear();
+            const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+            const totalChars = entries.reduce((sum, e) => sum + (e.content || '').length, 0);
+            const thisMonthEntries = entries.filter(e => {
+                const d = new Date(e.date + 'T00:00:00');
+                return d.getMonth() === month && d.getFullYear() === year;
+            }).length;
+            const weekEntries = entries.filter(e => new Date(e.date + 'T00:00:00') >= sevenDaysAgo).length;
+            const weeklyAvg = (weekEntries / 7).toFixed(1);
+            document.getElementById('totalEntries').textContent = entries.length;
+            document.getElementById('totalChars').textContent = totalChars.toLocaleString('ja-JP');
+            document.getElementById('thisMonthEntries').textContent = thisMonthEntries;
+            document.getElementById('weeklyAvg').textContent = weeklyAvg;
+        }
+
+        function switchView(view) {
+            currentView = view;
+            document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
+            if (view === 'calendar') {
+                document.querySelectorAll('.view-tab')[1].classList.add('active');
+                document.getElementById('calendarView').classList.add('active');
+                document.getElementById('listView').classList.remove('active');
+                renderCalendar();
+            } else {
+                document.querySelectorAll('.view-tab')[0].classList.add('active');
+                document.getElementById('listView').classList.add('active');
+                document.getElementById('calendarView').classList.remove('active');
+                renderEntriesList();
+            }
+        }
+
+        function renderCalendar() {
+            const title = document.getElementById('calendarTitle');
+            const daysContainer = document.getElementById('calendarDays');
+            title.textContent = `${currentYear}年 ${currentMonth + 1}月`;
+            const firstDay = new Date(currentYear, currentMonth, 1);
+            const lastDay = new Date(currentYear, currentMonth + 1, 0);
+            const prevLastDay = new Date(currentYear, currentMonth, 0);
+            const firstDayOfWeek = firstDay.getDay();
+            const daysInMonth = lastDay.getDate();
+            const prevDaysInMonth = prevLastDay.getDate();
+            const today = new Date();
+            const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+            const entriesMap = {};
+            entries.forEach(entry => { entriesMap[entry.date] = entry; });
+            let html = '';
+            for (let i = firstDayOfWeek - 1; i >= 0; i--) {
+                const day = prevDaysInMonth - i;
+                html += `<div class="calendar-day other-month">${day}</div>`;
+            }
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dateStr = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                const hasEntry = entriesMap[dateStr];
+                const isToday = dateStr === todayStr;
+                const isSelected = dateStr === selectedDate;
+                let classes = 'calendar-day';
+                if (isToday) classes += ' today';
+                if (hasEntry) classes += ' has-entry';
+                if (isSelected) classes += ' selected';
+                html += `<div class="${classes}" onclick="selectDate('${dateStr}')">${day}</div>`;
+            }
+            const totalCells = firstDayOfWeek + daysInMonth;
+            const remainingCells = totalCells % 7 === 0 ? 0 : 7 - (totalCells % 7);
+            for (let day = 1; day <= remainingCells; day++) {
+                html += `<div class="calendar-day other-month">${day}</div>`;
+            }
+            daysContainer.innerHTML = html;
+        }
+
+        function changeMonth(delta) {
+            currentMonth += delta;
+            if (currentMonth < 0) { currentMonth = 11; currentYear--; }
+            else if (currentMonth > 11) { currentMonth = 0; currentYear++; }
+            renderCalendar();
+        }
+
+        function selectDate(dateStr) {
+
+            if (!ensureSavedOrConfirmLoseChanges('日付移動')) return;
+            selectedDate = dateStr;
+            renderCalendar();
+            const entry = entries.find(e => e.date === dateStr);
+            if (entry) {
+                loadEntry(entry);
+            } else {
+                currentEntry = null;
+                renderEditor();
+                showToast(`${dateStr} の日記はありません`, 'warning');
+            }
+        }
+
+        function renderEntriesList() {
+            const list = document.getElementById('entriesList');
+            if (!list) return;
+            const filtered = getFilteredEntries();
+            const sorted = filtered.sort((a, b) => new Date(b.date) - new Date(a.date));
+            list.innerHTML = '';
+            sorted.forEach(entry => {
+                const li = document.createElement('li');
+                li.className = 'entry-item' + (currentEntry?.id === entry.id ? ' active' : '');
+                li.innerHTML = `<div class="entry-date">${formatDate(entry.date)}</div><div class="entry-title">${escapeHtml(entry.title)}</div>`;
+                li.onclick = () => loadEntry(entry);
+                list.appendChild(li);
+            });
+            if (sorted.length === 0) { list.innerHTML = '<li style="padding: var(--space-12); color: var(--color-text-secondary); text-align: center; font-size: 12px;">該当する日記なし</li>'; }
+            renderTagFilter();
+        }
+
+        function getFilteredEntries() {
+            return entries.filter(entry => {
+                const matchesSearch = currentFilters.searchText === '' || entry.title.toLowerCase().includes(currentFilters.searchText.toLowerCase()) || entry.content.toLowerCase().includes(currentFilters.searchText.toLowerCase());
+                const matchesTags = currentFilters.tags.length === 0 || currentFilters.tags.some(tag => (entry.tags || []).includes(tag));
+                return matchesSearch && matchesTags;
+            });
+        }
+
+        function filterEntries() {
+            currentFilters.searchText = document.getElementById('searchInput').value;
+            renderEntriesList();
+        }
+
+        function toggleTagFilter(tag) {
+            const idx = currentFilters.tags.indexOf(tag);
+            if (idx > -1) { currentFilters.tags.splice(idx, 1); } else { currentFilters.tags.push(tag); }
+            renderEntriesList();
+        }
+
+        function renderTagFilter() {
+            const list = document.getElementById('tagFilterList');
+            if (!list) return;
+            const allTags = [...new Set(entries.flatMap(e => e.tags || []))].sort();
+            list.innerHTML = '';
+            allTags.forEach(tag => {
+                const isActive = currentFilters.tags.includes(tag);
+                const div = document.createElement('div');
+                div.className = 'tag-filter-item' + (isActive ? ' active' : '');
+                div.innerHTML = `${escapeHtml(tag)} ${isActive ? '✕' : ''}`;
+                div.onclick = () => toggleTagFilter(tag);
+                list.appendChild(div);
+            });
+        }
+
+        function loadEntry(entry) {
+            currentEntry = entry;
+            selectedDate = entry.date;
+            renderEditor();
+            if (currentView === 'calendar') renderCalendar();
+            if (currentView === 'list') renderEntriesList();
+        }
+
+function renderEditor() {
+  const section = document.getElementById('editorSection');
+
+  if (!currentEntry) {
+    section.innerHTML = `<div class="empty-state"><div class="empty-state-icon">📝</div><p>カレンダーで日付を選ぶか、新規作成ボタンで始めましょう</p></div>`;
+    return;
+  }
+
+  section.innerHTML = `
+    <div class="editor-toolbar">
+      <button onclick="applyCmd('bold')">太字</button>
+      <button onclick="applyCmd('italic')">斜体</button>
+      <button onclick="applyCmd('strikeThrough')">取消線</button>
+      <button onclick="applyCmd('insertUnorderedList')">リスト</button>
+      <button onclick="setBlock('blockquote')">引用</button>
+      <button onclick="insertTablePrompt()">表</button>
+      <button onclick="createLinkPrompt()">リンク</button>
+    </div>
+
+    <div class="editor-content" id="contentEditor" contenteditable="true" data-placeholder="ここに入力..."></div>
+
+    <div class="tags-section">
+      <div class="tags-label">タグ</div>
+      <div class="tags-display" id="tagsDisplay"></div>
+      <div class="tags-input-wrapper">
+        <input type="text" class="tags-input" id="tagInput" placeholder="タグを入力してEnter" onkeypress="handleTagInput(event)">
+      </div>
+    </div>
+
+    <div class="editor-footer">
+      <span class="char-count">
+  <span id="charCount">0</span> 文字 / <span id="saveStatus"></span>
+</span>
+      <div class="footer-actions">
+        <button class="btn btn-secondary btn-sm" onclick="deleteEntry()">🗑️ 削除</button>
+        <button class="btn btn-primary btn-sm" onclick="saveEntry()">💾 保存</button>
+      </div>
+    </div>
+  `;
+
+  const editor = document.getElementById('contentEditor');
+
+  const raw = currentEntry.content || '';
+  const looksHtml = /<\/?[a-z][\s\S]*>/i.test(raw);
+  editor.innerHTML = looksHtml ? raw : escapeHtml(raw).replace(/\n/g, '<br>');
+
+editor.addEventListener('input', () => {
+  currentEntry.content = editor.innerHTML;
+  updateCharCount();
+  markDirty();
+  scheduleAutoSave();
+});
+
+
+  renderTags();
+  updateCharCount();
+}
+
+isDirty = false;
+lastSavedAt = currentEntry?.updatedAt ? new Date(currentEntry.updatedAt).toLocaleTimeString('ja-JP') : null;
+updateSaveStatus();
+
+
+     function updateCharCount() {
+  const editor = document.getElementById('contentEditor');
+  const count = editor ? (editor.innerText || '').length : (currentEntry?.content?.length || 0);
+  const el = document.getElementById('charCount');
+  if (el) el.textContent = count;
+
+
+}
+
+        function createNewEntry() {
+            const dateInput = document.getElementById('entryDate').value;
+            const titleInput = document.getElementById('entryTitle').value;
+            if (!dateInput) { showToast('日付を選択してください', 'error'); return; }
+            if (!titleInput.trim()) { showToast('タイトルを入力してください', 'error'); return; }
+            const newEntry = {
+                id: Date.now().toString(),
+                date: dateInput,
+                title: titleInput,
+                content: '',
+                tags: [],
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+            };
+            entries.push(newEntry);
+            saveEntriesToStorage();
+            closeModal('newEntryModal');
+            loadEntry(newEntry);
+            renderCalendar();
+            renderEntriesList();
+            showToast('新規作成しました', 'success');
+        }
+
+       function saveEntry(quiet = false) {
+  if (!currentEntry) return;
+
+  currentEntry.updatedAt = new Date().toISOString();
+  saveEntriesToStorage();   // localStorageへ保存（既存）[file:121]
+  renderCalendar();
+
+  isDirty = false;
+  lastSavedAt = new Date(currentEntry.updatedAt).toLocaleTimeString('ja-JP');
+  updateSaveStatus();
+
+  if (!quiet) showToast('保存しました', 'success');
+
+  // 既存の自動同期はそのまま（ローカルのみ運用ならOFFでもOK）
+  if (autoSyncAEnabled && syncFolderHandleA) exportToSyncFolderA('json', true);
+  if (autoSyncDriveEnabled) drivePushAll(true);
+}
+
+        function deleteEntry() {
+            if (!currentEntry) return;
+            if (!confirm('この日記を削除しますか？')) return;
+            entries = entries.filter(e => e.id !== currentEntry.id);
+            currentEntry = null;
+            selectedDate = null;
+            saveEntriesToStorage();
+            renderCalendar();
+            renderEntriesList();
+            renderEditor();
+            showToast('削除しました', 'success');
+        }
+
+        function renderTags() {
+            const tagsDisplay = document.getElementById('tagsDisplay');
+            if (!tagsDisplay) return;
+            tagsDisplay.innerHTML = '';
+            if (!currentEntry) return;
+            const tags = currentEntry.tags || [];
+            if (tags.length === 0) { tagsDisplay.innerHTML = '<div style="font-size: 12px; color: var(--color-text-secondary); font-style: italic;">タグなし</div>'; return; }
+            tags.forEach((tag, index) => {
+                const tagEl = document.createElement('div');
+                tagEl.className = 'tag-pill';
+                tagEl.innerHTML = `${escapeHtml(tag)} <span class="tag-remove" onclick="removeTag(${index})">✕</span>`;
+                tagsDisplay.appendChild(tagEl);
+            });
+        }
+
+        function handleTagInput(event) {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            const input = document.getElementById('tagInput');
+            const tag = input.value.trim();
+            if (!tag) return;
+            if (!currentEntry) return;
+            if (!currentEntry.tags) currentEntry.tags = [];
+            if (!currentEntry.tags.includes(tag)) {
+                currentEntry.tags.push(tag);
+                input.value = '';
+                renderTags();
+                saveEntriesToStorage();
+                showToast(`タグ「${tag}」を追加しました`, 'success');
+            } else {
+                showToast('このタグは既に追加されています', 'warning');
+            }
+        }
+
+        function removeTag(index) {
+            if (!currentEntry) return;
+            const tag = currentEntry.tags[index];
+            currentEntry.tags.splice(index, 1);
+            renderTags();
+            saveEntriesToStorage();
+            showToast(`タグ「${tag}」を削除しました`, 'success');
+        }
+
+        function insertFormatting(before, after) {
+            const textarea = document.getElementById('contentTextarea');
+            if (!textarea) return;
+            const start = textarea.selectionStart;
+            const end = textarea.selectionEnd;
+            const text = textarea.value;
+            const selected = text.substring(start, end);
+            const newText = text.substring(0, start) + before + selected + after + text.substring(end);
+            textarea.value = newText;
+            currentEntry.content = newText;
+            updateCharCount();
+        }
+
+/* ←ここに追加する */
+function applyCmd(cmd, value = null) {
+  const editor = document.getElementById('contentEditor');
+  if (!editor) return;
+  editor.focus();
+  document.execCommand(cmd, false, value);
+  currentEntry.content = editor.innerHTML;
+  updateCharCount();
+}
+
+function createLinkPrompt() {
+  const editor = document.getElementById('contentEditor');
+  if (!editor) return;
+
+  editor.focus();
+
+  const url = prompt('リンク先URLを入力', 'https://');
+  if (!url) return;
+
+  // 選択範囲を <a href="..."> にする
+  document.execCommand('createLink', false, url);
+
+  // 追加：target=_blank + rel を付与（直前に作られたリンクを拾う）
+  const sel = window.getSelection();
+  const node = sel && sel.anchorNode ? sel.anchorNode.parentElement : null;
+  const a = node && node.closest ? node.closest('a') : null;
+  if (a) {
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+  }
+
+  currentEntry.content = editor.innerHTML;
+  updateCharCount();
+}
+
+
+
+function setBlock(tag) {
+  const editor = document.getElementById('contentEditor');
+  if (!editor) return;
+  editor.focus();
+  document.execCommand('formatBlock', false, tag);
+  currentEntry.content = editor.innerHTML;
+  updateCharCount();
+}
+
+function insertHtmlAtCursor(html) {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return;
+  const range = sel.getRangeAt(0);
+  range.deleteContents();
+
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  const node = tpl.content;
+
+  range.insertNode(node);
+  sel.collapseToEnd();
+}
+
+function insertTable(rows, cols) {
+  const editor = document.getElementById('contentEditor');
+  if (!editor) return;
+  editor.focus();
+
+  let html = '<table><tbody>';
+  for (let r = 0; r < rows; r++) {
+    html += '<tr>';
+    for (let c = 0; c < cols; c++) html += '<td>&nbsp;</td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table><br>';
+
+  insertHtmlAtCursor(html);
+  currentEntry.content = editor.innerHTML;
+  updateCharCount();
+}
+
+function insertTablePrompt() {
+  const r = parseInt(prompt('行数', '2'), 10);
+  const c = parseInt(prompt('列数', '2'), 10);
+  if (!r || !c || r < 1 || c < 1 || r > 20 || c > 20) return;
+  insertTable(r, c);
+}
+
+
+        function switchExportTab(tab) {
+            const tabButtons = document.querySelectorAll('.export-tab');
+            const tabContents = document.querySelectorAll('.export-tab-content');
+            tabButtons.forEach(b => b.classList.remove('active'));
+            tabContents.forEach(c => c.style.display = 'none');
+            const map = { local: 'localExportTab', drive: 'driveExportTab', import: 'importExportTab' };
+            const id = map[tab] || map.local;
+            const idx = (tab === 'drive') ? 1 : (tab === 'import') ? 2 : 0;
+            tabButtons[idx]?.classList.add('active');
+            const el = document.getElementById(id);
+            if (el) el.style.display = 'block';
+        }
+
+        function switchDriveMethod(method) {
+            const methodA = document.getElementById('driveMethodA');
+            const methodB = document.getElementById('driveMethodB');
+            const driveTab = document.getElementById('driveExportTab');
+            const buttons = driveTab ? driveTab.querySelectorAll('.form-group > div > button') : [];
+            
+            if (methodA) methodA.style.display = (method === 'sync') ? 'block' : 'none';
+            if (methodB) methodB.style.display = (method === 'api') ? 'block' : 'none';
+            
+            // ボタンのアクティブスタイルを切り替え
+            if (buttons.length >= 2) {
+                if (method === 'sync') {
+                    buttons[0].style.backgroundColor = 'var(--color-primary)';
+                    buttons[0].style.color = 'white';
+                    buttons[1].style.backgroundColor = 'rgba(94, 82, 64, 0.12)';
+                    buttons[1].style.color = 'var(--color-text)';
+                } else {
+                    buttons[0].style.backgroundColor = 'rgba(94, 82, 64, 0.12)';
+                    buttons[0].style.color = 'var(--color-text)';
+                    buttons[1].style.backgroundColor = 'var(--color-primary)';
+                    buttons[1].style.color = 'white';
+                }
+            }
+        }
+
+        async function pickSyncFolderA() {
+            try {
+                syncFolderHandleA = await window.showDirectoryPicker({ id: 'diary-sync-folder', mode: 'readwrite' });
+                await saveHandle('syncHandle', syncFolderHandleA);
+                localStorage.setItem('diarySyncFolderName', syncFolderHandleA.name);
+                updateSyncUI(true);
+                showToast(`同期フォルダ: ${syncFolderHandleA.name}`, 'success');
+            } catch (err) {}
+        }
+
+        async function checkSyncHandleA() {
+            const handle = await getHandle('syncHandle');
+            if (!handle) return;
+            syncFolderHandleA = handle;
+            const folderName = localStorage.getItem('diarySyncFolderName') || handle.name;
+            if (document.getElementById('syncFolderPath')) { document.getElementById('syncFolderPath').value = folderName; }
+            const perm = await syncFolderHandleA.queryPermission({ mode: 'readwrite' });
+            if (perm === 'granted') { updateSyncUI(true); } else {
+                const reconnectBtn = document.getElementById('reconnectBtn');
+                if (reconnectBtn) reconnectBtn.style.display = 'block';
+            }
+        }
+
+        async function reconnectSyncFolderA() {
+            if (!syncFolderHandleA) return;
+            const perm = await syncFolderHandleA.requestPermission({ mode: 'readwrite' });
+            if (perm === 'granted') {
+                updateSyncUI(true);
+                showToast('再接続しました', 'success');
+                if (autoSyncAEnabled) exportToSyncFolderA('json', true);
+            } else {
+                showToast('権限が得られませんでした', 'error');
+            }
+        }
+
+        function updateSyncUI(connected) {
+            const reconnectBtn = document.getElementById('reconnectBtn');
+            const syncStatus = document.getElementById('syncStatus');
+            if (reconnectBtn) reconnectBtn.style.display = connected ? 'none' : 'block';
+            if (syncStatus) {
+                syncStatus.style.display = connected ? 'inline-flex' : 'none';
+                if (connected) syncStatus.classList.add('active');
+                else syncStatus.classList.remove('active');
+            }
+        }
+
+        function toggleAutoSyncA() {
+            autoSyncAEnabled = document.getElementById('autoSyncA').checked;
+            localStorage.setItem('autoSyncA', autoSyncAEnabled);
+            showToast(`自動書き出し: ${autoSyncAEnabled ? 'ON' : 'OFF'}`, 'success');
+        }
+
+        async function exportToSyncFolderA(format, quiet = false) {
+            if (!syncFolderHandleA) { if(!quiet) showToast('フォルダを選択してください', 'error'); return; }
+            if ((await syncFolderHandleA.queryPermission({mode: 'readwrite'})) !== 'granted') {
+                if (!quiet) showToast('再接続ボタンを押してください', 'warning');
+                const reconnectBtn = document.getElementById('reconnectBtn');
+                if (reconnectBtn) reconnectBtn.style.display = 'block';
+                return;
+            }
+            const p = buildExportPayload(format);
+            try {
+                const fileHandle = await syncFolderHandleA.getFileHandle(p.filename, { create: true });
+                const writable = await fileHandle.createWritable();
+                await writable.write(p.text);
+                await writable.close();
+                if(!quiet) showToast(`保存完了: ${p.filename}`, 'success');
+                const badge = document.getElementById('syncStatus');
+                if (badge) { badge.style.opacity = '0.5'; setTimeout(() => badge.style.opacity = '1', 200); }
+            } catch (err) {
+                if(!quiet) showToast('保存失敗', 'error');
+                const reconnectBtn = document.getElementById('reconnectBtn');
+                if (reconnectBtn) reconnectBtn.style.display = 'block';
+                console.error(err);
+            }
+        }
+
+        function buildExportPayload(format) {
+            const dateStr = new Date().toISOString().slice(0,19).replace(/[:T]/g, '-');
+            const entriesData = JSON.parse(JSON.stringify(entries));
+            if (format === 'json') {
+                return {
+                    filename: `diary_backup_${dateStr}.json`,
+                    mime: 'application/json',
+                    text: JSON.stringify({ exportDate: new Date().toISOString(), entries: entriesData }, null, 2),
+                };
+            }
+            const sorted = entriesData.sort((a, b) => new Date(b.date) - new Date(a.date));
+            let md = '# 日記帳エクスポート\n\n';
+            md += `生成日時: ${new Date().toLocaleString('ja-JP')}\n\n`;
+            sorted.forEach(entry => {
+                md += `## ${formatDate(entry.date)} - ${entry.title}\n\n`;
+                md += `${entry.content || ''}\n\n`;
+                if (entry.tags && entry.tags.length > 0) { md += `**タグ:** ${entry.tags.map(t => `#${t}`).join(' ')}\n\n`; }
+                md += `---\n\n`;
+            });
+            return { filename: `diary_backup_${dateStr}.md`, mime: 'text/markdown', text: md };
+        }
+
+        function exportJSON() { const p = buildExportPayload('json'); downloadFile(p.text, p.filename, p.mime); }
+        function exportMarkdown() { const p = buildExportPayload('md'); downloadFile(p.text, p.filename, p.mime); }
+        function downloadFile(content, filename, mimeType) {
+            const blob = new Blob([content], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showToast(`${filename} をダウンロードしました`, 'success');
+            closeModal('exportModal');
+        }
+
+        function exportAllData() { exportJSON(); }
+        function importDataFrom(fileInputId, closeModalId) {
+            const fileInput = document.getElementById(fileInputId);
+            const file = fileInput && fileInput.files ? fileInput.files[0] : null;
+            if (!file) { showToast('インポートするJSONを選択してください', 'error'); return; }
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    if (!data.entries || !Array.isArray(data.entries)) { showToast('不正なJSON形式です（entriesがありません）', 'error'); return; }
+                    const existingIds = new Set(entries.map(e => e.id));
+                    let imported = 0;
+                    data.entries.forEach(entry => {
+                        if (!existingIds.has(entry.id)) { entries.push(entry); imported++; }
+                    });
+                    saveEntriesToStorage();
+                    renderCalendar();
+                    renderEntriesList();
+                    renderEditor();
+                    showToast(`インポート完了: ${imported}件`, 'success');
+                    if (closeModalId) closeModal(closeModalId);
+                } catch (err) {
+                    console.error(err);
+                    showToast('インポートに失敗しました', 'error');
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        function formatDate(dateStr) {
+            const date = new Date(dateStr + 'T00:00:00');
+            return date.toLocaleDateString('ja-JP', { year: 'numeric', month: 'short', day: 'numeric' });
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function openNewEntryModal() {
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('entryDate').value = today;
+            document.getElementById('entryTitle').value = '';
+            document.getElementById('newEntryModal').classList.add('active');
+        }
+
+        function openSecurityModal() { document.getElementById('securityModal').classList.add('active'); }
+        function openExportModal() { document.getElementById('exportModal').classList.add('active'); }
+        function closeModal(modalId) { document.getElementById(modalId).classList.remove('active'); }
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            setTimeout(() => { toast.style.animation = 'slideIn 0.3s ease-out reverse'; }, 2500);
+            setTimeout(() => toast.remove(), 2800);
+        }
+
+        document.addEventListener('click', (e) => {
+            if (e.target.classList.contains('modal')) { e.target.classList.remove('active'); }
+        });
+
+
+// ---- Google Drive API Sync (Method B) ----
+const DRIVESCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+const DRIVEDIARYFILENAME = 'diary.json';
+
+// TODO: OAuth Client ID (Web)
+const DRIVECLIENTID = '312868081144-nsjo9gfkm94ol1pha2nhq913g9p1m4e0.apps.googleusercontent.com';
+
+let driveTokenClient = null;
+let driveAccessToken = null;
+let autoSyncDriveEnabled = false;
+
+function initDriveTokenClient() {
+  if (driveTokenClient) return;
+  if (!window.google || !google.accounts || !google.accounts.oauth2) {
+    showToast('Google認証ライブラリ未読込', 'warning');
+    return;
+  }
+  driveTokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: DRIVECLIENTID,
+    scope: DRIVESCOPE,
+    callback: () => {},
+    error_callback: () => showToast('Drive認証エラー', 'error')
+  });
+}
+
+function driveRequestToken(promptMode) {
+  return new Promise((resolve, reject) => {
+    initDriveTokenClient();
+    if (!driveTokenClient) return reject(new Error('tokenClient not ready'));
+    driveTokenClient.callback = (resp) => {
+      if (resp && resp.access_token) {
+        driveAccessToken = resp.access_token;
+        resolve(driveAccessToken);
+      } else {
+        reject(resp);
+      }
+    };
+    driveTokenClient.requestAccessToken({ prompt: promptMode });
+  });
+}
+
+async function driveEnsureToken(interactive = false) {
+  if (driveAccessToken) return driveAccessToken;
+  return await driveRequestToken(interactive ? 'consent' : '');
+}
+
+async function driveFetch(url, options = {}) {
+  const token = await driveEnsureToken(false);
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(options.headers || {})
+    }
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res;
+}
+
+async function driveConnect() {
+  await driveRequestToken('consent');
+  showToast('Drive 認証OK', 'success');
+}
+
+async function driveFindDiaryFileId() {
+  const q = encodeURIComponent(`name="${DRIVEDIARYFILENAME}" and trashed=false`);
+  const fields = encodeURIComponent('files(id,name,modifiedTime)');
+  const res = await driveFetch(
+    `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=${q}&fields=${fields}`
+  );
+  const data = await res.json();
+  return (data.files && data.files[0]) ? data.files[0].id : null;
+}
+
+async function driveDownloadDiary() {
+  const fileId = await driveFindDiaryFileId();
+  if (!fileId) return null;
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+  const txt = await res.text();
+  return JSON.parse(txt);
+}
+
+function mergeEntriesByUpdatedAt(localEntries, incomingEntries) {
+  const map = new Map();
+  localEntries.forEach(e => map.set(e.id, e));
+  let added = 0, updated = 0;
+
+  incomingEntries.forEach(e => {
+    const cur = map.get(e.id);
+    if (!cur) {
+      map.set(e.id, e);
+      added++;
+      return;
+    }
+    const t1 = new Date(cur.updatedAt || cur.createdAt || 0).getTime();
+    const t2 = new Date(e.updatedAt || e.createdAt || 0).getTime();
+    if (t2 > t1) {
+      map.set(e.id, e);
+      updated++;
+    }
+  });
+
+  return { merged: Array.from(map.values()), added, updated };
+}
+
+async function drivePullAndMerge() {
+  try {
+    await driveEnsureToken(true);
+    const data = await driveDownloadDiary();
+    if (!data || !Array.isArray(data.entries)) {
+      showToast('Driveに diary.json がありません', 'warning');
+      return;
+    }
+    const r = mergeEntriesByUpdatedAt(entries, data.entries);
+    entries = r.merged;
+    saveEntriesToStorage();
+    renderCalendar();
+    renderEntriesList();
+    renderEditor();
+    showToast(`Drive: 追加${r.added} 更新${r.updated}`, 'success');
+  } catch (err) {
+    console.error(err);
+    showToast('Drive 読み込み失敗', 'error');
+  }
+}
+
+async function driveUploadDiaryObject(obj) {
+  const fileId = await driveFindDiaryFileId();
+
+  const metadata = fileId
+    ? { name: DRIVEDIARYFILENAME }
+    : { name: DRIVEDIARYFILENAME, parents: ['appDataFolder'] };
+
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  form.append('file', new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' }));
+
+  const token = await driveEnsureToken(false);
+  const url = fileId
+    ? `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`
+    : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
+
+  const res = await fetch(url, {
+    method: fileId ? 'PATCH' : 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return await res.json();
+}
+
+async function drivePushAll(quiet = false) {
+  try {
+    await driveEnsureToken(true);
+    const payload = buildExportPayload('json'); // 既存関数を利用
+    const obj = JSON.parse(payload.text);
+    await driveUploadDiaryObject(obj);
+    if (!quiet) showToast('Driveへ保存しました', 'success');
+  } catch (err) {
+    console.error(err);
+    if (!quiet) showToast('Drive 保存失敗', 'error');
+  }
+}
+
+function toggleAutoSyncDrive() {
+  autoSyncDriveEnabled = document.getElementById('autoSyncDrive').checked;
+  localStorage.setItem('autoSyncDrive', autoSyncDriveEnabled);
+  showToast(autoSyncDriveEnabled ? 'Drive自動同期 ON' : 'Drive自動同期 OFF', 'success');
+}
+
+
+
+
+        window.addEventListener('DOMContentLoaded', () => { init(); });
+    </script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+</body>
+</html>
