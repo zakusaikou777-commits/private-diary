@@ -1,0 +1,2275 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>日記帳 Pro - カレンダー完全修正版</title>
+    <style>
+
+.editor-content {
+  flex: 1;
+  padding: var(--space-16);
+  border: none;
+  font-size: 16px;
+  font-family: inherit;
+  background-color: var(--color-surface);
+  color: var(--color-text);
+  outline: none;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+.editor-content:empty:before {
+  content: attr(data-placeholder);
+  color: var(--color-text-secondary);
+}
+.editor-content table { border-collapse: collapse; }
+.editor-content td, .editor-content th { border: 1px solid var(--color-border); padding: 6px; }
+
+.editor-content table {
+  border: 2px solid rgba(30, 136, 229, 0.8);
+}
+.editor-content td,
+.editor-content th {
+  border: 1px solid rgba(30, 136, 229, 0.65);
+}
+
+/* 見出し行があると見やすい */
+.editor-content th {
+  background: rgba(30, 136, 229, 0.10);
+}
+
+
+
+        :root {
+            --color-primary: rgb(33, 128, 141);
+            --color-primary-hover: rgb(29, 116, 128);
+            --color-background: rgba(252, 252, 249, 1);
+            --color-surface: rgba(255, 255, 253, 1);
+            --color-text: rgba(19, 52, 59, 1);
+            --color-text-secondary: rgba(98, 108, 113, 1);
+            --color-border: rgba(94, 82, 64, 0.2);
+            --color-success: rgb(33, 128, 141);
+            --color-error: rgb(192, 21, 47);
+            --color-warning: rgb(168, 75, 47);
+            --space-8: 8px;
+            --space-12: 12px;
+            --space-16: 16px;
+            --space-20: 20px;
+            --space-24: 24px;
+            --radius-base: 8px;
+            --radius-lg: 12px;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --color-background: rgba(31, 33, 33, 1);
+                --color-surface: rgba(38, 40, 40, 1);
+                --color-text: rgba(245, 245, 245, 1);
+                --color-text-secondary: rgba(167, 169, 169, 0.7);
+                --color-primary: rgb(50, 184, 198);
+                --color-primary-hover: rgb(45, 166, 178);
+            }
+        }
+
+        * { box-sizing: border-box; }
+        html { font-size: 14px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+        body { margin: 0; padding: 0; background-color: var(--color-background); color: var(--color-text); transition: background-color 0.3s, color 0.3s; }
+        .container { display: flex; height: 100vh; flex-direction: column; }
+        .header { background-color: var(--color-surface); border-bottom: 1px solid var(--color-border); padding: var(--space-16); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: var(--space-12); }
+        .header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+        .header-actions { display: flex; gap: var(--space-8); align-items: center; flex-wrap: wrap; }
+        .btn { padding: var(--space-8) var(--space-16); border: none; border-radius: var(--radius-base); cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.2s; display: inline-flex; align-items: center; gap: var(--space-8); }
+        .btn-primary { background-color: var(--color-primary); color: white; }
+        .btn-primary:hover { background-color: var(--color-primary-hover); transform: translateY(-2px); }
+        .btn-secondary { background-color: rgba(94, 82, 64, 0.12); color: var(--color-text); }
+        .btn-secondary:hover { background-color: rgba(94, 82, 64, 0.2); }
+        .btn-sm { padding: var(--space-6) var(--space-12); font-size: 13px; }
+        .main { display: flex; flex: 1; overflow: hidden; gap: var(--space-16); padding: var(--space-16); flex-direction: column; }
+        @media (min-width: 768px) { .main { flex-direction: row; } }
+        .sidebar { background-color: var(--color-surface); border-radius: var(--radius-lg); padding: var(--space-16); border: 1px solid var(--color-border); min-width: 340px; width: 340px; flex-shrink: 0; max-height: 400px; overflow-y: auto; }
+        @media (min-width: 768px) { .sidebar { max-height: 100%; width: 340px; min-width: 340px; } }
+        .sidebar h2 { margin: 0 0 var(--space-12) 0; font-size: 14px; font-weight: 600; text-transform: uppercase; color: var(--color-text-secondary); }
+        .view-tabs { display: flex; gap: var(--space-4); margin-bottom: var(--space-16); border-bottom: 1px solid var(--color-border); }
+        .view-tab { flex: 1; padding: var(--space-8) var(--space-12); border: none; background: none; cursor: pointer; color: var(--color-text-secondary); border-bottom: 2px solid transparent; font-weight: 500; font-size: 13px; transition: all 0.2s; }
+        .view-tab:hover { color: var(--color-text); }
+        .view-tab.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+        .calendar-container { display: none; width: 100%; }
+        .calendar-container.active { display: block; }
+        .calendar-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-16); }
+        .calendar-header button { background: none; border: none; cursor: pointer; font-size: 18px; color: var(--color-text); padding: var(--space-4) var(--space-8); border-radius: var(--radius-base); transition: all 0.2s; }
+        .calendar-header button:hover { background-color: rgba(33, 128, 141, 0.1); }
+        .calendar-title { font-size: 16px; font-weight: 600; }
+        .calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(36px, 1fr)); gap: 4px; width: 100%; overflow-x: auto; }
+        #calendarDays { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(7, minmax(36px, 1fr)); gap: 4px; }
+        @media (max-width: 767px) { #calendarDays { grid-template-columns: repeat(7, 1fr); gap: 2px; } }
+        .calendar-day-header { text-align: center; font-size: 11px; font-weight: 600; color: var(--color-text-secondary); padding: 4px 0; }
+        .calendar-day { height: 40px; width: 100%; display: flex; align-items: center; justify-content: center; border-radius: var(--radius-base); font-size: 13px; cursor: pointer; transition: all 0.2s; position: relative; background-color: var(--color-background); border: 1px solid transparent; color: var(--color-text); font-family: inherit; appearance: none; -webkit-appearance: none; padding: 0; }
+        .calendar-day:hover:not(.other-month) { background-color: rgba(33, 128, 141, 0.1); transform: scale(1.05); z-index: 1; }
+        .calendar-day.other-month { color: var(--color-text-secondary); opacity: 0.3; cursor: default; }
+        .calendar-day.today { border-color: var(--color-primary); font-weight: 700; }
+        .calendar-day.has-entry { background-color: rgba(33, 128, 141, 0.15); font-weight: 600; color: var(--color-primary); }
+        .calendar-day.has-entry::after { content: ''; position: absolute; bottom: 4px; width: 4px; height: 4px; background-color: var(--color-primary); border-radius: 50%; }
+        .calendar-day.selected { background-color: var(--color-primary); color: white; font-weight: 700; }
+        .calendar-day.selected::after { background-color: white; }
+        .list-container { display: none; }
+        .list-container.active { display: block; }
+        .search-box { margin-bottom: var(--space-16); }
+        .search-box input { width: 100%; padding: var(--space-8) var(--space-12); border: 1px solid var(--color-border); border-radius: var(--radius-base); font-size: 14px; background-color: var(--color-background); color: var(--color-text); }
+        .search-box input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(33, 128, 141, 0.1); }
+        .filter-section { margin-bottom: var(--space-16); }
+        .filter-label { font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--color-text-secondary); margin-bottom: var(--space-8); display: block; }
+        .tag-filter-list { display: flex; flex-wrap: wrap; gap: var(--space-6); margin-bottom: var(--space-12); }
+        .tag-filter-item { display: inline-flex; align-items: center; gap: var(--space-4); padding: var(--space-6) var(--space-10); background-color: rgba(33, 128, 141, 0.1); border: 1px solid rgba(33, 128, 141, 0.3); border-radius: var(--radius-base); font-size: 12px; cursor: pointer; transition: all 0.2s; }
+        .tag-filter-item:hover { background-color: rgba(33, 128, 141, 0.2); border-color: var(--color-primary); }
+        .tag-filter-item.active { background-color: var(--color-primary); color: white; border-color: var(--color-primary); }
+        .entries-list { list-style: none; margin: 0; padding: 0; }
+        .entry-item { padding: var(--space-12); margin-bottom: var(--space-8); background-color: var(--color-background); border: 1px solid var(--color-border); border-radius: var(--radius-base); cursor: pointer; transition: all 0.2s; }
+        .entry-item:hover { background-color: rgba(33, 128, 141, 0.1); border-color: var(--color-primary); }
+        .entry-item.active { background-color: rgba(33, 128, 141, 0.15); border-color: var(--color-primary); font-weight: 600; }
+        .entry-date { font-size: 12px; color: var(--color-text-secondary); margin-bottom: 4px; }
+        .entry-title { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .editor-section { flex: 1; display: flex; flex-direction: column; background-color: var(--color-surface); border-radius: var(--radius-lg); border: 1px solid var(--color-border); overflow: hidden; }
+        .editor-toolbar { display: flex; gap: var(--space-8); padding: var(--space-12); border-bottom: 1px solid var(--color-border); flex-wrap: wrap; background-color: rgba(94, 82, 64, 0.05); }
+        .editor-toolbar button { padding: var(--space-6) var(--space-10); background-color: var(--color-primary); color: white; border: none; border-radius: var(--radius-base); cursor: pointer; font-size: 13px; font-weight: 500; transition: all 0.2s; }
+        .editor-toolbar button:hover { background-color: var(--color-primary-hover); transform: translateY(-2px); }
+        .editor-textarea { flex: 1; padding: var(--space-16); border: none; font-size: 16px; font-family: inherit; resize: none; background-color: var(--color-surface); color: var(--color-text); outline: none; }
+        .editor-textarea::placeholder { color: var(--color-text-secondary); }
+        .editor-footer { display: flex; justify-content: space-between; align-items: center; padding: var(--space-12); border-top: 1px solid var(--color-border); background-color: rgba(94, 82, 64, 0.05); flex-wrap: wrap; gap: var(--space-12); }
+        .char-count { font-size: 12px; color: var(--color-text-secondary); }
+        .footer-actions { display: flex; gap: var(--space-8); flex-wrap: wrap; }
+        .tags-section { padding: var(--space-12); border-top: 1px solid var(--color-border); border-bottom: 1px solid var(--color-border); background-color: rgba(94, 82, 64, 0.03); }
+        .tags-label { font-size: 13px; font-weight: 600; margin-bottom: var(--space-12); color: var(--color-text); }
+        .tags-display { display: flex; flex-wrap: wrap; gap: var(--space-8); align-items: center; min-height: 28px; margin-bottom: var(--space-12); }
+        .tag-pill { display: inline-flex; align-items: center; gap: var(--space-6); padding: var(--space-6) var(--space-12); background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover)); color: white; border-radius: 9999px; font-size: 13px; font-weight: 500; white-space: nowrap; box-shadow: 0 2px 4px rgba(33, 128, 141, 0.2); transition: all 0.2s; }
+        .tag-pill:hover { transform: translateY(-2px); box-shadow: 0 4px 8px rgba(33, 128, 141, 0.3); }
+        .tag-remove { cursor: pointer; font-size: 18px; line-height: 1; opacity: 0.9; transition: opacity 0.2s; font-weight: bold; }
+        .tag-remove:hover { opacity: 1; }
+        .tags-input-wrapper { display: flex; gap: var(--space-8); padding: var(--space-10); background-color: var(--color-background); border: 2px solid var(--color-primary); border-radius: var(--radius-base); transition: all 0.2s; }
+        .tags-input-wrapper:focus-within { border-color: var(--color-primary-hover); box-shadow: 0 0 0 3px rgba(33, 128, 141, 0.1); }
+        .tags-input { flex: 1; padding: var(--space-6) var(--space-8); border: none; background: transparent; font-size: 14px; outline: none; color: var(--color-text); }
+        .tags-input::placeholder { color: var(--color-text-secondary); font-style: italic; }
+        .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: var(--space-24); text-align: center; color: var(--color-text-secondary); }
+        .empty-state-icon { font-size: 48px; margin-bottom: var(--space-12); }
+        .modal { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(0, 0, 0, 0.5); z-index: 1000; justify-content: center; align-items: center; }
+        .modal.active { display: flex; }
+        .modal-content { background-color: var(--color-surface); border-radius: var(--radius-lg); padding: var(--space-24); max-width: 500px; width: 90%; max-height: 80vh; overflow-y: auto; }
+        .modal-header { font-size: 18px; font-weight: 600; margin-bottom: var(--space-16); }
+        .modal-body { margin-bottom: var(--space-16); }
+        .form-group { margin-bottom: var(--space-16); }
+        .form-label { display: block; font-size: 14px; font-weight: 500; margin-bottom: var(--space-8); }
+        .form-input { width: 100%; padding: var(--space-8) var(--space-12); border: 1px solid var(--color-border); border-radius: var(--radius-base); font-size: 14px; background-color: var(--color-background); color: var(--color-text); }
+        .form-input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(33, 128, 141, 0.1); }
+        .modal-footer { display: flex; gap: var(--space-12); justify-content: flex-end; }
+        .toast { position: fixed; bottom: 20px; right: 20px; background-color: var(--color-primary); color: white; padding: var(--space-12) var(--space-16); border-radius: var(--radius-base); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); animation: slideIn 0.3s ease-out; z-index: 2000; max-width: 300px; }
+        .toast.error { background-color: var(--color-error); }
+        .toast.success { background-color: var(--color-success); }
+        .toast.warning { background-color: var(--color-warning); }
+        @keyframes slideIn { from { transform: translateX(400px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        .stats-section { background-color: var(--color-surface); border-radius: var(--radius-lg); padding: var(--space-16); border: 1px solid var(--color-border); margin-bottom: var(--space-16); }
+        .stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-12); }
+        .stat-item { background-color: var(--color-background); padding: var(--space-12); border-radius: var(--radius-base); text-align: center; }
+        .stat-value { font-size: 18px; font-weight: 600; color: var(--color-primary); }
+        .stat-label { font-size: 12px; color: var(--color-text-secondary); margin-top: 4px; }
+        .export-tab { position: relative; }
+        .export-tab.active { color: var(--color-primary); border-bottom-color: var(--color-primary) !important; }
+        .export-tab-content { animation: fadeIn 0.2s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .toggle-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+        .toggle-input { display: none; }
+        .toggle-slider { width: 36px; height: 20px; background-color: var(--color-border); border-radius: 9999px; position: relative; transition: 0.2s; }
+        .toggle-slider::before { content: ''; position: absolute; width: 16px; height: 16px; background-color: white; border-radius: 50%; top: 2px; left: 2px; transition: 0.2s; }
+        .toggle-input:checked + .toggle-slider { background-color: var(--color-primary); }
+        .toggle-input:checked + .toggle-slider::before { transform: translateX(16px); }
+        .sync-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 4px 8px; border-radius: 99px; background-color: rgba(94, 82, 64, 0.1); color: var(--color-text-secondary); margin-left: 8px; }
+        .sync-badge.active { background-color: rgba(33, 128, 141, 0.15); color: var(--color-primary); font-weight: 600; }
+        @media (max-width: 767px) {
+            .main { padding: var(--space-12); gap: var(--space-12); }
+            .sidebar { max-height: 400px; width: 100%; min-width: auto; }
+            .header { padding: var(--space-12); }
+            .header h1 { font-size: 18px; }
+            .calendar-grid { grid-template-columns: repeat(7, 1fr); gap: 2px; }
+            .calendar-day { height: 34px; font-size: 11px; }
+        }
+
+        /* --- アクセシビリティ・追加UI --- */
+        .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+        :focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+        .calendar-day:focus-visible { outline-offset: -2px; }
+        .editor-meta { display: flex; gap: var(--space-12); padding: var(--space-12) var(--space-16); border-bottom: 1px solid var(--color-border); flex-wrap: wrap; align-items: flex-end; background-color: rgba(94, 82, 64, 0.03); }
+        .editor-meta .meta-field { display: flex; flex-direction: column; gap: 4px; }
+        .editor-meta .meta-field.title-field { flex: 1; min-width: 180px; }
+        .editor-meta label { font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--color-text-secondary); }
+        .editor-meta input { padding: var(--space-8) var(--space-12); border: 1px solid var(--color-border); border-radius: var(--radius-base); font-size: 14px; background-color: var(--color-background); color: var(--color-text); font-family: inherit; }
+        .editor-meta input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(33, 128, 141, 0.1); }
+        .toast-region { position: fixed; bottom: 20px; right: 20px; z-index: 2000; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; pointer-events: none; max-width: 320px; }
+        .toast-region .toast { position: static; pointer-events: auto; }
+    </style>
+<style id="kn-unify">
+@import url('https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@600;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap');
+:root{
+  --color-primary: rgb(192,70,60);
+  --color-primary-hover: rgb(163,57,47);
+  --color-background: #f4ecda;
+  --color-surface: #fdf8ec;
+  --color-text: #2c2620;
+  --color-text-secondary: #7a6f5e;
+  --color-border: rgba(120,95,55,0.22);
+  --color-success: #57845A;
+  --color-error: #b3402f;
+  --color-warning: #a8643a;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --color-primary: rgb(192,70,60); --color-primary-hover: rgb(163,57,47);
+    --color-background: #f4ecda; --color-surface: #fdf8ec; --color-text: #2c2620;
+    --color-text-secondary: #7a6f5e; --color-border: rgba(120,95,55,0.22);
+  }
+}
+html{ color-scheme: light; }
+body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif; }
+.calendar-title, .modal-header, .stat-value, h1, h2{ font-family:"Shippori Mincho",serif; }
+.btn-primary{ box-shadow:0 4px 12px rgba(160,57,47,.28); }
+.calendar-day{ position:relative; }
+.kn-task-dot{ position:absolute; left:50%; bottom:3px; transform:translateX(-50%); width:5px; height:5px; border-radius:50%; background:#c0463c; box-shadow:0 0 0 2px rgba(192,70,60,.18); }
+#kn-cal-tasks{ margin:12px 4px 4px; }
+.kn-cal-h{ font-size:12px; font-weight:700; color:#7a6f5e; margin:6px 2px; font-family:"Shippori Mincho",serif; }
+.kn-cal-item{ display:block; width:100%; text-align:left; border:1px solid var(--color-border); background:#fff; color:#2c2620; border-radius:9px; padding:8px 11px; margin:5px 0; font-size:13px; cursor:pointer; font-family:inherit; }
+.kn-cal-item:hover{ border-color:#c0463c; }
+.kn-cal-item b{ color:#c0463c; font-weight:700; margin-right:6px; }
+</style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div style="display: flex; align-items: center;">
+                <h1>📔 日記帳 Pro</h1>
+                <div id="syncStatus" class="sync-badge" style="display: none;">🔄 自動同期中</div>
+            </div>
+            <div class="header-actions">
+                <button class="btn btn-secondary btn-sm" onclick="openSecurityModal()">🔐 セキュリティ</button>
+                <button class="btn btn-secondary btn-sm" onclick="openExportModal()">💾 エクスポート</button>
+                <button class="btn btn-primary btn-sm" onclick="openNewEntryModal()">➕ 新規作成</button>
+            </div>
+        </div>
+
+        <div id="backupReminder" role="status" style="display:none; align-items:center; gap:var(--space-12); padding:var(--space-8) var(--space-12); margin:0 var(--space-16) var(--space-12); background-color:rgba(168,75,47,0.10); border:1px solid var(--color-warning); border-radius:var(--radius-base); font-size:13px; color:var(--color-text);">
+            <span style="font-size:18px; line-height:1;">⚠️</span>
+            <span id="backupReminderText" style="flex:1;"></span>
+            <button class="btn btn-primary btn-sm" type="button" onclick="shareBackup()">今すぐバックアップ</button>
+            <button class="btn btn-secondary btn-sm" type="button" onclick="dismissBackupReminder()" aria-label="リマインダーを閉じる">閉じる</button>
+        </div>
+
+        <div class="main">
+            <div class="sidebar">
+                <div class="stats-section">
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <div class="stat-value" id="totalEntries">0</div>
+                            <div class="stat-label">総投稿数</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="totalChars">0</div>
+                            <div class="stat-label">総文字数</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="thisMonthEntries">0</div>
+                            <div class="stat-label">今月投稿</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="weeklyAvg">0</div>
+                            <div class="stat-label">週平均投稿</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="view-tabs" role="tablist" aria-label="表示切替">
+                    <button class="view-tab" type="button" role="tab" data-view="list" aria-selected="false" onclick="switchView('list')">📋 リスト</button>
+                    <button class="view-tab active" type="button" role="tab" data-view="calendar" aria-selected="true" onclick="switchView('calendar')">📅 カレンダー</button>
+                </div>
+
+                <div id="calendarView" class="calendar-container active">
+                    <div class="calendar-header">
+                        <button onclick="changeMonth(-1)">◀</button>
+                        <div class="calendar-title" id="calendarTitle"></div>
+                        <button onclick="changeMonth(1)">▶</button>
+                    </div>
+                    <div class="calendar-grid">
+                        <div class="calendar-day-header">日</div>
+                        <div class="calendar-day-header">月</div>
+                        <div class="calendar-day-header">火</div>
+                        <div class="calendar-day-header">水</div>
+                        <div class="calendar-day-header">木</div>
+                        <div class="calendar-day-header">金</div>
+                        <div class="calendar-day-header">土</div>
+                        <div id="calendarDays"></div>
+                    </div>
+                </div>
+
+                <div id="listView" class="list-container">
+                    <div class="search-box">
+                        <input type="text" id="searchInput" placeholder="🔍 タイトル/本文検索..." onkeyup="filterEntries()">
+                    </div>
+                    <div class="filter-section">
+                        <label class="filter-label">タグフィルタ</label>
+                        <div class="tag-filter-list" id="tagFilterList"></div>
+                    </div>
+                    <h2>最近の投稿</h2>
+                    <ul class="entries-list" id="entriesList"></ul>
+                </div>
+            </div>
+
+            <div class="editor-section" id="editorSection">
+                <div class="empty-state">
+                    <div class="empty-state-icon">📝</div>
+                    <p>カレンダーで日付を選ぶか、新規作成ボタンで始めましょう</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="securityModal">
+        <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="securityModalTitle">
+            <div class="modal-header" id="securityModalTitle">🔐 セキュリティ設定</div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">端末内データの暗号化</label>
+                    <p id="encStatusText" style="margin: 0 0 var(--space-8); font-size: 13px; color: var(--color-text-secondary); line-height: 1.6;"></p>
+
+                    <div id="encSetBlock">
+                        <input type="password" id="encNewPass" class="form-input" placeholder="パスフレーズ（8文字以上）" autocomplete="new-password" style="margin-bottom: var(--space-8);">
+                        <input type="password" id="encNewPass2" class="form-input" placeholder="パスフレーズ（確認）" autocomplete="new-password" style="margin-bottom: var(--space-8);">
+                        <button id="encApplyBtn" class="btn btn-primary" type="button" onclick="applyPassphrase()" style="width: 100%;">暗号化を有効にする</button>
+                    </div>
+
+                    <button id="encDisableBtn" class="btn btn-secondary" type="button" onclick="disableEncryption()" style="width: 100%; margin-top: var(--space-8); display: none;">暗号化を解除（平文に戻す）</button>
+
+                    <p style="margin: var(--space-8) 0 0; font-size: 12px; color: var(--color-text-secondary); line-height: 1.5;">⚠️ パスフレーズを忘れると復元できません（運営側でも復号できません）。安全な場所に控え、JSONバックアップも併用してください。<br>※「JSON/Markdownダウンロード」は明示的な書き出しのため<strong>平文</strong>です。フォルダ同期・Drive同期は暗号化有効時に暗号化されます。</p>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">すべてのデータをエクスポート</label>
+                    <button class="btn btn-primary" onclick="exportAllData()" style="width: 100%;">ダウンロード</button>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">データをインポート</label>
+                    <button class="btn btn-secondary" style="width: 100%;" onclick="closeModal('securityModal'); openExportModal(); switchExportTab('import');">インポート画面を開く</button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('securityModal')">閉じる</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="unlockModal">
+        <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="unlockModalTitle">
+            <div class="modal-header" id="unlockModalTitle">🔒 ロック解除</div>
+            <div class="modal-body">
+                <p style="margin: 0 0 var(--space-12); font-size: 13px; color: var(--color-text-secondary); line-height: 1.6;">この日記は暗号化されています。パスフレーズを入力してください。</p>
+                <input type="password" id="unlockPass" class="form-input" placeholder="パスフレーズ" autocomplete="current-password" onkeypress="if(event.key==='Enter'){event.preventDefault();submitUnlock();}">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" type="button" onclick="closeModal('unlockModal')">後で</button>
+                <button class="btn btn-primary" type="button" onclick="submitUnlock()">解除</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="exportModal">
+        <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="exportModalTitle">
+            <div class="modal-header" id="exportModalTitle">💾 エクスポート</div>
+            <div class="modal-body">
+                <div style="display: flex; gap: var(--space-8); margin-bottom: var(--space-16); border-bottom: 1px solid var(--color-border);">
+                    <button class="export-tab active" onclick="switchExportTab('local')" style="padding: var(--space-8) var(--space-12); border: none; background: none; cursor: pointer; color: var(--color-text); border-bottom: 2px solid transparent; font-weight: 500;">💻 ローカル保存</button>
+                    <button class="export-tab" onclick="switchExportTab('drive')" style="padding: var(--space-8) var(--space-12); border: none; background: none; cursor: pointer; color: var(--color-text); border-bottom: 2px solid transparent; font-weight: 500;">☁️ Drive</button>
+                    <button class="export-tab" onclick="switchExportTab('import')" style="padding: var(--space-8) var(--space-12); border: none; background: none; cursor: pointer; color: var(--color-text); border-bottom: 2px solid transparent; font-weight: 500;">📥 インポート</button>
+                </div>
+
+                <div id="localExportTab" class="export-tab-content">
+                    <div class="form-group">
+                        <button class="btn btn-primary" onclick="shareBackup()" style="width: 100%; margin-bottom: var(--space-8);">📤 バックアップを共有（メール/Drive等）</button>
+                        <button class="btn btn-secondary" onclick="exportJSON()" style="width: 100%; margin-bottom: var(--space-8);">JSON（復元可能）をダウンロード</button>
+                        <button class="btn btn-secondary" onclick="exportMarkdown()" style="width: 100%;">Markdown（読取用）</button>
+                        <div style="font-size: 12px; color: var(--color-text-secondary); margin-top: var(--space-8); line-height: 1.5;">「共有」はスマホの共有シートからメールやドライブ等へ送れます（端末が壊れても復元できるよう、別の場所に保存してください）。</div>
+                    </div>
+                </div>
+
+                <div id="driveExportTab" class="export-tab-content" style="display: none;">
+                    <div class="form-group">
+                        <div style="display: flex; gap: var(--space-8);">
+                            <button class="btn btn-primary" onclick="switchDriveMethod('sync')" style="width: 100%;">A) 同期フォルダ</button>
+                            <button class="btn btn-secondary" onclick="switchDriveMethod('api')" style="width: 100%;">B) Drive API</button>
+                        </div>
+                    </div>
+
+                    <div id="driveMethodA" style="display: none; margin-top: var(--space-16);">
+                        <div style="margin-bottom: var(--space-12);">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="autoSyncA" class="toggle-input" onchange="toggleAutoSyncA()">
+                                <span class="toggle-slider"></span>
+                                <span style="font-size: 13px;">保存時に自動書き出しする</span>
+                            </label>
+                        </div>
+                        <div id="syncControls">
+                            <div style="display: flex; gap: var(--space-8); margin-bottom: var(--space-8);">
+                                <input type="text" id="syncFolderPath" placeholder="フォルダ未設定" readonly style="flex: 1; padding: var(--space-8) var(--space-12); border: 1px solid var(--color-border); border-radius: var(--radius-base); background-color: var(--color-background); color: var(--color-text);">
+                                <button class="btn btn-secondary btn-sm" onclick="pickSyncFolderA()">選択</button>
+                            </div>
+                            <button id="reconnectBtn" class="btn btn-sm" onclick="reconnectSyncFolderA()" style="width: 100%; margin-bottom: var(--space-8); display: none; background-color: var(--color-warning); color: white;">⚠️ 前回フォルダに再接続</button>
+                        </div>
+                        <button class="btn btn-primary" onclick="exportToSyncFolderA('json')" style="width: 100%; margin-bottom: var(--space-8);">🔄 JSON書き出し</button>
+                    </div>
+
+                    <div id="driveMethodB" style="display: none; margin-top: var(--space-16);">
+                        <div style="font-size: 13px; color: var(--color-text-secondary); margin-bottom: var(--space-12);">Google Drive（appDataFolder）に diary.json を保存して、スマホ/PCで同期します。</div>
+                        <div class="form-group">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="autoSyncDrive" class="toggle-input" onchange="toggleAutoSyncDrive()">
+                                <span class="toggle-slider"></span>
+                                <span style="font-size: 13px;">保存時にDriveへ自動同期</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <button class="btn btn-secondary" onclick="driveConnect()" style="width: 100%; margin-bottom: var(--space-8);">Google認証（Drive）</button>
+                            <button class="btn btn-primary" onclick="drivePullAndMerge()" style="width: 100%; margin-bottom: var(--space-8);">Driveから読み込み（マージ）</button>
+                            <button class="btn btn-secondary" onclick="drivePushAll()" style="width: 100%;">Driveへ保存（上書き）</button>
+                        </div>
+                        <div style="font-size: 12px; color: var(--color-text-secondary); line-height: 1.5;">⚠️ 注意：このページは https で配信する必要があります（file:// 直開きではOAuthが動かないことがあります）。</div>
+                    </div>
+                </div>
+
+                <div id="importExportTab" class="export-tab-content" style="display: none;">
+                    <div class="form-group">
+                        <div style="font-size: 13px; color: var(--color-text-secondary); margin-bottom: var(--space-8);">JSON（復元可能）を読み込んで日記データを取り込みます</div>
+                        <input type="file" id="importFileExport" accept=".json" style="width: 100%; cursor: pointer;">
+                        <button class="btn btn-primary" onclick="importDataFrom('importFileExport', 'exportModal')" style="width: 100%; margin-top: var(--space-8);">インポート実行</button>
+                        <div style="font-size: 12px; color: var(--color-text-secondary); margin-top: var(--space-8); line-height: 1.5;">現仕様：entriesのIDが既存と重複するものはスキップ（追加のみ）</div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('exportModal')">閉じる</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="newEntryModal">
+        <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="newEntryModalTitle">
+            <div class="modal-header" id="newEntryModalTitle">新規作成</div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">日付</label>
+                    <input type="date" class="form-input" id="entryDate">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">タイトル</label>
+                    <input type="text" class="form-input" id="entryTitle" placeholder="例：今日の出来事">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('newEntryModal')">キャンセル</button>
+                <button class="btn btn-primary" onclick="createNewEntry()">作成</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toastRegion" class="toast-region" role="region" aria-label="通知" aria-live="polite" aria-atomic="false"></div>
+
+    <script>
+        const DB_NAME = 'DiaryDB';
+        const STORE_NAME = 'handles';
+        const dbPromise = new Promise((resolve, reject) => {
+            const request = indexedDB.open(DB_NAME, 1);
+            request.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains(STORE_NAME)) {
+                    db.createObjectStore(STORE_NAME);
+                }
+            };
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+
+        async function saveHandle(key, handle) {
+            const db = await dbPromise;
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_NAME, 'readwrite');
+                const store = tx.objectStore(STORE_NAME);
+                store.put(handle, key);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        async function getHandle(key) {
+            const db = await dbPromise;
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_NAME, 'readonly');
+                const store = tx.objectStore(STORE_NAME);
+                const req = store.get(key);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        let entries = [];
+        let currentEntry = null;
+        let currentFilters = { tags: [], searchText: '' };
+        let autoSyncAEnabled = false;
+        let syncFolderHandleA = null;
+        let currentView = 'calendar';
+        let currentYear = new Date().getFullYear();
+        let currentMonth = new Date().getMonth();
+        let selectedDate = null;
+
+// ---- Phase1: autosave + dirty indicator + navigation guard ----
+let isDirty = false;
+let autoSaveTimer = null;
+let lastSavedAt = null;
+
+// ---- Phase2: at-rest passphrase encryption (PBKDF2 -> AES-GCM-256) ----
+let cryptoKey = null;        // CryptoKey when unlocked, otherwise null
+let encEnabled = false;      // whether encryption is currently active
+let encMeta = null;          // { salt: base64, iter } used to (re)derive the key
+let appLocked = false;       // encEnabled && key not yet provided this session
+let pendingUnlockBlob = null;// the encrypted blob awaiting passphrase at startup
+let backupReminderDismissed = false; // session-only dismiss for the backup reminder
+const PBKDF2_ITER = 250000;
+
+const ENC = {
+  enc: new TextEncoder(),
+  dec: new TextDecoder(),
+  b64(buf) {
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    const CH = 0x8000; // chunk to avoid call-stack overflow on large buffers
+    for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    return btoa(bin);
+  },
+  unb64(str) {
+    const bin = atob(str);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  },
+  async deriveKey(passphrase, salt, iterations) {
+    const base = await crypto.subtle.importKey('raw', this.enc.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
+      base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+    );
+  },
+  async encryptString(plaintext, key, saltBytes, iterations) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, this.enc.encode(plaintext));
+    return { __enc__: 1, v: 1, kdf: 'PBKDF2-SHA256', iter: iterations, salt: this.b64(saltBytes), iv: this.b64(iv), ct: this.b64(ct) };
+  },
+  async decryptToString(blob, key) {
+    const iv = this.unb64(blob.iv);
+    const ct = this.unb64(blob.ct);
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+    return this.dec.decode(pt);
+  }
+};
+
+function isEncBlob(o) { return o && typeof o === 'object' && o.__enc__ === 1 && o.ct && o.iv && o.salt; }
+
+// Try the in-session key first; if that fails (or none), prompt for a passphrase
+// and derive a key from the blob's own salt/iter (enables cross-device import).
+async function decryptIncomingBlob(blob) {
+  if (cryptoKey) {
+    try { return await ENC.decryptToString(blob, cryptoKey); } catch (_) {}
+  }
+  const pass = prompt('このデータは暗号化されています。パスフレーズを入力してください');
+  if (!pass) throw new Error('cancelled');
+  const key = await ENC.deriveKey(pass, ENC.unb64(blob.salt), blob.iter || PBKDF2_ITER);
+  return await ENC.decryptToString(blob, key); // throws on wrong passphrase
+}
+
+function updateSaveStatus() {
+  const el = document.getElementById('saveStatus');
+  if (!el) return;
+
+  if (!currentEntry) { el.textContent = ''; return; }
+
+  if (isDirty) {
+    el.textContent = '未保存';
+    el.style.color = 'var(--color-warning)';
+    return;
+  }
+
+  el.textContent = lastSavedAt ? `保存済み (${lastSavedAt})` : '保存済み';
+  el.style.color = 'var(--color-text-secondary)';
+}
+
+function markDirty() {
+  isDirty = true;
+  updateSaveStatus();
+}
+
+function scheduleAutoSave() {
+  if (!currentEntry) return;
+  if (autoSaveTimer) clearTimeout(autoSaveTimer);
+
+  autoSaveTimer = setTimeout(() => {
+    if (!isDirty) return;
+    saveEntry(true); // quiet
+  }, 800);
+}
+
+async function ensureSavedOrConfirmLoseChanges(actionLabel = '移動') {
+  if (!currentEntry) return true;
+  if (!isDirty) return true;
+
+  const ok = await saveEntry(true); // quiet
+  if (ok) return true;
+  return confirm(`未保存の変更を保存できませんでした。このまま${actionLabel}すると変更が失われます。続行しますか？`);
+}
+
+window.addEventListener('beforeunload', (e) => {
+  if (!isDirty) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
+
+
+        async function init() {
+            const status = await loadEntriesFromStorage();
+            autoSyncAEnabled = localStorage.getItem('autoSyncA') === 'true';
+            if (document.getElementById('autoSyncA')) {
+                document.getElementById('autoSyncA').checked = autoSyncAEnabled;
+            }
+            await checkSyncHandleA();
+            updateEncUI();
+            updateStats();
+            renderCalendar();
+            renderEntriesList();
+            renderEditor();
+            updateBackupReminder();
+            if (status === 'locked') openUnlockModal();
+        }
+
+        function looksLikeHtml(s) {
+            return /<\/?(b|strong|i|em|u|s|strike|del|br|p|div|span|ul|ol|li|blockquote|a|table|thead|tbody|tfoot|tr|td|th|h[1-6]|pre|code|hr)\b[^>]*>/i.test(s || '');
+        }
+
+        // contentFormat を確定するマイグレーション（#6）。変更があれば true。保存は呼び出し側。
+        function migrateContentFormat() {
+            let migrated = false;
+            entries.forEach(e => {
+                if (e && typeof e === 'object' && !e.contentFormat) {
+                    e.contentFormat = looksLikeHtml(e.content) ? 'html' : 'plain';
+                    migrated = true;
+                }
+            });
+            return migrated;
+        }
+
+        // 戻り値: 'ok' | 'locked' | 'empty' | 'corrupt'
+        async function loadEntriesFromStorage() {
+            const stored = localStorage.getItem('diaryEntries');
+            if (!stored) { entries = []; return 'empty'; }
+            let parsed;
+            try {
+                parsed = JSON.parse(stored);
+            } catch (err) {
+                console.error('保存データの読み込みに失敗:', err);
+                try { localStorage.setItem('diaryEntries_corrupt_backup', stored); } catch (_) {}
+                entries = [];
+                setTimeout(() => showToast('保存データを読み込めませんでした。空の状態で起動しました', 'error'), 0);
+                return 'corrupt';
+            }
+            if (isEncBlob(parsed)) {
+                // 暗号化済み。パスフレーズ入力まで中身は読めない（#暗号化）
+                encEnabled = true;
+                appLocked = true;
+                pendingUnlockBlob = parsed;
+                entries = [];
+                return 'locked';
+            }
+            entries = Array.isArray(parsed) ? parsed : [];
+            encEnabled = false;
+            if (migrateContentFormat()) { await saveEntriesToStorage(); }
+            return 'ok';
+        }
+
+        async function saveEntriesToStorage() {
+            // ロック中（暗号化済みだが未解除）は保存しない＝暗号文を平文で上書きする事故を防ぐ
+            if (encEnabled && !cryptoKey) {
+                showToast('ロックを解除してから操作してください', 'error');
+                return false;
+            }
+            let toStore;
+            try {
+                const plain = JSON.stringify(entries);
+                if (encEnabled && cryptoKey && encMeta) {
+                    const blob = await ENC.encryptString(plain, cryptoKey, ENC.unb64(encMeta.salt), encMeta.iter);
+                    toStore = JSON.stringify(blob);
+                } else {
+                    toStore = plain;
+                }
+            } catch (err) {
+                console.error('暗号化に失敗:', err);
+                showToast('暗号化に失敗したため保存を中止しました', 'error');
+                return false;
+            }
+            try {
+                localStorage.setItem('diaryEntries', toStore);
+            } catch (err) {
+                console.error('保存に失敗:', err);
+                const quota = err && (err.name === 'QuotaExceededError' || err.code === 22 || err.code === 1014);
+                showToast(quota
+                    ? '保存容量の上限に達しました。不要な日記を削除するかエクスポートしてください'
+                    : '保存に失敗しました', 'error');
+                updateStats();
+                return false;
+            }
+            updateStats();
+            return true;
+        }
+
+        function updateStats() {
+            const now = new Date();
+            const month = now.getMonth();
+            const year = now.getFullYear();
+            const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+            const totalChars = entries.reduce((sum, e) => sum + (e.content || '').length, 0);
+            const thisMonthEntries = entries.filter(e => {
+                const d = new Date(e.date + 'T00:00:00');
+                return d.getMonth() === month && d.getFullYear() === year;
+            }).length;
+            const weekEntries = entries.filter(e => new Date(e.date + 'T00:00:00') >= sevenDaysAgo).length;
+            const weeklyAvg = (weekEntries / 7).toFixed(1);
+            document.getElementById('totalEntries').textContent = entries.length;
+            document.getElementById('totalChars').textContent = totalChars.toLocaleString('ja-JP');
+            document.getElementById('thisMonthEntries').textContent = thisMonthEntries;
+            document.getElementById('weeklyAvg').textContent = weeklyAvg;
+        }
+
+        function switchView(view) {
+            currentView = view;
+            document.querySelectorAll('.view-tab').forEach(t => {
+                const on = t.dataset.view === view;
+                t.classList.toggle('active', on);
+                t.setAttribute('aria-selected', on ? 'true' : 'false');
+            });
+            const calOn = view === 'calendar';
+            document.getElementById('calendarView').classList.toggle('active', calOn);
+            document.getElementById('listView').classList.toggle('active', !calOn);
+            if (calOn) renderCalendar(); else renderEntriesList();
+        }
+
+        function renderCalendar() {
+            const title = document.getElementById('calendarTitle');
+            const daysContainer = document.getElementById('calendarDays');
+            title.textContent = `${currentYear}年 ${currentMonth + 1}月`;
+            const firstDay = new Date(currentYear, currentMonth, 1);
+            const lastDay = new Date(currentYear, currentMonth + 1, 0);
+            const prevLastDay = new Date(currentYear, currentMonth, 0);
+            const firstDayOfWeek = firstDay.getDay();
+            const daysInMonth = lastDay.getDate();
+            const prevDaysInMonth = prevLastDay.getDate();
+            const today = new Date();
+            const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+            const entriesMap = {};
+            entries.forEach(entry => { entriesMap[entry.date] = entry; });
+            let html = '';
+            for (let i = firstDayOfWeek - 1; i >= 0; i--) {
+                const day = prevDaysInMonth - i;
+                html += `<div class="calendar-day other-month" aria-hidden="true">${day}</div>`;
+            }
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dateStr = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                const hasEntry = entriesMap[dateStr];
+                const isToday = dateStr === todayStr;
+                const isSelected = dateStr === selectedDate;
+                let classes = 'calendar-day';
+                if (isToday) classes += ' today';
+                if (hasEntry) classes += ' has-entry';
+                if (isSelected) classes += ' selected';
+                const label = `${currentYear}年${currentMonth + 1}月${day}日${hasEntry ? '・日記あり' : ''}${isToday ? '・今日' : ''}`;
+                html += `<button type="button" class="${classes}" aria-label="${label}" aria-pressed="${isSelected}" onclick="selectDate('${dateStr}')">${day}</button>`;
+            }
+            const totalCells = firstDayOfWeek + daysInMonth;
+            const remainingCells = totalCells % 7 === 0 ? 0 : 7 - (totalCells % 7);
+            for (let day = 1; day <= remainingCells; day++) {
+                html += `<div class="calendar-day other-month" aria-hidden="true">${day}</div>`;
+            }
+            daysContainer.innerHTML = html;
+        }
+
+        function changeMonth(delta) {
+            currentMonth += delta;
+            if (currentMonth < 0) { currentMonth = 11; currentYear--; }
+            else if (currentMonth > 11) { currentMonth = 0; currentYear++; }
+            renderCalendar();
+        }
+
+        async function selectDate(dateStr) {
+
+            if (!(await ensureSavedOrConfirmLoseChanges('日付移動'))) return;
+            selectedDate = dateStr;
+            renderCalendar();
+            const entry = entries.find(e => e.date === dateStr);
+            if (entry) {
+                loadEntry(entry);
+            } else {
+                currentEntry = null;
+                renderEditor();
+                showToast(`${dateStr} の日記はありません`, 'warning');
+            }
+        }
+
+        function renderEntriesList() {
+            const list = document.getElementById('entriesList');
+            if (!list) return;
+            const filtered = getFilteredEntries();
+            const sorted = filtered.sort((a, b) => new Date(b.date) - new Date(a.date));
+            list.innerHTML = '';
+            sorted.forEach(entry => {
+                const li = document.createElement('li');
+                li.className = 'entry-item' + (currentEntry?.id === entry.id ? ' active' : '');
+                li.innerHTML = `<div class="entry-date">${formatDate(entry.date)}</div><div class="entry-title">${escapeHtml(entry.title)}</div>`;
+                li.onclick = () => loadEntry(entry);
+                list.appendChild(li);
+            });
+            if (sorted.length === 0) { list.innerHTML = '<li style="padding: var(--space-12); color: var(--color-text-secondary); text-align: center; font-size: 12px;">該当する日記なし</li>'; }
+            renderTagFilter();
+        }
+
+        function getFilteredEntries() {
+            return entries.filter(entry => {
+                const q = currentFilters.searchText.toLowerCase();
+                const matchesSearch = q === '' || (entry.title || '').toLowerCase().includes(q) || (entry.content || '').toLowerCase().includes(q);
+                const matchesTags = currentFilters.tags.length === 0 || currentFilters.tags.some(tag => (entry.tags || []).includes(tag));
+                return matchesSearch && matchesTags;
+            });
+        }
+
+        function filterEntries() {
+            currentFilters.searchText = document.getElementById('searchInput').value;
+            renderEntriesList();
+        }
+
+        function toggleTagFilter(tag) {
+            const idx = currentFilters.tags.indexOf(tag);
+            if (idx > -1) { currentFilters.tags.splice(idx, 1); } else { currentFilters.tags.push(tag); }
+            renderEntriesList();
+        }
+
+        function renderTagFilter() {
+            const list = document.getElementById('tagFilterList');
+            if (!list) return;
+            const allTags = [...new Set(entries.flatMap(e => e.tags || []))].sort();
+            list.innerHTML = '';
+            allTags.forEach(tag => {
+                const isActive = currentFilters.tags.includes(tag);
+                const div = document.createElement('div');
+                div.className = 'tag-filter-item' + (isActive ? ' active' : '');
+                div.innerHTML = `${escapeHtml(tag)} ${isActive ? '✕' : ''}`;
+                div.onclick = () => toggleTagFilter(tag);
+                list.appendChild(div);
+            });
+        }
+
+        function loadEntry(entry) {
+            currentEntry = entry;
+            selectedDate = entry.date;
+            renderEditor();
+            if (currentView === 'calendar') renderCalendar();
+            if (currentView === 'list') renderEntriesList();
+        }
+
+function renderEditor() {
+  const section = document.getElementById('editorSection');
+
+  if (appLocked) {
+    section.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🔒</div><p>日記は暗号化されています。続けるにはロックを解除してください。</p><button class="btn btn-primary" type="button" onclick="openUnlockModal()" style="margin-top: var(--space-12);">ロックを解除</button></div>`;
+    return;
+  }
+
+  if (!currentEntry) {
+    section.innerHTML = `<div class="empty-state"><div class="empty-state-icon">📝</div><p>カレンダーで日付を選ぶか、新規作成ボタンで始めましょう</p></div>`;
+    return;
+  }
+
+  section.innerHTML = `
+    <div class="editor-meta">
+      <div class="meta-field title-field">
+        <label for="editorTitle">タイトル</label>
+        <input type="text" id="editorTitle" placeholder="タイトル">
+      </div>
+      <div class="meta-field">
+        <label for="editorDate">日付</label>
+        <input type="date" id="editorDate">
+      </div>
+    </div>
+
+    <div class="editor-toolbar" role="toolbar" aria-label="書式設定">
+      <button type="button" onclick="rteToggleInline('STRONG')" aria-label="太字"><strong>太字</strong></button>
+      <button type="button" onclick="rteToggleInline('EM')" aria-label="斜体"><em>斜体</em></button>
+      <button type="button" onclick="rteToggleInline('S')" aria-label="取消線"><s>取消線</s></button>
+      <button type="button" onclick="rteToggleBlock('ul')" aria-label="箇条書きリスト">リスト</button>
+      <button type="button" onclick="rteToggleBlock('blockquote')" aria-label="引用">引用</button>
+      <button type="button" onclick="insertTablePrompt()" aria-label="表を挿入">表</button>
+      <button type="button" onclick="rteCreateLink()" aria-label="リンクを挿入">リンク</button>
+    </div>
+
+    <div class="editor-content" id="contentEditor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="日記の本文" data-placeholder="ここに入力..."></div>
+
+    <div class="tags-section">
+      <div class="tags-label">タグ</div>
+      <div class="tags-display" id="tagsDisplay"></div>
+      <div class="tags-input-wrapper">
+        <input type="text" class="tags-input" id="tagInput" placeholder="タグを入力してEnter" aria-label="タグを追加" onkeypress="handleTagInput(event)">
+      </div>
+    </div>
+
+    <div class="editor-footer">
+      <span class="char-count">
+        <span id="charCount">0</span> 文字 / <span id="saveStatus"></span>
+      </span>
+      <div class="footer-actions">
+        <button class="btn btn-secondary btn-sm" type="button" onclick="deleteEntry()">🗑️ 削除</button>
+        <button class="btn btn-primary btn-sm" type="button" onclick="saveEntry()">💾 保存</button>
+      </div>
+    </div>
+  `;
+
+  // タイトル・日付を編集可能に（#10：作成後も変更できる）
+  const titleInput = document.getElementById('editorTitle');
+  const dateInput = document.getElementById('editorDate');
+  titleInput.value = currentEntry.title || '';
+  dateInput.value = currentEntry.date || '';
+
+  titleInput.addEventListener('input', () => {
+    currentEntry.title = titleInput.value;
+    markDirty();
+    scheduleAutoSave();
+  });
+
+  dateInput.addEventListener('change', async () => {
+    const newDate = dateInput.value;
+    if (!newDate) { dateInput.value = currentEntry.date; return; }
+    if (newDate !== currentEntry.date) {
+      const clash = entries.find(e => e.id !== currentEntry.id && e.date === newDate);
+      if (clash) {
+        showToast('その日付には既に日記があります', 'error');
+        dateInput.value = currentEntry.date;
+        return;
+      }
+    }
+    currentEntry.date = newDate;
+    selectedDate = newDate;
+    markDirty();
+    await saveEntry(true);
+    renderCalendar();
+    renderEntriesList();
+  });
+
+  const editor = document.getElementById('contentEditor');
+
+  // 保存済み本文の描画。HTMLは必ずサニタイズ（#5）。形式は contentFormat で判定（#6）
+  const raw = currentEntry.content || '';
+  if (currentEntry.contentFormat === 'plain') {
+    editor.innerHTML = escapeHtml(raw).replace(/\n/g, '<br>');
+  } else {
+    editor.innerHTML = sanitizeHtml(raw);
+  }
+
+  editor.addEventListener('input', () => {
+    // 折りたたみ用のゼロ幅スペースは保存対象から除外
+    currentEntry.content = editor.innerHTML.replace(/\u200B/g, '');
+    currentEntry.contentFormat = 'html';
+    updateCharCount();
+    markDirty();
+    scheduleAutoSave();
+  });
+
+  renderTags();
+  updateCharCount();
+
+  // 以前は関数の外にあり初回しか実行されなかった処理を、描画ごとに実行（#1）
+  isDirty = false;
+  lastSavedAt = currentEntry.updatedAt ? new Date(currentEntry.updatedAt).toLocaleTimeString('ja-JP') : null;
+  updateSaveStatus();
+}
+
+
+     function updateCharCount() {
+  const editor = document.getElementById('contentEditor');
+  const count = editor ? (editor.innerText || '').replace(/\u200B/g, '').length : (currentEntry?.content?.length || 0);
+  const el = document.getElementById('charCount');
+  if (el) el.textContent = count;
+
+
+}
+
+        function genId() {
+            if (window.crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+            return 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+        }
+
+        async function createNewEntry() {
+            if (appLocked) { openUnlockModal(); return; }
+            const dateValue = document.getElementById('entryDate').value;
+            const titleValue = document.getElementById('entryTitle').value;
+            if (!dateValue) { showToast('日付を選択してください', 'error'); return; }
+            if (!titleValue.trim()) { showToast('タイトルを入力してください', 'error'); return; }
+            // 1日1件に統一（カレンダー/選択が1件前提のため）：#11
+            const existing = entries.find(e => e.date === dateValue);
+            if (existing) {
+                closeModal('newEntryModal');
+                loadEntry(existing);
+                renderCalendar();
+                renderEntriesList();
+                showToast('その日付には既に日記があります。開きました', 'warning');
+                return;
+            }
+            const newEntry = {
+                id: genId(),
+                date: dateValue,
+                title: titleValue,
+                content: '',
+                contentFormat: 'html',
+                tags: [],
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+            };
+            entries.push(newEntry);
+            await saveEntriesToStorage();
+            closeModal('newEntryModal');
+            loadEntry(newEntry);
+            renderCalendar();
+            renderEntriesList();
+            showToast('新規作成しました', 'success');
+            updateBackupReminder();
+        }
+
+       async function saveEntry(quiet = false) {
+  if (!currentEntry) return true;
+
+  currentEntry.updatedAt = new Date().toISOString();
+  const ok = await saveEntriesToStorage();   // localStorageへ保存（失敗時は false）
+
+  if (!ok) {
+    // 保存失敗時は「保存済み」にしない（saveEntriesToStorage がエラー表示済み）
+    updateSaveStatus();
+    return false;
+  }
+
+  renderCalendar();
+  renderEntriesList();
+
+  isDirty = false;
+  lastSavedAt = new Date(currentEntry.updatedAt).toLocaleTimeString('ja-JP');
+  updateSaveStatus();
+
+  if (!quiet) showToast('保存しました', 'success');
+
+  // 自動同期（フォルダ／Drive）
+  if (autoSyncAEnabled && syncFolderHandleA) exportToSyncFolderA('json', true);
+  if (autoSyncDriveEnabled) drivePushAll(true);
+  return true;
+}
+
+        async function deleteEntry() {
+            if (!currentEntry) return;
+            if (!confirm('この日記を削除しますか？')) return;
+            entries = entries.filter(e => e.id !== currentEntry.id);
+            currentEntry = null;
+            selectedDate = null;
+            await saveEntriesToStorage();
+            renderCalendar();
+            renderEntriesList();
+            renderEditor();
+            showToast('削除しました', 'success');
+        }
+
+        function renderTags() {
+            const tagsDisplay = document.getElementById('tagsDisplay');
+            if (!tagsDisplay) return;
+            tagsDisplay.innerHTML = '';
+            if (!currentEntry) return;
+            const tags = currentEntry.tags || [];
+            if (tags.length === 0) { tagsDisplay.innerHTML = '<div style="font-size: 12px; color: var(--color-text-secondary); font-style: italic;">タグなし</div>'; return; }
+            tags.forEach((tag, index) => {
+                const tagEl = document.createElement('div');
+                tagEl.className = 'tag-pill';
+                tagEl.innerHTML = `${escapeHtml(tag)} <span class="tag-remove" onclick="removeTag(${index})">✕</span>`;
+                tagsDisplay.appendChild(tagEl);
+            });
+        }
+
+        async function handleTagInput(event) {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            const input = document.getElementById('tagInput');
+            const tag = input.value.trim();
+            if (!tag) return;
+            if (!currentEntry) return;
+            if (!currentEntry.tags) currentEntry.tags = [];
+            if (!currentEntry.tags.includes(tag)) {
+                currentEntry.tags.push(tag);
+                input.value = '';
+                renderTags();
+                await saveEntry(true); // updatedAt更新＋自動同期も走らせる（#3）
+                showToast(`タグ「${tag}」を追加しました`, 'success');
+            } else {
+                showToast('このタグは既に追加されています', 'warning');
+            }
+        }
+
+        async function removeTag(index) {
+            if (!currentEntry) return;
+            const tag = currentEntry.tags[index];
+            currentEntry.tags.splice(index, 1);
+            renderTags();
+            await saveEntry(true); // updatedAt更新＋自動同期（#3）
+            showToast(`タグ「${tag}」を削除しました`, 'success');
+        }
+
+        // プログラムによる本文変更を一元処理：未保存マーク＋自動保存も必ず行う（#2）
+        function syncEditorContent() {
+            const editor = document.getElementById('contentEditor');
+            if (!editor || !currentEntry) return;
+            currentEntry.content = editor.innerHTML.replace(/\u200B/g, '');
+            currentEntry.contentFormat = 'html';
+            updateCharCount();
+            markDirty();
+            scheduleAutoSave();
+        }
+
+/* === Rich text engine (Selection/Range based; replaces execCommand) ===
+   Core helpers are unit-tested; see engine.test.js in the project. */
+function rteEditor() { return document.getElementById('contentEditor'); }
+
+function rteGetRange() {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return null;
+  const range = sel.getRangeAt(0);
+  const editor = rteEditor();
+  if (!editor || !editor.contains(range.commonAncestorContainer)) return null;
+  return range;
+}
+
+function rteSetSelection(range) {
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+/* ---- pure helpers (testable) ---- */
+
+function rteIntersects(range, node) {
+  const nr = node.ownerDocument.createRange();
+  nr.selectNodeContents(node);
+  // positive overlap: range.start < node.end AND range.end > node.start
+  const startBeforeEnd = range.compareBoundaryPoints(Range.END_TO_START, nr) < 0;
+  const endAfterStart = range.compareBoundaryPoints(Range.START_TO_END, nr) > 0;
+  return startBeforeEnd && endAfterStart;
+}
+
+// Align range boundaries to text-node edges by splitting boundary text nodes.
+function rteNormalizeBoundaries(range) {
+  const T = Node.TEXT_NODE;
+  const sc = range.startContainer, so = range.startOffset;
+  const ec = range.endContainer, eo = range.endOffset;
+  if (sc === ec && sc.nodeType === T) {
+    // single text node: isolate the [so, eo) slice into its own node
+    let mid = sc;
+    if (so > 0) mid = sc.splitText(so);          // mid = [so, end)
+    const midLen = eo - so;
+    if (midLen < mid.length) mid.splitText(midLen); // mid = [so, eo)
+    range.setStart(mid, 0);
+    range.setEnd(mid, mid.length);
+    return;
+  }
+  if (ec.nodeType === T && eo > 0 && eo < ec.length) {
+    ec.splitText(eo);
+    range.setEnd(ec, ec.length);
+  }
+  if (sc.nodeType === T && so > 0 && so < sc.length) {
+    const after = sc.splitText(so);
+    range.setStart(after, 0);
+  }
+}
+
+function rteTextNodes(editor, range) {
+  const out = [];
+  const doc = editor.ownerDocument;
+  const tw = doc.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null);
+  let n;
+  while ((n = tw.nextNode())) {
+    if (!n.nodeValue || !n.nodeValue.length) continue;
+    if (rteIntersects(range, n)) out.push(n);
+  }
+  return out;
+}
+
+function rteClosest(editor, node, tagName) {
+  let el = (node && node.nodeType === Node.TEXT_NODE) ? node.parentNode : node;
+  while (el && el !== editor) {
+    if (el.tagName === tagName) return el;
+    el = el.parentNode;
+  }
+  return null;
+}
+
+function rteClosestBlock(editor, node) {
+  let el = (node && node.nodeType === Node.TEXT_NODE) ? node.parentNode : node;
+  const B = /^(DIV|P|LI|BLOCKQUOTE|H[1-6]|PRE)$/;
+  while (el && el !== editor) {
+    if (el.nodeType === 1 && B.test(el.tagName)) return el;
+    el = el.parentNode;
+  }
+  return null;
+}
+
+const rteInlineAncestor = rteClosest;
+
+function rteWrap(editor, node, tagName) {
+  const w = editor.ownerDocument.createElement(tagName);
+  node.parentNode.insertBefore(w, node);
+  w.appendChild(node);
+  return w;
+}
+
+// Pull `node`'s subtree out of an ancestor <tagName>, preserving siblings
+// (and inner formatting) on either side inside cloned wrappers.
+function rteSplitOutOf(wrapper, node) {
+  const doc = wrapper.ownerDocument;
+  const parent = wrapper.parentNode;
+  let pathChild = node;
+  while (pathChild.parentNode !== wrapper) pathChild = pathChild.parentNode;
+
+  const out = doc.createDocumentFragment();
+  if (pathChild.previousSibling) {
+    const lw = doc.createElement(wrapper.tagName);
+    while (wrapper.firstChild && wrapper.firstChild !== pathChild) lw.appendChild(wrapper.firstChild);
+    out.appendChild(lw);
+  }
+  out.appendChild(pathChild); // move the node's subtree out as-is
+  if (wrapper.firstChild) {    // whatever remains is after pathChild
+    const rw = doc.createElement(wrapper.tagName);
+    while (wrapper.firstChild) rw.appendChild(wrapper.firstChild);
+    out.appendChild(rw);
+  }
+  parent.replaceChild(out, wrapper);
+}
+
+function rteUnwrapNode(editor, node, tagName) {
+  let wrapper = rteInlineAncestor(editor, node, tagName);
+  let guard = 0;
+  while (wrapper && guard++ < 50) {
+    rteSplitOutOf(wrapper, node);
+    wrapper = rteInlineAncestor(editor, node, tagName);
+  }
+}
+
+// Toggle an inline tag over an explicit range (mutates DOM; no selection change).
+function rteApplyInlineToRange(editor, range, tagName) {
+  rteNormalizeBoundaries(range);
+  const nodes = rteTextNodes(editor, range);
+  if (!nodes.length) return;
+  const allFormatted = nodes.every(n => rteInlineAncestor(editor, n, tagName));
+  if (allFormatted) {
+    nodes.forEach(n => rteUnwrapNode(editor, n, tagName));
+  } else {
+    nodes.forEach(n => { if (!rteInlineAncestor(editor, n, tagName)) rteWrap(editor, n, tagName); });
+  }
+}
+
+// Character offset within editor of a boundary point (container, offset).
+function rteOffset(editor, container, offset) {
+  const r = editor.ownerDocument.createRange();
+  r.setStart(editor, 0);
+  r.setEnd(container, offset);
+  return r.toString().length;
+}
+
+// Map a character offset back to a {node, offset} text position.
+function rteFindOffset(editor, target) {
+  let p = 0;
+  const doc = editor.ownerDocument;
+  const w = doc.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null);
+  let node, last = null;
+  while ((node = w.nextNode())) {
+    const l = node.nodeValue.length;
+    last = node;
+    if (p + l >= target) return { node, offset: target - p };
+    p += l;
+  }
+  if (last) return { node: last, offset: last.nodeValue.length };
+  return { node: editor, offset: 0 };
+}
+
+function rteSetSelectionByOffsets(editor, start, end) {
+  const doc = editor.ownerDocument;
+  const s = rteFindOffset(editor, start);
+  const e = rteFindOffset(editor, end);
+  const r = doc.createRange();
+  try {
+    r.setStart(s.node, s.offset);
+    r.setEnd(e.node, e.offset);
+  } catch (_) { return; }
+  rteSetSelection(r);
+}
+
+// Tidy the tree: drop empty inline elements, merge adjacent same-tag inlines.
+function rteNormalize(editor) {
+  const inlineSet = new Set(['STRONG', 'EM', 'S', 'B', 'I', 'U']);
+  let changed = true, guard = 0;
+  while (changed && guard++ < 100) {
+    changed = false;
+    const els = Array.from(editor.querySelectorAll('strong,em,s,b,i,u,a'));
+    for (const el of els) {
+      if (!el.textContent) { el.remove(); changed = true; continue; }
+      const next = el.nextSibling;
+      if (next && next.nodeType === 1 && next.tagName === el.tagName && inlineSet.has(el.tagName)) {
+        while (next.firstChild) el.appendChild(next.firstChild);
+        next.remove();
+        changed = true;
+      }
+    }
+  }
+  editor.normalize();
+}
+
+// Split a fragment's children into "lines" (by <br> and block elements).
+function rteSplitFragmentIntoLines(frag, doc) {
+  const groups = [];
+  let cur = [];
+  Array.from(frag.childNodes).forEach(node => {
+    if (node.nodeType === 1 && node.tagName === 'BR') {
+      groups.push(cur); cur = [];
+    } else if (node.nodeType === 1 && /^(DIV|P)$/.test(node.tagName)) {
+      if (cur.length) { groups.push(cur); cur = []; }
+      groups.push(Array.from(node.childNodes));
+    } else {
+      cur.push(node);
+    }
+  });
+  if (cur.length) groups.push(cur);
+  return groups.filter(g => g.length > 0);
+}
+
+// Wrap an explicit range's contents in a block structure (ul/li or blockquote).
+function rteWrapBlockRange(editor, range, kind) {
+  const doc = editor.ownerDocument;
+  const frag = range.extractContents();
+  let wrapper;
+  if (kind === 'ul') {
+    wrapper = doc.createElement('ul');
+    const groups = rteSplitFragmentIntoLines(frag, doc);
+    if (!groups.length) {
+      wrapper.appendChild(doc.createElement('li'));
+    } else {
+      groups.forEach(group => {
+        const li = doc.createElement('li');
+        group.forEach(nd => li.appendChild(nd));
+        wrapper.appendChild(li);
+      });
+    }
+  } else {
+    wrapper = doc.createElement('blockquote');
+    wrapper.appendChild(frag);
+  }
+  range.insertNode(wrapper);
+  return wrapper;
+}
+
+function rteUnwrapBlock(editor, existing, kind) {
+  const doc = editor.ownerDocument;
+  if (kind === 'ul') {
+    const list = (existing.closest ? existing.closest('ul,ol') : null) || existing.parentNode;
+    if (!list) return;
+    const frag = doc.createDocumentFragment();
+    Array.from(list.children).forEach(li => {
+      const div = doc.createElement('div');
+      while (li.firstChild) div.appendChild(li.firstChild);
+      frag.appendChild(div);
+    });
+    list.parentNode.replaceChild(frag, list);
+  } else {
+    const bq = existing;
+    const frag = doc.createDocumentFragment();
+    while (bq.firstChild) frag.appendChild(bq.firstChild);
+    bq.parentNode.replaceChild(frag, bq);
+  }
+}
+
+/* ---- UI wrappers (browser-only; not unit-tested) ---- */
+
+function rteInsertEmptyInline(editor, tagName) {
+  const range = rteGetRange();
+  if (!range) return;
+  const el = editor.ownerDocument.createElement(tagName);
+  el.appendChild(editor.ownerDocument.createTextNode('\u200B'));
+  range.deleteContents();
+  range.insertNode(el);
+  const r = editor.ownerDocument.createRange();
+  r.setStart(el.firstChild, 1);
+  r.collapse(true);
+  rteSetSelection(r);
+}
+
+function rteToggleInline(tagName) {
+  const editor = rteEditor();
+  if (!editor) return;
+  editor.focus();
+  const range = rteGetRange();
+  if (!range) return;
+  if (range.collapsed) { rteInsertEmptyInline(editor, tagName); syncEditorContent(); return; }
+  const startOff = rteOffset(editor, range.startContainer, range.startOffset);
+  const endOff = rteOffset(editor, range.endContainer, range.endOffset);
+  rteApplyInlineToRange(editor, range, tagName);
+  rteNormalize(editor);
+  rteSetSelectionByOffsets(editor, startOff, endOff);
+  syncEditorContent();
+}
+
+function rteToggleBlock(kind) {
+  const editor = rteEditor();
+  if (!editor) return;
+  editor.focus();
+  const range = rteGetRange();
+  if (!range) return;
+
+  const probe = kind === 'ul' ? 'LI' : 'BLOCKQUOTE';
+  const existing = rteClosest(editor, range.startContainer, probe);
+  if (existing) {
+    rteUnwrapBlock(editor, existing, kind);
+    rteNormalize(editor);
+    syncEditorContent();
+    return;
+  }
+
+  let workRange = range;
+  let expanded = false;
+  if (range.collapsed) {
+    const block = rteClosestBlock(editor, range.startContainer) || editor;
+    workRange = editor.ownerDocument.createRange();
+    workRange.selectNodeContents(block);
+    expanded = true;
+  }
+  const startOff = rteOffset(editor, workRange.startContainer, workRange.startOffset);
+  const endOff = rteOffset(editor, workRange.endContainer, workRange.endOffset);
+  rteWrapBlockRange(editor, workRange, kind);
+  rteNormalize(editor);
+  if (!expanded) rteSetSelectionByOffsets(editor, startOff, endOff);
+  syncEditorContent();
+}
+
+function rteCreateLink() {
+  const editor = rteEditor();
+  if (!editor) return;
+  editor.focus();
+  const range = rteGetRange();
+  if (!range) return;
+  const url = prompt('リンク先URLを入力', 'https://');
+  if (!url) return;
+  const trimmed = url.trim();
+  if (!/^(https?:|mailto:|tel:)/i.test(trimmed)) {
+    showToast('http(s):, mailto:, tel: のみ使用できます', 'error');
+    return;
+  }
+  const a = editor.ownerDocument.createElement('a');
+  a.setAttribute('href', trimmed);
+  a.setAttribute('target', '_blank');
+  a.setAttribute('rel', 'noopener noreferrer');
+  if (range.collapsed) {
+    a.textContent = trimmed;
+    range.insertNode(a);
+  } else {
+    try {
+      a.appendChild(range.extractContents());
+      range.insertNode(a);
+    } catch (e) { console.error(e); return; }
+  }
+  rteNormalize(editor);
+  syncEditorContent();
+}
+
+
+function insertHtmlAtCursor(html) {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return;
+  const range = sel.getRangeAt(0);
+  range.deleteContents();
+
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  const node = tpl.content;
+
+  range.insertNode(node);
+  sel.collapseToEnd();
+}
+
+function insertTable(rows, cols) {
+  const editor = document.getElementById('contentEditor');
+  if (!editor) return;
+  editor.focus();
+
+  let html = '<table><tbody>';
+  for (let r = 0; r < rows; r++) {
+    html += '<tr>';
+    for (let c = 0; c < cols; c++) html += '<td>&nbsp;</td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table><br>';
+
+  insertHtmlAtCursor(html);
+  syncEditorContent(); // insertNode は input を発火しないので明示的に反映（#2）
+}
+
+function insertTablePrompt() {
+  const r = parseInt(prompt('行数', '2'), 10);
+  const c = parseInt(prompt('列数', '2'), 10);
+  if (!r || !c || r < 1 || c < 1 || r > 20 || c > 20) return;
+  insertTable(r, c);
+}
+
+
+        function switchExportTab(tab) {
+            const tabButtons = document.querySelectorAll('.export-tab');
+            const tabContents = document.querySelectorAll('.export-tab-content');
+            tabButtons.forEach(b => b.classList.remove('active'));
+            tabContents.forEach(c => c.style.display = 'none');
+            const map = { local: 'localExportTab', drive: 'driveExportTab', import: 'importExportTab' };
+            const id = map[tab] || map.local;
+            const idx = (tab === 'drive') ? 1 : (tab === 'import') ? 2 : 0;
+            tabButtons[idx]?.classList.add('active');
+            const el = document.getElementById(id);
+            if (el) el.style.display = 'block';
+        }
+
+        function switchDriveMethod(method) {
+            const methodA = document.getElementById('driveMethodA');
+            const methodB = document.getElementById('driveMethodB');
+            const driveTab = document.getElementById('driveExportTab');
+            const buttons = driveTab ? driveTab.querySelectorAll('.form-group > div > button') : [];
+            
+            if (methodA) methodA.style.display = (method === 'sync') ? 'block' : 'none';
+            if (methodB) methodB.style.display = (method === 'api') ? 'block' : 'none';
+            
+            // ボタンのアクティブスタイルを切り替え
+            if (buttons.length >= 2) {
+                if (method === 'sync') {
+                    buttons[0].style.backgroundColor = 'var(--color-primary)';
+                    buttons[0].style.color = 'white';
+                    buttons[1].style.backgroundColor = 'rgba(94, 82, 64, 0.12)';
+                    buttons[1].style.color = 'var(--color-text)';
+                } else {
+                    buttons[0].style.backgroundColor = 'rgba(94, 82, 64, 0.12)';
+                    buttons[0].style.color = 'var(--color-text)';
+                    buttons[1].style.backgroundColor = 'var(--color-primary)';
+                    buttons[1].style.color = 'white';
+                }
+            }
+        }
+
+        async function pickSyncFolderA() {
+            try {
+                syncFolderHandleA = await window.showDirectoryPicker({ id: 'diary-sync-folder', mode: 'readwrite' });
+                await saveHandle('syncHandle', syncFolderHandleA);
+                localStorage.setItem('diarySyncFolderName', syncFolderHandleA.name);
+                updateSyncUI(true);
+                showToast(`同期フォルダ: ${syncFolderHandleA.name}`, 'success');
+            } catch (err) {}
+        }
+
+        async function checkSyncHandleA() {
+            const handle = await getHandle('syncHandle');
+            if (!handle) return;
+            syncFolderHandleA = handle;
+            const folderName = localStorage.getItem('diarySyncFolderName') || handle.name;
+            if (document.getElementById('syncFolderPath')) { document.getElementById('syncFolderPath').value = folderName; }
+            const perm = await syncFolderHandleA.queryPermission({ mode: 'readwrite' });
+            if (perm === 'granted') { updateSyncUI(true); } else {
+                const reconnectBtn = document.getElementById('reconnectBtn');
+                if (reconnectBtn) reconnectBtn.style.display = 'block';
+            }
+        }
+
+        async function reconnectSyncFolderA() {
+            if (!syncFolderHandleA) return;
+            const perm = await syncFolderHandleA.requestPermission({ mode: 'readwrite' });
+            if (perm === 'granted') {
+                updateSyncUI(true);
+                showToast('再接続しました', 'success');
+                if (autoSyncAEnabled) exportToSyncFolderA('json', true);
+            } else {
+                showToast('権限が得られませんでした', 'error');
+            }
+        }
+
+        function updateSyncUI(connected) {
+            const reconnectBtn = document.getElementById('reconnectBtn');
+            const syncStatus = document.getElementById('syncStatus');
+            if (reconnectBtn) reconnectBtn.style.display = connected ? 'none' : 'block';
+            if (syncStatus) {
+                syncStatus.style.display = connected ? 'inline-flex' : 'none';
+                if (connected) syncStatus.classList.add('active');
+                else syncStatus.classList.remove('active');
+            }
+        }
+
+        function toggleAutoSyncA() {
+            autoSyncAEnabled = document.getElementById('autoSyncA').checked;
+            localStorage.setItem('autoSyncA', autoSyncAEnabled);
+            showToast(`自動書き出し: ${autoSyncAEnabled ? 'ON' : 'OFF'}`, 'success');
+        }
+
+        async function exportToSyncFolderA(format, quiet = false) {
+            if (!syncFolderHandleA) { if(!quiet) showToast('フォルダを選択してください', 'error'); return; }
+            if ((await syncFolderHandleA.queryPermission({mode: 'readwrite'})) !== 'granted') {
+                if (!quiet) showToast('再接続ボタンを押してください', 'warning');
+                const reconnectBtn = document.getElementById('reconnectBtn');
+                if (reconnectBtn) reconnectBtn.style.display = 'block';
+                return;
+            }
+            // 同期は固定ファイル名に上書き（毎回新規ファイルを作らない）：#8
+            // 暗号化が有効なら同期データも暗号化（平文での流出を防ぐ）
+            let filename, text;
+            if (format === 'json') {
+                filename = 'diary.json';
+                text = JSON.stringify(await buildSyncObject(), null, 2);
+            } else {
+                filename = 'diary.md';
+                text = buildExportPayload('md').text;
+            }
+            try {
+                const fileHandle = await syncFolderHandleA.getFileHandle(filename, { create: true });
+                const writable = await fileHandle.createWritable();
+                await writable.write(text);
+                await writable.close();
+                if (format === 'json') markBackupDone();
+                if(!quiet) showToast(`保存完了: ${filename}`, 'success');
+                const badge = document.getElementById('syncStatus');
+                if (badge) { badge.style.opacity = '0.5'; setTimeout(() => badge.style.opacity = '1', 200); }
+            } catch (err) {
+                if(!quiet) showToast('保存失敗', 'error');
+                const reconnectBtn = document.getElementById('reconnectBtn');
+                if (reconnectBtn) reconnectBtn.style.display = 'block';
+                console.error(err);
+            }
+        }
+
+        function buildExportPayload(format) {
+            const dateStr = new Date().toISOString().slice(0,19).replace(/[:T]/g, '-');
+            const entriesData = JSON.parse(JSON.stringify(entries));
+            if (format === 'json') {
+                return {
+                    filename: `diary_backup_${dateStr}.json`,
+                    mime: 'application/json',
+                    text: JSON.stringify({ exportDate: new Date().toISOString(), entries: entriesData }, null, 2),
+                };
+            }
+            const sorted = entriesData.sort((a, b) => new Date(b.date) - new Date(a.date));
+            let md = '# 日記帳エクスポート\n\n';
+            md += `生成日時: ${new Date().toLocaleString('ja-JP')}\n\n`;
+            sorted.forEach(entry => {
+                md += `## ${formatDate(entry.date)} - ${entry.title}\n\n`;
+                md += `${entry.content || ''}\n\n`;
+                if (entry.tags && entry.tags.length > 0) { md += `**タグ:** ${entry.tags.map(t => `#${t}`).join(' ')}\n\n`; }
+                md += `---\n\n`;
+            });
+            return { filename: `diary_backup_${dateStr}.md`, mime: 'text/markdown', text: md };
+        }
+
+        // 同期/アップロード用のオブジェクト。暗号化が有効なら暗号化ブロブを返す。
+        async function buildSyncObject() {
+            const entriesData = JSON.parse(JSON.stringify(entries));
+            const plainObj = { exportDate: new Date().toISOString(), entries: entriesData };
+            if (encEnabled && cryptoKey && encMeta) {
+                return await ENC.encryptString(JSON.stringify(plainObj), cryptoKey, ENC.unb64(encMeta.salt), encMeta.iter);
+            }
+            return plainObj;
+        }
+
+        function exportJSON() { const p = buildExportPayload('json'); downloadFile(p.text, p.filename, p.mime); markBackupDone(); }
+        function exportMarkdown() { const p = buildExportPayload('md'); downloadFile(p.text, p.filename, p.mime); }
+        function downloadFile(content, filename, mimeType) {
+            const blob = new Blob([content], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showToast(`${filename} をダウンロードしました`, 'success');
+            closeModal('exportModal');
+        }
+
+        function exportAllData() { exportJSON(); }
+
+        // ---- Phase2: mobile-friendly backup share + reminder ----
+        // 端末が壊れてもデータを守るため、端末外へワンタップで送れる共有バックアップ。
+        async function shareBackup() {
+            if (appLocked) { openUnlockModal(); return; }
+            let text, filename;
+            try {
+                const obj = await buildSyncObject(); // 暗号化が有効なら暗号化ブロブ
+                text = JSON.stringify(obj, null, 2);
+                filename = `diary_backup_${new Date().toISOString().slice(0, 10)}.json`;
+            } catch (err) {
+                console.error(err);
+                showToast('バックアップの作成に失敗しました', 'error');
+                return;
+            }
+            // 1) ファイル共有（共有シート: メール/Drive/メモ等）を試す
+            try {
+                if (navigator.canShare) {
+                    const file = new File([text], filename, { type: 'application/json' });
+                    if (navigator.canShare({ files: [file] })) {
+                        await navigator.share({ files: [file], title: '日記帳バックアップ' });
+                        markBackupDone();
+                        showToast('バックアップを共有しました', 'success');
+                        return;
+                    }
+                }
+            } catch (err) {
+                if (err && err.name === 'AbortError') return; // ユーザーがキャンセル
+                console.error('共有に失敗、ダウンロードに切替:', err);
+            }
+            // 2) フォールバック: 通常のダウンロード
+            downloadFile(text, filename, 'application/json');
+            markBackupDone();
+        }
+
+        function markBackupDone() {
+            try { localStorage.setItem('diaryLastBackup', new Date().toISOString()); } catch (_) {}
+            updateBackupReminder();
+        }
+
+        function dismissBackupReminder() {
+            backupReminderDismissed = true;
+            const b = document.getElementById('backupReminder');
+            if (b) b.style.display = 'none';
+        }
+
+        function updateBackupReminder() {
+            const banner = document.getElementById('backupReminder');
+            if (!banner) return;
+            if (backupReminderDismissed || appLocked || entries.length === 0) { banner.style.display = 'none'; return; }
+            const last = localStorage.getItem('diaryLastBackup');
+            const DAYS = 7;
+            let msg = null;
+            if (!last) {
+                msg = 'まだバックアップしていません。端末が壊れると日記が失われます。';
+            } else {
+                const days = Math.floor((Date.now() - new Date(last).getTime()) / 86400000);
+                if (days >= DAYS) msg = `最後のバックアップから${days}日経過しています。`;
+            }
+            if (!msg) { banner.style.display = 'none'; return; }
+            const txt = document.getElementById('backupReminderText');
+            if (txt) txt.textContent = msg + ' バックアップをおすすめします。';
+            banner.style.display = 'flex';
+        }
+        function importDataFrom(fileInputId, closeModalId) {
+            const fileInput = document.getElementById(fileInputId);
+            const file = fileInput && fileInput.files ? fileInput.files[0] : null;
+            if (!file) { showToast('インポートするJSONを選択してください', 'error'); return; }
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+                try {
+                    let data = JSON.parse(e.target.result);
+                    if (isEncBlob(data)) {
+                        const json = await decryptIncomingBlob(data); // 必要ならパスフレーズを要求
+                        data = JSON.parse(json);
+                    }
+                    if (!data || !data.entries || !Array.isArray(data.entries)) { showToast('不正なJSON形式です（entriesがありません）', 'error'); return; }
+                    const existingIds = new Set(entries.map(e => e.id));
+                    let imported = 0;
+                    data.entries.forEach(entry => {
+                        if (!entry || typeof entry !== 'object' || !entry.id) return;
+                        if (!existingIds.has(entry.id)) {
+                            entries.push(normalizeImportedEntry(entry));
+                            existingIds.add(entry.id);
+                            imported++;
+                        }
+                    });
+                    await saveEntriesToStorage();
+                    renderCalendar();
+                    renderEntriesList();
+                    renderEditor();
+                    showToast(`インポート完了: ${imported}件`, 'success');
+                    if (closeModalId) closeModal(closeModalId);
+                } catch (err) {
+                    console.error(err);
+                    showToast(err && err.message === 'cancelled' ? 'ロック解除をキャンセルしました' : 'インポートに失敗しました', err && err.message === 'cancelled' ? 'warning' : 'error');
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        function formatDate(dateStr) {
+            const date = new Date(dateStr + 'T00:00:00');
+            return date.toLocaleDateString('ja-JP', { year: 'numeric', month: 'short', day: 'numeric' });
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // 取り込んだHTMLを安全化（許可属性のみ・危険タグ/イベント/スキームを除去）：#5
+        const SANITIZE_ALLOWED_ATTR = new Set(['href', 'target', 'rel']);
+        const SANITIZE_DANGEROUS_TAGS = 'script,style,iframe,object,embed,link,meta,base,form,input,textarea,button,select,option,svg,math,noscript,title,frame,frameset,applet,audio,video,source,track,img,picture,canvas';
+        function sanitizeHtml(dirty) {
+            // <template> はパース時にスクリプト実行・リソース読込をしない安全なコンテナ
+            const tpl = document.createElement('template');
+            tpl.innerHTML = String(dirty == null ? '' : dirty);
+            const root = tpl.content;
+            root.querySelectorAll(SANITIZE_DANGEROUS_TAGS).forEach(el => el.remove());
+            root.querySelectorAll('*').forEach(el => {
+                Array.from(el.attributes).forEach(attr => {
+                    const name = attr.name.toLowerCase();
+                    if (name.startsWith('on') || !SANITIZE_ALLOWED_ATTR.has(name)) {
+                        el.removeAttribute(attr.name);
+                        return;
+                    }
+                    if (name === 'href') {
+                        const ok = /^\s*(https?:|mailto:|tel:|#)/i.test(attr.value || '');
+                        if (!ok) el.removeAttribute(attr.name);
+                    }
+                });
+                if (el.tagName === 'A') {
+                    el.setAttribute('target', '_blank');
+                    el.setAttribute('rel', 'noopener noreferrer');
+                }
+            });
+            const out = document.createElement('div');
+            out.appendChild(root.cloneNode(true));
+            return out.innerHTML;
+        }
+
+        // インポート/同期で外部から来たエントリを安全化・正規化（#5）
+        function normalizeImportedEntry(entry) {
+            const fmt = entry && entry.contentFormat === 'plain' ? 'plain' : 'html';
+            return {
+                id: String(entry.id),
+                date: String(entry.date || ''),
+                title: typeof entry.title === 'string' ? entry.title : '',
+                content: fmt === 'plain' ? String(entry.content || '') : sanitizeHtml(entry.content || ''),
+                contentFormat: fmt,
+                tags: Array.isArray(entry.tags) ? entry.tags.filter(t => typeof t === 'string') : [],
+                createdAt: entry.createdAt || new Date().toISOString(),
+                updatedAt: entry.updatedAt || entry.createdAt || new Date().toISOString()
+            };
+        }
+
+        function openNewEntryModal() {
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('entryDate').value = today;
+            document.getElementById('entryTitle').value = '';
+            openModal('newEntryModal');
+        }
+
+        let lastFocusedBeforeModal = null;
+
+        function getFocusable(container) {
+            return Array.from(container.querySelectorAll(
+                'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+            )).filter(el => el.offsetParent !== null);
+        }
+
+        function openModal(modalId) {
+            const modal = document.getElementById(modalId);
+            if (!modal) return;
+            lastFocusedBeforeModal = document.activeElement;
+            modal.classList.add('active');
+            const content = modal.querySelector('.modal-content') || modal;
+            const focusables = getFocusable(content);
+            if (focusables[0]) focusables[0].focus({ preventScroll: true });
+        }
+
+        function closeModal(modalId) {
+            const modal = document.getElementById(modalId);
+            if (!modal) return;
+            modal.classList.remove('active');
+            if (lastFocusedBeforeModal && typeof lastFocusedBeforeModal.focus === 'function') {
+                lastFocusedBeforeModal.focus({ preventScroll: true });
+            }
+            lastFocusedBeforeModal = null;
+        }
+
+        function openSecurityModal() { updateEncUI(); openModal('securityModal'); }
+        function openExportModal() { openModal('exportModal'); }
+
+        // ---- Phase2: encryption UI handlers ----
+        function updateEncUI() {
+            const statusText = document.getElementById('encStatusText');
+            const setBlock = document.getElementById('encSetBlock');
+            const disableBtn = document.getElementById('encDisableBtn');
+            const applyBtn = document.getElementById('encApplyBtn');
+            if (!statusText) return;
+            if (appLocked) {
+                statusText.textContent = '🔒 暗号化：有効（ロック中）。解除すると編集・設定変更ができます。';
+                if (setBlock) setBlock.style.display = 'none';
+                if (disableBtn) disableBtn.style.display = 'none';
+            } else if (encEnabled) {
+                statusText.textContent = '🔓 暗号化：有効（解除済み）。新しいパスフレーズを入力すると変更できます。';
+                if (setBlock) setBlock.style.display = 'block';
+                if (applyBtn) applyBtn.textContent = 'パスフレーズを変更';
+                if (disableBtn) disableBtn.style.display = 'block';
+            } else {
+                statusText.textContent = '暗号化は無効です（localStorage に平文で保存中）。パスフレーズを設定すると保存時に暗号化します。';
+                if (setBlock) setBlock.style.display = 'block';
+                if (applyBtn) applyBtn.textContent = '暗号化を有効にする';
+                if (disableBtn) disableBtn.style.display = 'none';
+            }
+        }
+
+        function openUnlockModal() {
+            const input = document.getElementById('unlockPass');
+            if (input) input.value = '';
+            openModal('unlockModal');
+        }
+
+        async function submitUnlock() {
+            const input = document.getElementById('unlockPass');
+            const pass = input ? input.value : '';
+            if (!pass) { showToast('パスフレーズを入力してください', 'error'); return; }
+            if (!pendingUnlockBlob) { closeModal('unlockModal'); return; }
+            try {
+                const blob = pendingUnlockBlob;
+                const key = await ENC.deriveKey(pass, ENC.unb64(blob.salt), blob.iter || PBKDF2_ITER);
+                const json = await ENC.decryptToString(blob, key); // 誤パスフレーズで例外
+                const arr = JSON.parse(json);
+                entries = Array.isArray(arr) ? arr : [];
+                cryptoKey = key;
+                encEnabled = true;
+                encMeta = { salt: blob.salt, iter: blob.iter || PBKDF2_ITER };
+                appLocked = false;
+                pendingUnlockBlob = null;
+                if (migrateContentFormat()) { await saveEntriesToStorage(); }
+                closeModal('unlockModal');
+                updateEncUI();
+                updateStats();
+                renderCalendar();
+                renderEntriesList();
+                renderEditor();
+                showToast('ロックを解除しました', 'success');
+            } catch (err) {
+                console.error(err);
+                showToast('パスフレーズが違います', 'error');
+            }
+        }
+
+        // 暗号化の有効化／パスフレーズ変更（どちらも現在の entries を新しい鍵で暗号化）
+        async function applyPassphrase() {
+            if (appLocked) { showToast('先にロックを解除してください', 'error'); return; }
+            const p1 = (document.getElementById('encNewPass') || {}).value || '';
+            const p2 = (document.getElementById('encNewPass2') || {}).value || '';
+            if (p1.length < 8) { showToast('パスフレーズは8文字以上にしてください', 'error'); return; }
+            if (p1 !== p2) { showToast('確認用パスフレーズが一致しません', 'error'); return; }
+            const wasEnabled = encEnabled, prevKey = cryptoKey, prevMeta = encMeta;
+            try {
+                const salt = crypto.getRandomValues(new Uint8Array(16));
+                const key = await ENC.deriveKey(p1, salt, PBKDF2_ITER);
+                cryptoKey = key;
+                encEnabled = true;
+                encMeta = { salt: ENC.b64(salt), iter: PBKDF2_ITER };
+                const ok = await saveEntriesToStorage();
+                if (!ok) { cryptoKey = prevKey; encEnabled = wasEnabled; encMeta = prevMeta; return; }
+                const f1 = document.getElementById('encNewPass'); if (f1) f1.value = '';
+                const f2 = document.getElementById('encNewPass2'); if (f2) f2.value = '';
+                updateEncUI();
+                showToast(wasEnabled ? 'パスフレーズを変更しました' : '暗号化を有効にしました', 'success');
+            } catch (err) {
+                cryptoKey = prevKey; encEnabled = wasEnabled; encMeta = prevMeta;
+                console.error(err);
+                showToast('暗号化の設定に失敗しました', 'error');
+            }
+        }
+
+        async function disableEncryption() {
+            if (!encEnabled) { showToast('暗号化は有効になっていません', 'warning'); return; }
+            if (!cryptoKey) { showToast('先にロックを解除してください', 'error'); return; }
+            if (!confirm('暗号化を解除して平文保存に戻しますか？')) return;
+            const prevKey = cryptoKey, prevMeta = encMeta;
+            encEnabled = false; cryptoKey = null; encMeta = null;
+            const ok = await saveEntriesToStorage();
+            if (!ok) { encEnabled = true; cryptoKey = prevKey; encMeta = prevMeta; showToast('解除に失敗しました', 'error'); return; }
+            updateEncUI();
+            showToast('暗号化を解除しました（平文保存）', 'success');
+        }
+
+        function showToast(message, type = 'success') {
+            const region = document.getElementById('toastRegion') || document.body;
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            // エラーは即時読み上げ、それ以外は穏やかに（a11y）
+            toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+            region.appendChild(toast);
+            setTimeout(() => { toast.style.animation = 'slideIn 0.3s ease-out reverse'; }, 2500);
+            setTimeout(() => toast.remove(), 2800);
+        }
+
+        // オーバーレイのクリックで閉じる（フォーカスも復帰させる）
+        document.addEventListener('click', (e) => {
+            if (e.target.classList.contains('modal') && e.target.id) { closeModal(e.target.id); }
+        });
+
+        // Escで閉じる＋Tabでモーダル内にフォーカスを閉じ込める
+        document.addEventListener('keydown', (e) => {
+            const modal = document.querySelector('.modal.active');
+            if (!modal) return;
+            if (e.key === 'Escape') { e.preventDefault(); if (modal.id) closeModal(modal.id); return; }
+            if (e.key === 'Tab') {
+                const content = modal.querySelector('.modal-content') || modal;
+                const f = getFocusable(content);
+                if (f.length === 0) return;
+                const first = f[0], last = f[f.length - 1];
+                if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+                else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+            }
+        });
+
+
+// ---- Google Drive API Sync (Method B) ----
+const DRIVESCOPE = 'https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/calendar.events';
+const DRIVEDIARYFILENAME = 'diary.json';
+
+// TODO: OAuth Client ID (Web)
+const DRIVECLIENTID = '312868081144-nsjo9gfkm94ol1pha2nhq913g9p1m4e0.apps.googleusercontent.com';
+function sharedTokenGet(){ try{ var o=JSON.parse(localStorage.getItem('shared:gd:token')||'null'); if(o&&o.token&&Date.now()<o.exp-60000) return o.token; }catch(e){} return null; }
+function sharedTokenSet(t,exp){ try{ localStorage.setItem('shared:gd:token', JSON.stringify({token:t, exp:Date.now()+((exp||3600)*1000)})); }catch(e){} }
+function sharedTokenClear(){ try{ localStorage.removeItem('shared:gd:token'); }catch(e){} }
+
+let driveTokenClient = null;
+let driveAccessToken = null;
+let autoSyncDriveEnabled = false;
+
+function initDriveTokenClient() {
+  if (driveTokenClient) return;
+  if (!window.google || !google.accounts || !google.accounts.oauth2) {
+    showToast('Google認証ライブラリ未読込', 'warning');
+    return;
+  }
+  driveTokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: DRIVECLIENTID,
+    scope: DRIVESCOPE,
+    callback: () => {},
+    error_callback: () => showToast('Drive認証エラー', 'error')
+  });
+}
+
+function driveRequestToken(promptMode) {
+  return new Promise((resolve, reject) => {
+    initDriveTokenClient();
+    if (!driveTokenClient) return reject(new Error('tokenClient not ready'));
+    driveTokenClient.callback = (resp) => {
+      if (resp && resp.access_token) {
+        driveAccessToken = resp.access_token;
+        sharedTokenSet(resp.access_token, resp.expires_in);
+        resolve(driveAccessToken);
+      } else {
+        reject(resp);
+      }
+    };
+    driveTokenClient.requestAccessToken({ prompt: promptMode });
+  });
+}
+
+async function driveEnsureToken(interactive = false) {
+  if (driveAccessToken) return driveAccessToken;
+  var shared = sharedTokenGet();
+  if (shared) { driveAccessToken = shared; return shared; }
+  return await driveRequestToken(interactive ? 'consent' : '');
+}
+
+async function driveFetch(url, options = {}, _retried = false) {
+  const token = await driveEnsureToken(false);
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(options.headers || {})
+    }
+  });
+  if (res.status === 401 && !_retried) {
+    // トークン期限切れ等。再取得して一度だけ再試行（#9）
+    driveAccessToken = null;
+    sharedTokenClear();
+    await driveRequestToken('');
+    return driveFetch(url, options, true);
+  }
+  if (!res.ok) throw new Error(await res.text());
+  return res;
+}
+
+async function driveConnect() {
+  await driveRequestToken('consent');
+  showToast('Drive 認証OK', 'success');
+}
+
+async function driveFindDiaryFileId() {
+  const q = encodeURIComponent(`name="${DRIVEDIARYFILENAME}" and trashed=false`);
+  const fields = encodeURIComponent('files(id,name,modifiedTime)');
+  const res = await driveFetch(
+    `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=${q}&fields=${fields}`
+  );
+  const data = await res.json();
+  return (data.files && data.files[0]) ? data.files[0].id : null;
+}
+
+async function driveDownloadDiary() {
+  const fileId = await driveFindDiaryFileId();
+  if (!fileId) return null;
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+  const txt = await res.text();
+  return JSON.parse(txt);
+}
+
+function mergeEntriesByUpdatedAt(localEntries, incomingEntries) {
+  const map = new Map();
+  localEntries.forEach(e => map.set(e.id, e));
+  let added = 0, updated = 0;
+
+  incomingEntries.forEach(e => {
+    const cur = map.get(e.id);
+    if (!cur) {
+      map.set(e.id, e);
+      added++;
+      return;
+    }
+    const t1 = new Date(cur.updatedAt || cur.createdAt || 0).getTime();
+    const t2 = new Date(e.updatedAt || e.createdAt || 0).getTime();
+    if (t2 > t1) {
+      map.set(e.id, e);
+      updated++;
+    }
+  });
+
+  return { merged: Array.from(map.values()), added, updated };
+}
+
+async function drivePullAndMerge() {
+  try {
+    await driveEnsureToken(true);
+    const raw = await driveDownloadDiary();
+    if (!raw) {
+      showToast('Driveに diary.json がありません', 'warning');
+      return;
+    }
+    let data = raw;
+    if (isEncBlob(raw)) {
+      const json = await decryptIncomingBlob(raw); // 必要ならパスフレーズを要求
+      data = JSON.parse(json);
+    }
+    if (!data || !Array.isArray(data.entries)) {
+      showToast('Driveのデータ形式が不正です', 'warning');
+      return;
+    }
+    // Drive由来データも信頼せずサニタイズ・正規化してからマージ（#5）
+    const incoming = data.entries.map(normalizeImportedEntry);
+    const r = mergeEntriesByUpdatedAt(entries, incoming);
+    entries = r.merged;
+    await saveEntriesToStorage();
+    renderCalendar();
+    renderEntriesList();
+    renderEditor();
+    showToast(`Drive: 追加${r.added} 更新${r.updated}`, 'success');
+  } catch (err) {
+    console.error(err);
+    showToast(err && err.message === 'cancelled' ? 'ロック解除をキャンセルしました' : 'Drive 読み込み失敗', err && err.message === 'cancelled' ? 'warning' : 'error');
+  }
+}
+
+async function driveUploadDiaryObject(obj) {
+  const fileId = await driveFindDiaryFileId();
+
+  const metadata = fileId
+    ? { name: DRIVEDIARYFILENAME }
+    : { name: DRIVEDIARYFILENAME, parents: ['appDataFolder'] };
+
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  form.append('file', new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' }));
+
+  let token = await driveEnsureToken(false);
+  const url = fileId
+    ? `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`
+    : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
+  const method = fileId ? 'PATCH' : 'POST';
+
+  let res = await fetch(url, { method, headers: { Authorization: `Bearer ${token}` }, body: form });
+  if (res.status === 401) {
+    // トークン期限切れ等。再取得して一度だけ再試行（#9）
+    driveAccessToken = null;
+    token = await driveRequestToken('');
+    res = await fetch(url, { method, headers: { Authorization: `Bearer ${token}` }, body: form });
+  }
+  if (!res.ok) throw new Error(await res.text());
+  return await res.json();
+}
+
+async function drivePushAll(quiet = false) {
+  try {
+    await driveEnsureToken(true);
+    const obj = await buildSyncObject(); // 暗号化が有効なら暗号化ブロブ
+    await driveUploadDiaryObject(obj);
+    markBackupDone();
+    if (!quiet) showToast('Driveへ保存しました', 'success');
+  } catch (err) {
+    console.error(err);
+    if (!quiet) showToast('Drive 保存失敗', 'error');
+  }
+}
+
+function toggleAutoSyncDrive() {
+  autoSyncDriveEnabled = document.getElementById('autoSyncDrive').checked;
+  localStorage.setItem('autoSyncDrive', autoSyncDriveEnabled);
+  showToast(autoSyncDriveEnabled ? 'Drive自動同期 ON' : 'Drive自動同期 OFF', 'success');
+}
+
+
+
+
+        window.addEventListener('DOMContentLoaded', () => { init(); });
+    </script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+(function(){
+  function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+  function knData(){ try{ var d=JSON.parse(localStorage.getItem('kininari:data:v2')||'{}'); return Array.isArray(d.memos)?d.memos:[]; }catch(e){ return []; } }
+  function knOverlay(){
+    var cont=document.getElementById('calendarDays'); if(!cont) return;
+    var memos=knData(); var byDate={};
+    memos.forEach(function(m){ if(m && m.date && !m.done){ (byDate[m.date]=byDate[m.date]||[]).push(m); } });
+    var month=[];
+    var cells=cont.querySelectorAll('.calendar-day');
+    Array.prototype.forEach.call(cells,function(cell){
+      var oc=cell.getAttribute('onclick')||''; var mm=oc.match(/selectDate\('(\d{4}-\d{2}-\d{2})'\)/); if(!mm) return;
+      var ds=mm[1]; var ts=byDate[ds]; if(ts&&ts.length){
+        cell.classList.add('kn-has-task');
+        if(!cell.querySelector('.kn-task-dot')){ var dot=document.createElement('span'); dot.className='kn-task-dot'; dot.title=ts.map(function(t){return t.title||'(無題)';}).join('\n'); cell.appendChild(dot); }
+        ts.forEach(function(t){ month.push({date:ds,title:t.title||'(無題)'}); });
+      }
+    });
+    var host=document.getElementById('kn-cal-tasks');
+    if(!host){ host=document.createElement('div'); host.id='kn-cal-tasks'; var cv=document.getElementById('calendarView'); if(cv){ cv.appendChild(host); } else { cont.parentNode.appendChild(host); } }
+    month.sort(function(a,b){ return a.date.localeCompare(b.date); });
+    if(!month.length){ host.innerHTML=''; return; }
+    host.innerHTML='<div class="kn-cal-h">📝 今月の気になり帳タスク</div>'+month.map(function(t){ return '<button type="button" class="kn-cal-item" data-knd="'+t.date+'"><b>'+esc(t.date.slice(5).replace('-','/'))+'</b>'+esc(t.title)+'</button>'; }).join('');
+    Array.prototype.forEach.call(host.querySelectorAll('.kn-cal-item'),function(b){ b.addEventListener('click',function(){ try{ window.parent.postMessage({knTab:'kininari'},'*'); }catch(e){} }); });
+  }
+  function wrap(){
+    if(typeof window.renderCalendar!=='function'){ return false; }
+    var orig=window.renderCalendar; if(orig.__knWrapped) return true;
+    var w=function(){ var r=orig.apply(this,arguments); try{ knOverlay(); }catch(e){} return r; };
+    w.__knWrapped=true; window.renderCalendar=w; return true;
+  }
+  function start(){ if(wrap()){ try{ window.renderCalendar(); }catch(e){} } else { setTimeout(start,150); } }
+  window.addEventListener('storage',function(e){ if(e.key==='kininari:data:v2'){ try{ window.renderCalendar(); }catch(_){}} });
+  start();
+})();
+</script>
+</body>
+</html>
