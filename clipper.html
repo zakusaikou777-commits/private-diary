@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>気になり帳クリッパー（Chrome拡張）</title>
+<style>
+  :root{--paper:#f4ecda;--card:#fbf6ea;--ink:#2c2620;--red:#c0463c;--red-d:#a3392f;--line:#e2d6bd;--soft:#9a8c72;--blue:#3E6CA3;}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",system-ui,sans-serif;line-height:1.8;}
+  .wrap{max-width:760px;margin:0 auto;padding:26px 18px 64px;}
+  .head{display:flex;align-items:center;gap:12px;margin-bottom:6px;}
+  .seal{width:46px;height:46px;border-radius:12px;background:var(--red);color:#fff;display:grid;place-items:center;font-weight:800;font-size:24px;flex:none;}
+  h1{font-size:21px;margin:0;font-family:"Shippori Mincho",serif;}
+  .sub{color:var(--soft);font-size:13px;margin:2px 0 0;}
+  .dl{margin:22px 0;padding:18px;background:var(--card);border:1px solid var(--line);border-radius:16px;text-align:center;}
+  .dlbtn{display:inline-block;background:var(--red);color:#fff;text-decoration:none;font-weight:700;font-size:16px;padding:13px 26px;border-radius:12px;}
+  .dlbtn:hover{background:var(--red-d);}
+  .dlnote{font-size:12px;color:var(--soft);margin-top:10px;}
+  h2{font-size:16px;margin:26px 0 8px;color:var(--red-d);font-family:"Shippori Mincho",serif;border-bottom:1px solid var(--line);padding-bottom:5px;}
+  p{font-size:14px;margin:8px 0;}
+  ol,ul{padding-left:1.3em;margin:8px 0;}
+  li{font-size:14px;margin:6px 0;}
+  code{background:#efe6d2;padding:1px 6px;border-radius:5px;font-size:12.5px;word-break:break-all;font-family:ui-monospace,monospace;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:10px 0;}
+  .step{display:flex;gap:10px;align-items:flex-start;margin:10px 0;}
+  .num{flex:none;width:24px;height:24px;border-radius:50%;background:var(--red);color:#fff;display:grid;place-items:center;font-size:12px;font-weight:700;margin-top:1px;}
+  .note{font-size:12.5px;color:var(--soft);background:#f6efdf;border:1px solid #e7dcc4;border-radius:8px;padding:10px 12px;margin:10px 0;}
+  a{color:var(--blue);}
+  .pill{display:inline-block;font-size:12px;color:var(--ink);background:#fff;border:1px solid var(--line);border-radius:999px;padding:2px 9px;margin:1px 2px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head"><div class="seal">気</div><div><h1>気になり帳クリッパー</h1><p class="sub">見ているページを、ワンクリックで気になり帳に保存するChrome拡張</p></div></div>
+
+  <div class="dl">
+    <a class="dlbtn" id="dl" download="kininari-clipper.zip" href="data:application/zip;base64,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">⬇ 拡張機能をダウンロード（.zip）</a>
+    <div class="dlnote">ダウンロード後、解凍してChromeに読み込みます（手順は下記）。</div>
+  </div>
+
+  <h2>これは何？／どう登録される？</h2>
+  <p>ニュースなどのページでツールバーの「気」アイコンを押すと、小さなポップアップが開きます。<span class="pill">タイトル</span><span class="pill">URL</span><span class="pill">メモ</span><span class="pill">分類</span>を確認して「保存」を押すと、あなたの気になり帳に新しいメモとして追加されます。</p>
+  <div class="card">
+    <p style="margin:4px 0;">気になり帳での見え方：</p>
+    <ul style="margin:4px 0;">
+      <li>リストの先頭に新しいメモが追加されます。</li>
+      <li>記事のURLはリンク（🔗）として付き、タップで記事が開きます。</li>
+      <li>ページにサムネイル画像（OGP）があれば本文に記事画像が入ります。</li>
+      <li>選択した文章やページの説明文がメモ本文に入ります（編集可）。</li>
+      <li>分類は選んだもの（初期は「調べる」）。日付は付きません（後から付けてGoogleカレンダー登録も可）。</li>
+    </ul>
+    <p style="margin:4px 0;color:var(--soft);font-size:12.5px;">保存先は結合アプリと同じなので、<code>index.html</code> の気になり帳タブにも同じものが出ます。</p>
+  </div>
+
+  <h2>Chromeへの入れ方</h2>
+  <div class="step"><div class="num">1</div><div>ダウンロードした <code>kininari-clipper.zip</code> を解凍します（<code>kininari-clipper</code> フォルダができます）。</div></div>
+  <div class="step"><div class="num">2</div><div>Chromeのアドレスバーに <code>chrome://extensions</code> と入力して開きます。</div></div>
+  <div class="step"><div class="num">3</div><div>右上の「<b>デベロッパーモード</b>」をオンにします。</div></div>
+  <div class="step"><div class="num">4</div><div>「<b>パッケージ化されていない拡張機能を読み込む</b>」を押します。</div></div>
+  <div class="step"><div class="num">5</div><div>解凍した <b>kininari-clipper フォルダ</b>を選びます（zipやその中の単体ファイルではなく、フォルダごと）。</div></div>
+  <div class="step"><div class="num">6</div><div>ツールバーに「気」アイコンが出ます。パズルのピース型アイコンから<b>ピン留め</b>すると便利です。</div></div>
+
+  <h2>最初の設定（1回だけ）</h2>
+  <p>「気」アイコン → <b>⚙（設定）</b>を開き、あなたの気になり帳（<code>kininari.html</code>）のURL（https）を入力します。</p>
+  <div class="note">例：結合アプリを <code>https://yourname.github.io/app/</code> に置いた場合は<br><code>https://yourname.github.io/app/kininari.html</code><br>※ 先に <code>index.html / kininari.html / diary.html / sw.js</code> を https で公開しておく必要があります。</div>
+
+  <h2>使い方</h2>
+  <ul>
+    <li>気になるページで「気」アイコンをクリック。</li>
+    <li>必要ならタイトル・メモを編集、分類を選ぶ。</li>
+    <li>「気になり帳に保存」を押す → バックグラウンドで保存され、ポップアップに「保存しました ✓」と出ます。</li>
+  </ul>
+
+  <h2>注意</h2>
+  <ul>
+    <li>ストア未経由の自作拡張なので「デベロッパーモード」で読み込みます（個人利用では通常のやり方。再起動しても入ったままです）。</li>
+    <li>通常のWebページ（https/http）でのみ動きます。<code>chrome://</code> や新しいタブのページでは保存できません。</li>
+    <li>保存先のURL設定（⚙）が未入力だと保存できません。</li>
+  </ul>
+</div>
+</body>
+</html>
