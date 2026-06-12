@@ -7,9 +7,45 @@
    This worker is kept for: (1) immediate activation, and (2) handling
    clicks on notifications if a supporting browser ever schedules them. */
 
-self.addEventListener("install", () => { self.skipWaiting(); });
+self.addEventListener("install", (event) => {
+  // ネットワーク優先＋オフライン時フォールバック用に主要ファイルを事前キャッシュ
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then((c) => c.addAll(SHELL_ASSETS))
+      .catch(() => {}) // 一部が無くてもインストールは続行
+  );
+  self.skipWaiting();
+});
 
-self.addEventListener("activate", (event) => { event.waitUntil(self.clients.claim()); });
+const CACHE_NAME = "nk-shell-v1";
+const SHELL_ASSETS = ["./", "./index.html", "./kininari.html", "./diary.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)));
+    await self.clients.claim();
+  })());
+});
+
+/* ネットワーク優先: オンライン時は常に最新を取得して裏でキャッシュ更新、
+   オフライン時のみキャッシュから返す（古い版を配り続けない） */
+self.addEventListener("fetch", (event) => {
+  const req = event.request;
+  if (req.method !== "GET") return;
+  let url;
+  try { url = new URL(req.url); } catch (e) { return; }
+  if (url.origin !== self.location.origin) return;
+  event.respondWith(
+    fetch(req).then((res) => {
+      if (res && res.ok) {
+        const copy = res.clone();
+        caches.open(CACHE_NAME).then((c) => c.put(req, copy)).catch(() => {});
+      }
+      return res;
+    }).catch(() => caches.match(req, { ignoreSearch: true }).then((hit) => hit || caches.match("./index.html")))
+  );
+});
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();

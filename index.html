@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
 <title>日記帳 & 気になり帳</title>
 <meta name="theme-color" content="#f4ecda" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<script>if('serviceWorker' in navigator){ try{ navigator.serviceWorker.register('sw.js'); }catch(e){} }</script>
 <style>
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
@@ -111,6 +114,8 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 <li><b>origin / redirect エラー</b>：「承認済みのJavaScript生成元」に今のURLのオリジンが入っているか（httpsか、ポート違いはないか）を確認。</li>
 <li><b>ポップアップが出ない</b>：ブラウザのポップアップブロックを許可。</li>
 <li><b>反映されない</b>：Cloud設定の変更直後は数分待つ／シークレットウィンドウで再試行。</li>
+<li><b>スマホで保存したい</b>：AndroidはこのアプリをChromeの「ホーム画面に追加」で<b>インストール</b>すると、各アプリの<b>共有メニュー</b>から気になり帳に保存できます。iPhoneや拡張なしのPCは<a href="clipper.html" target="_blank" rel="noopener">クリッパーのページ</a>のブックマークレットが使えます。</li>
+<li><b>別の端末でメモが見えない</b>：データは端末・ブラウザごとに別保存です。気になり帳のDrive<b>自動同期</b>を両方の端末でONにしてください。</li>
 <li><b>通知が来ない</b>：ブラウザの制限により、リマインド通知は<b>アプリ（タブ）を開いている間</b>にお知らせします。タブを閉じた状態での時刻指定通知は、現在の主要ブラウザでは未対応です（iPhoneのSafariも同様）。</li>
 </ul>
 
@@ -120,6 +125,27 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 <script>
 (function(){
   var clipHash = ((location.hash||'').match(/knadd=([^&]+)/) || [null,null])[1];
+  var wasShare = false;
+  // Android「共有」メニュー（PWA Share Target）からの受け取り:
+  // index.html?title=..&text=..&url=.. を #knadd 形式に変換して気になり帳へ渡す
+  try{
+    var sp = new URLSearchParams(location.search);
+    if(!clipHash && (sp.has('title') || sp.has('text') || sp.has('url'))){
+      var st = (sp.get('title')||'').trim();
+      var sx = (sp.get('text')||'').trim();
+      var su = (sp.get('url')||'').trim();
+      if(!su){
+        // 多くのアプリはURLをtext（またはtitle）に入れて共有してくる
+        var mu = (sx + ' ' + st).match(/https?:\/\/[^\s]+/);
+        if(mu){ su = mu[0]; sx = sx.replace(mu[0], '').trim(); st = st.replace(mu[0], '').trim(); }
+      }
+      if(st || sx || su){
+        var pl = { t: st || su || '共有されたページ', u: su, n: sx.slice(0, 2000), img: '', c: 'メモ', f: '' };
+        clipHash = encodeURIComponent(JSON.stringify(pl));
+        wasShare = true;
+      }
+    }
+  }catch(e){}
   var loaded = {};
   function load(app){
     if(loaded[app]) return;
@@ -195,7 +221,7 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
   document.getElementById('knExport').addEventListener('click', knExport);
   document.getElementById('knImport').addEventListener('change', function(e){ var f=e.target.files&&e.target.files[0]; if(f) knDoImport(f); e.target.value=''; });
 
-  if(clipHash){ show('kininari'); try{ history.replaceState(null,'',location.pathname+location.search); }catch(e){} }
+  if(clipHash){ show('kininari'); try{ history.replaceState(null,'',location.pathname+(wasShare?'':location.search)); }catch(e){} }
   else { show('diary'); }
 })();
 </script>
