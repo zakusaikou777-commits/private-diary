@@ -183,12 +183,19 @@
         .sync-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 4px 8px; border-radius: 99px; background-color: rgba(94, 82, 64, 0.1); color: var(--color-text-secondary); margin-left: 8px; }
         .sync-badge.active { background-color: rgba(33, 128, 141, 0.15); color: var(--color-primary); font-weight: 600; }
         @media (max-width: 767px) {
-            .main { padding: var(--space-12); gap: var(--space-12); }
-            .sidebar { max-height: 400px; width: 100%; min-width: auto; }
+            html, body { height: auto; min-height: 100%; }
+            .container { height: auto; min-height: 100vh; }
+            .main { padding: var(--space-12); gap: var(--space-12); overflow: visible; }
+            .sidebar { max-height: none; width: 100%; min-width: auto; flex: none; }
             .header { padding: var(--space-12); }
             .header h1 { font-size: 18px; }
             .calendar-grid { grid-template-columns: repeat(7, 1fr); gap: 2px; }
             .calendar-day { height: 34px; font-size: 11px; }
+            /* エディタを潰さず、しっかり書ける高さを確保（縦並び時はflexで奪い合わない） */
+            .editor-section { flex: none; order: 1; }
+            .editor-content { flex: none; min-height: max(60vh, 360px); overflow-y: visible; }
+            /* 縦並びでは本文エディタを上に、カレンダー/リストを下に */
+            .sidebar { order: 2; }
         }
 
         /* --- アクセシビリティ・追加UI --- */
@@ -881,6 +888,18 @@ window.addEventListener('beforeunload', (e) => {
             renderEditor();
             if (currentView === 'calendar') renderCalendar();
             if (currentView === 'list') renderEntriesList();
+            // スマホ（縦並び）では本文エディタを最上部に並べているので、開いたら先頭へ
+            try {
+                if (window.matchMedia && window.matchMedia('(max-width: 767px)').matches) {
+                    requestAnimationFrame(() => {
+                        const sec = document.getElementById('editorSection');
+                        if (!sec) return;
+                        const top = sec.getBoundingClientRect().top;
+                        // すでにほぼ見えているなら動かさない（入力中の不要なジャンプを防ぐ）
+                        if (top < -20 || top > 80) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    });
+                }
+            } catch (e) {}
         }
 
 function renderEditor() {
