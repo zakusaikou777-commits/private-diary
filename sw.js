@@ -18,7 +18,7 @@ self.addEventListener("install", (event) => {
 });
 
 const CACHE_NAME = "nk-shell-v1";
-const SHELL_ASSETS = ["./", "./index.html", "./kininari.html", "./diary.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
+const SHELL_ASSETS = ["./", "./index.html", "./kininari.html", "./diary.html", "./image-streaming.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("activate", (event) => {
   event.waitUntil((async () => {

@@ -13,7 +13,8 @@
 html,body{margin:0;height:100%}
 body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;-webkit-font-smoothing:antialiased}
 #tabbar{position:fixed;top:0;left:0;right:0;height:48px;display:flex;gap:6px;align-items:center;justify-content:center;padding:7px 10px;background:#f4ecda;border-bottom:1px solid #e2d6bd;z-index:10}
-.apptab{flex:1;max-width:220px;border:1px solid #e2d6bd;background:#fff;color:#7a6f5e;font-size:14px;font-weight:700;padding:9px 12px;border-radius:10px;cursor:pointer;font-family:inherit;transition:all .15s}
+.apptab{flex:1;max-width:220px;border:1px solid #e2d6bd;background:#fff;color:#7a6f5e;font-size:14px;font-weight:700;padding:9px 12px;border-radius:10px;cursor:pointer;font-family:inherit;transition:all .15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media (max-width:520px){#tabbar{gap:4px;padding:7px 6px}.apptab{font-size:12px;padding:9px 6px}}
 .apptab.active{background:#c0463c;color:#fdf1e6;border-color:#c0463c;box-shadow:0 3px 10px rgba(160,57,47,.25)}
 .iconbtn{flex:none;height:36px;width:40px;border:1px solid #e2d6bd;background:#fff;color:#7a6f5e;border-radius:9px;cursor:pointer;font-size:16px}
 .iconbtn:hover{border-color:#c0463c}
@@ -48,12 +49,14 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 <div id="tabbar">
 <button class="apptab active" type="button" data-app="diary">📔 日記</button>
 <button class="apptab" type="button" data-app="kininari">📝 気になり帳</button>
+<button class="apptab" type="button" data-app="anshitsu">🎞️ 暗室</button>
 <button id="knBackupBtn" class="iconbtn" type="button" title="まとめてバックアップ">💾</button>
 <button id="knHelpBtn" class="iconbtn" type="button" title="ヘルプ・設定ガイド">❓</button>
 </div>
 <div id="frames">
 <iframe id="frame-diary" class="appframe active" title="日記帳" allow="clipboard-read; clipboard-write"></iframe>
 <iframe id="frame-kininari" class="appframe" title="気になり帳" allow="clipboard-read; clipboard-write"></iframe>
+<iframe id="frame-anshitsu" class="appframe" title="暗室 — イメージストリーミング"></iframe>
 </div>
 <div id="knModal" class="knmodal">
 <div class="knmodal-card">
@@ -69,7 +72,10 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 <div id="knHelp" class="knmodal">
 <div class="knmodal-card knhelp-card knhelp">
 <div class="knmodal-h">❓ ヘルプ・設定ガイド<button id="knHelpX" class="knmodal-x" type="button">×</button></div>
-<p class="lead">日記帳と気になり帳の2-in-1アプリです。データはこの端末（各アプリ内）に保存されます。GoogleドライブやGoogleカレンダーと連携するときは、最初に少しだけ設定が必要です。</p>
+<p class="lead">日記帳・気になり帳・暗室の3-in-1アプリです。データはこの端末（各アプリ内）に保存されます。GoogleドライブやGoogleカレンダーと連携するときは、最初に少しだけ設定が必要です。</p>
+
+<h4>暗室（イメージストリーミング）</h4>
+<p><b>🎞️ 暗室</b>タブは、情景を思い浮かべて五感の細部を声に出して描写する練習（ウェンガー式イメージストリーミング）のためのタイマーと記録です。情景のお題・3/5/10分タイマー・音声ガイド・Ten/Ten（10分×10日）の進捗が使えます。練習記録はこの端末に保存され、上部の <b>💾</b> まとめてバックアップにも含まれます。</p>
 
 <h4>Chrome拡張（気になり帳クリッパー）</h4>
 <p>見ているページ（ニュースなど）をワンクリックで気になり帳に保存できるChrome拡張があります。ダウンロードと入れ方は <a href="./clipper.html" target="_blank" rel="noopener">こちらのページ</a> から。</p>
@@ -104,7 +110,7 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 <li><b>気になり帳</b>：ヘッダーの同期アイコンから、ドライブに保存／読み込み（自動同期も可）。</li>
 <li><b>日記帳</b>：日記の設定からドライブに保存。</li>
 <li>端末をまたいでデータを引き継げます。</li>
-<li>上部の <b>💾</b> は「<b>まとめてバックアップ</b>」：日記＋気になり帳を1つのファイルに書き出し／取り込み（画像も含む。Googleなしでも使えるローカル保存）。</li>
+<li>上部の <b>💾</b> は「<b>まとめてバックアップ</b>」：日記＋気になり帳＋暗室（練習記録）を1つのファイルに書き出し／取り込み（画像も含む。Googleなしでも使えるローカル保存）。</li>
 </ul>
 
 <h4>うまくいかないとき</h4>
@@ -151,7 +157,7 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     if(loaded[app]) return;
     var fr = document.getElementById('frame-'+app);
     if(!fr) return;
-    var base = (app === 'kininari') ? 'kininari.html' : 'diary.html';
+    var base = (app === 'kininari') ? 'kininari.html' : (app === 'anshitsu') ? 'image-streaming.html' : 'diary.html';
     if(app === 'kininari' && clipHash){ base += '#knadd=' + clipHash; }
     fr.src = base;
     loaded[app] = true;
@@ -181,9 +187,10 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     var diary = localStorage.getItem('diaryEntries');
     var diaryLast = localStorage.getItem('diaryLastBackup');
     var kdata = localStorage.getItem('kininari:data:v2');
+    var anshitsu = localStorage.getItem('image-streaming:v1');
     var files=[];
     try{ var db=await knOpenDB(); var recs=await knIdbAll(db); for(var i=0;i<recs.length;i++){ var r=recs[i]; if(r&&r.blob){ try{ files.push({id:r.id,name:r.name,type:r.type,dataUrl:await blobToDataURL(r.blob)}); }catch(e){} } } }catch(e){}
-    return { app:'nikki-kininari', v:1, exportedAt:new Date().toISOString(), diary:diary, diaryLastBackup:diaryLast, kininari:{ data:kdata, files:files } };
+    return { app:'nikki-kininari', v:2, exportedAt:new Date().toISOString(), diary:diary, diaryLastBackup:diaryLast, kininari:{ data:kdata, files:files }, anshitsu:anshitsu };
   }
   async function knExport(){
     knMsg('準備中…');
@@ -202,6 +209,7 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
       var text=await file.text(); var obj=JSON.parse(text);
       if(typeof obj.diary==='string') localStorage.setItem('diaryEntries', obj.diary);
       if(obj.diaryLastBackup) localStorage.setItem('diaryLastBackup', obj.diaryLastBackup);
+      if(typeof obj.anshitsu==='string') localStorage.setItem('image-streaming:v1', obj.anshitsu);
       if(obj.kininari){
         if(typeof obj.kininari.data==='string') localStorage.setItem('kininari:data:v2', obj.kininari.data);
         var files=(obj.kininari.files||[]);

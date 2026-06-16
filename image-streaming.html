@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>暗室 — イメージストリーミング</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Hanken+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
+<style>
+  :root{
+    --ink:#0c0a0d; --ink2:#141016; --tray:#19121a; --tray2:#221825;
+    --safelight:#b5482e; --ember:#e07a4a; --glow:#ffcaa0;
+    --paper:#efe6da; --dim:#9b8d86; --faint:rgba(239,230,218,.10);
+    --see:#e0a85a; --hear:#62a6a2; --smell:#a878a0; --touch:#cf8466; --taste:#9aae6e;
+    --fd:'Fraunces','Iowan Old Style',Georgia,'Hiragino Mincho ProN','Yu Mincho',serif;
+    --fb:'Hanken Grotesk',system-ui,-apple-system,'Segoe UI','Hiragino Sans','Yu Gothic',Roboto,sans-serif;
+    --fm:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0; min-height:100%;}
+  body{
+    font-family:var(--fb); color:var(--paper);
+    background:
+      radial-gradient(120% 80% at 50% 118%, rgba(181,72,46,.30), rgba(181,72,46,0) 60%),
+      radial-gradient(90% 60% at 50% -10%, rgba(40,28,44,.6), rgba(12,10,13,0) 55%),
+      var(--ink);
+    background-attachment:fixed;
+    display:flex; justify-content:center; padding:34px 18px 30px;
+  }
+  .console{width:100%; max-width:440px;}
+
+  .head{text-align:center; margin-bottom:20px;}
+  .eyebrow{font-size:11px; letter-spacing:.26em; text-transform:uppercase; color:var(--ember); font-weight:600; opacity:.92;}
+  .title{font-family:var(--fd); font-weight:500; font-size:42px; letter-spacing:-.01em; margin:7px 0 0; line-height:1;}
+  .sub{color:var(--dim); font-size:14px; line-height:1.5; margin:11px auto 0; max-width:330px;}
+
+  .stage{display:flex; flex-direction:column; align-items:center;}
+
+  .tray-wrap{padding:6px; margin-bottom:22px;}
+  .tray{
+    position:relative; width:300px; height:300px; border-radius:24px;
+    background:radial-gradient(120% 120% at 50% 30%, var(--tray2), var(--tray) 70%);
+    border:1px solid var(--faint);
+    box-shadow:0 1px 0 rgba(255,255,255,.04) inset, 0 30px 60px -30px rgba(0,0,0,.9);
+    display:flex; align-items:center; justify-content:center; overflow:hidden;
+    transition:box-shadow .5s ease;
+  }
+  @media (max-width:360px){ .tray{width:266px; height:266px;} }
+  .tray.phase-done{ box-shadow:0 0 0 1px rgba(224,122,74,.4) inset, 0 0 60px -10px rgba(224,122,74,.4), 0 30px 60px -30px rgba(0,0,0,.9); }
+
+  .glow{
+    position:absolute; width:74%; height:74%; border-radius:50%;
+    background:radial-gradient(circle, rgba(255,160,110,.34), rgba(255,160,110,0) 66%);
+    filter:blur(8px); opacity:.5; animation:breathe 7s ease-in-out infinite;
+  }
+  .tray.phase-running .glow{opacity:.78;}
+  .tray.phase-paused .glow{opacity:.3; animation:none;}
+  .tray.phase-done .glow{opacity:.85; animation:none; background:radial-gradient(circle, rgba(255,184,130,.45), rgba(255,184,130,0) 66%);}
+  @keyframes breathe{0%,100%{transform:scale(.92); opacity:.42;} 50%{transform:scale(1.06); opacity:.7;}}
+
+  .ring{position:absolute; width:100%; height:100%; transform:rotate(-90deg);}
+  .ring-track{fill:none; stroke:var(--faint); stroke-width:2.5;}
+  .ring-arc{fill:none; stroke:var(--ember); stroke-width:3; stroke-linecap:round; transition:stroke-dashoffset .95s linear;}
+
+  .tray-inner{position:relative; z-index:2; text-align:center; padding:30px 26px; width:100%;}
+  [hidden]{display:none !important;}
+
+  .micro{font-size:10.5px; letter-spacing:.24em; text-transform:uppercase; color:var(--ember); font-weight:600; margin-bottom:14px;}
+  .scene{font-family:var(--fd); font-weight:400; font-size:24px; line-height:1.28; margin:0; animation:fade .5s ease;}
+  .hint{font-size:12px; color:var(--dim); line-height:1.5; margin-top:16px;}
+  @keyframes fade{from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:none;}}
+
+  .scene-mini{font-family:var(--fd); font-size:14px; color:var(--dim); line-height:1.3; margin-bottom:10px;}
+  .clock{font-family:var(--fm); font-size:54px; font-weight:500; letter-spacing:.02em; line-height:1; color:var(--paper); font-variant-numeric:tabular-nums;}
+  .paused{margin-top:14px; font-size:12px; letter-spacing:.22em; text-transform:uppercase; color:var(--dim);}
+  .sense-live{margin-top:16px; display:flex; flex-direction:column; align-items:center; gap:5px; animation:fade .4s ease;}
+  .sense-dot{width:8px; height:8px; border-radius:50%; background:var(--sense); box-shadow:0 0 12px 1px var(--sense);}
+  .sense-name{font-size:11px; letter-spacing:.2em; text-transform:uppercase; color:var(--sense); font-weight:600;}
+  .sense-line{font-size:12px; color:var(--dim); line-height:1.4; max-width:200px;}
+
+  .done-mark{width:46px; height:46px; border-radius:50%; margin:0 auto; display:flex; align-items:center; justify-content:center; color:var(--ink); background:var(--glow); box-shadow:0 0 24px -2px var(--glow);}
+  .done-title{font-family:var(--fd); font-size:21px; margin-top:14px;}
+  .done-meta{font-family:var(--fm); font-size:12px; color:var(--ember); margin-top:5px; letter-spacing:.02em;}
+  .done-scene{margin-top:12px;}
+
+  .controls{width:100%; max-width:340px; display:flex; flex-direction:column; gap:16px;}
+  .controls.run{flex-direction:row; justify-content:center; gap:12px;}
+  .controls.done{gap:14px;}
+
+  .btn{
+    font-family:var(--fb); font-size:14px; font-weight:600; border-radius:13px;
+    padding:13px 18px; border:1px solid transparent; cursor:pointer;
+    display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    transition:transform .12s ease, background .2s ease, border-color .2s ease, opacity .2s ease;
+    color:var(--paper);
+  }
+  .btn:active{transform:translateY(1px);}
+  .btn.wide{width:100%;}
+  .btn.primary{background:linear-gradient(180deg, #ef8a55, var(--safelight)); color:#1a0e09; border-color:rgba(255,180,130,.4); box-shadow:0 12px 28px -14px rgba(224,122,74,.9);}
+  .btn.primary:hover{background:linear-gradient(180deg, #f3975f, var(--safelight));}
+  .btn.ghost{background:rgba(239,230,218,.05); border-color:var(--faint);}
+  .btn.ghost:hover{background:rgba(239,230,218,.09);}
+
+  .block-label{font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--dim); font-weight:600; display:block; margin-bottom:11px;}
+
+  .sense-grid{display:flex; flex-direction:column; gap:9px;}
+  .sense-row{display:grid; grid-template-columns:auto auto 1fr; align-items:baseline; gap:9px;}
+  .legend-dot{width:7px; height:7px; border-radius:50%; align-self:center;}
+  .legend-name{font-size:13px; font-weight:600; color:var(--paper); min-width:42px;}
+  .legend-prompt{font-size:12.5px; color:var(--dim); line-height:1.4;}
+
+  .segmented{display:flex; gap:8px;}
+  .seg{
+    flex:1; font-family:var(--fb); font-size:13px; font-weight:600; cursor:pointer;
+    padding:11px 8px; border-radius:11px; border:1px solid var(--faint);
+    background:rgba(239,230,218,.04); color:var(--dim);
+    display:flex; flex-direction:column; align-items:center; gap:3px; transition:all .18s ease;
+  }
+  .seg:hover{color:var(--paper);}
+  .seg.on{background:rgba(224,122,74,.14); border-color:rgba(224,122,74,.5); color:var(--paper);}
+  .seg-tag{font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--ember); font-weight:600;}
+
+  .toggle{
+    width:100%; display:flex; align-items:center; gap:12px; cursor:pointer; text-align:left;
+    padding:13px 14px; border-radius:13px; border:1px solid var(--faint);
+    background:rgba(239,230,218,.04); transition:all .18s ease;
+  }
+  .toggle:hover{background:rgba(239,230,218,.07);}
+  .toggle.on{border-color:rgba(224,122,74,.4);}
+  .toggle-ico{color:var(--ember); display:flex;}
+  .toggle-text{flex:1; display:flex; flex-direction:column; gap:2px;}
+  .toggle-head{font-size:13.5px; font-weight:600; color:var(--paper);}
+  .toggle-help{font-size:11.5px; color:var(--dim); line-height:1.35;}
+  .switch{width:38px; height:22px; border-radius:11px; background:rgba(239,230,218,.12); position:relative; transition:background .2s ease; flex:none;}
+  .switch.on{background:var(--safelight);}
+  .knob{position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:50%; background:var(--paper); transition:transform .2s ease;}
+  .switch.on .knob{transform:translateX(16px);}
+
+  .testbtn{width:100%; display:inline-flex; align-items:center; justify-content:center; gap:6px; background:none; border:none; cursor:pointer; font-family:var(--fb); font-size:12.5px; color:var(--dim); padding:2px 6px; transition:color .15s ease;}
+  .testbtn:hover{color:var(--ember);}
+  .tts-note{font-size:11.5px; color:var(--dim); line-height:1.5; margin:4px 0 0; text-align:center; opacity:.85;}
+
+  .rating-label{font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); font-weight:600; text-align:center; margin-bottom:9px;}
+  .rating-row{display:flex; gap:8px; justify-content:center;}
+  .vbtn{width:46px; height:46px; border-radius:12px; border:1px solid var(--faint); background:rgba(239,230,218,.04); color:var(--dim); font-family:var(--fm); font-size:15px; cursor:pointer; transition:all .15s ease;}
+  .vbtn:hover{color:var(--paper);}
+  .vbtn.on{background:rgba(224,122,74,.16); border-color:rgba(224,122,74,.55); color:var(--paper); box-shadow:0 0 16px -6px var(--ember);}
+
+  .note{
+    width:100%; font-family:var(--fb); font-size:13.5px; color:var(--paper); resize:none;
+    background:rgba(239,230,218,.05); border:1px solid var(--faint); border-radius:13px;
+    padding:12px 14px; line-height:1.5;
+  }
+  .note::placeholder{color:var(--dim);}
+  .note:focus{outline:none; border-color:rgba(224,122,74,.5);}
+  .done-actions{display:flex; gap:12px;}
+  .done-actions .btn{flex:1;}
+
+  .tenten{margin-top:30px; padding-top:24px; border-top:1px solid var(--faint);}
+  .tenten-head{display:flex; justify-content:space-between; align-items:baseline; margin-bottom:14px;}
+  .tenten-head .block-label{margin-bottom:0;}
+  .cycle{font-family:var(--fm); font-size:13px; color:var(--ember); letter-spacing:.04em;}
+
+  .strip{display:grid; grid-template-columns:repeat(10,1fr); gap:6px;}
+  .frame{
+    position:relative; aspect-ratio:3/4; border-radius:5px;
+    border:1px solid var(--faint); background:rgba(255,255,255,.015);
+    display:flex; align-items:center; justify-content:center;
+    transition:background .6s ease, border-color .6s ease, box-shadow .6s ease;
+  }
+  .frame-num{font-family:var(--fm); font-size:9px; color:rgba(239,230,218,.25);}
+  .frame.dev{
+    border-color:rgba(224,122,74,.5);
+    background:radial-gradient(circle at 50% 42%, rgba(255,176,120,.5), rgba(181,72,46,.22) 70%);
+    box-shadow:0 0 12px -3px rgba(224,122,74,.6);
+  }
+  .frame.dev .frame-num{color:rgba(26,14,9,.55); font-weight:600;}
+  .frame.just{animation:develop 1.1s ease;}
+  @keyframes develop{0%{filter:brightness(2.4) blur(3px); transform:scale(.86);} 60%{filter:brightness(1.3) blur(0);} 100%{filter:none; transform:none;}}
+
+  .cycle-done{margin-top:14px; font-size:12.5px; color:var(--glow); line-height:1.5; text-align:center;}
+
+  .stats{display:flex; gap:10px; margin-top:20px;}
+  .stat{flex:1; text-align:center; padding:13px 6px; border-radius:12px; background:rgba(239,230,218,.035); border:1px solid var(--faint);}
+  .stat-n{display:block; font-family:var(--fd); font-size:25px; font-weight:500; color:var(--paper); line-height:1;}
+  .stat-l{display:block; font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); margin-top:6px;}
+
+  .spark{margin-top:14px; padding:13px; border-radius:12px; background:rgba(239,230,218,.035); border:1px solid var(--faint);}
+  .spark-head{display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;}
+  .spark-label{font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); font-weight:600;}
+  .spark-val{font-family:var(--fm); font-size:12px; color:var(--ember);}
+  .spark svg{display:block; width:100%; height:40px;}
+
+  .tenten-foot{margin-top:16px;}
+  .guide{font-size:12px; color:var(--dim); line-height:1.55; margin:0 0 10px;}
+  .link{background:none; border:none; cursor:pointer; font-family:var(--fb); font-size:12px; color:var(--dim); display:inline-flex; align-items:center; gap:5px; padding:2px 4px; transition:color .15s ease;}
+  .link:hover{color:var(--paper);}
+  .link.reset:hover{color:var(--ember);}
+  .link.danger{color:var(--ember); font-weight:600;}
+  .clear-confirm{font-size:12px; color:var(--dim); display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap;}
+  .persist-note{font-size:11px; color:var(--dim); line-height:1.5; margin:8px 0 0; opacity:.75;}
+
+  .journal{margin-top:22px;}
+  .jtoggle{width:100%; display:flex; align-items:center; justify-content:space-between; background:none; border:none; cursor:pointer; color:var(--dim); font-family:var(--fb); font-size:11px; letter-spacing:.16em; text-transform:uppercase; font-weight:600; padding:6px 2px;}
+  .jtoggle:hover{color:var(--paper);}
+  .jchev{transition:transform .2s ease;}
+  .jtoggle.open .jchev{transform:rotate(180deg);}
+  .jlist{display:flex; flex-direction:column; gap:8px; margin-top:12px;}
+  .jitem{padding:11px 13px; border-radius:11px; background:rgba(239,230,218,.035); border:1px solid var(--faint);}
+  .jtop{display:flex; align-items:center; justify-content:space-between; gap:8px;}
+  .jdate{font-family:var(--fm); font-size:11px; color:var(--ember);}
+  .jvivid{display:flex; gap:3px;}
+  .jdot{width:6px; height:6px; border-radius:50%; background:rgba(239,230,218,.16);}
+  .jdot.on{background:var(--ember);}
+  .jscene{font-family:var(--fd); font-size:14px; color:var(--paper); margin-top:5px; line-height:1.3;}
+  .jnote{font-size:12.5px; color:var(--dim); line-height:1.45; margin-top:5px; white-space:pre-wrap;}
+  .jempty{font-size:12.5px; color:var(--dim); text-align:center; padding:12px;}
+
+  .foot{margin-top:24px; text-align:center; font-size:11.5px; color:var(--dim); line-height:1.5; opacity:.8;}
+
+  button:focus-visible, .toggle:focus-visible{outline:2px solid var(--ember); outline-offset:2px; border-radius:8px;}
+
+  @media (prefers-reduced-motion: reduce){
+    .glow{animation:none !important;}
+    .scene,.sense-live{animation:none !important;}
+    .frame.just{animation:none !important;}
+    .ring-arc{transition:none;}
+  }
+</style>
+</head>
+<body>
+  <div class="console">
+    <header class="head">
+      <div class="eyebrow">イメージストリーミング · ウェンガー式</div>
+      <h1 class="title">暗室</h1>
+      <p class="sub">心の目を現像する。情景を思い浮かべ、感覚の細部を声に出して描写しましょう。</p>
+    </header>
+
+    <main class="stage">
+      <div class="tray-wrap">
+        <div class="tray phase-idle" id="tray">
+          <div class="glow"></div>
+          <svg class="ring" id="ring" viewBox="0 0 200 200" aria-hidden="true" hidden>
+            <circle class="ring-track" cx="100" cy="100" r="92"></circle>
+            <circle class="ring-arc" id="ringArc" cx="100" cy="100" r="92"></circle>
+          </svg>
+          <div class="tray-inner">
+            <div id="pIdle">
+              <div class="micro">思い浮かべる</div>
+              <p class="scene" id="scene"></p>
+              <div class="hint">目を閉じて。気づいたことを声に出して——現在形で、具体的に。</div>
+            </div>
+            <div id="pRun" hidden>
+              <div class="scene-mini" id="sceneMini"></div>
+              <div class="clock" id="clock">10:00</div>
+              <div class="sense-live" id="senseLive"></div>
+              <div class="paused" id="pausedLbl" hidden>一時停止中</div>
+            </div>
+            <div id="pDone" hidden>
+              <div class="done-mark" id="doneMark"></div>
+              <div class="done-title">現像できました</div>
+              <div class="done-meta" id="doneMeta"></div>
+              <div class="scene-mini done-scene" id="doneScene"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="controls" id="ctlIdle">
+        <button class="btn ghost wide" id="newScene"></button>
+
+        <div>
+          <div class="block-label">ひとつずつ、感覚をたどる</div>
+          <div class="sense-grid" id="senseGrid"></div>
+        </div>
+
+        <div>
+          <div class="block-label">時間</div>
+          <div class="segmented" id="lengthSeg"></div>
+        </div>
+
+        <button class="toggle" id="toggleBtn">
+          <span class="toggle-ico" id="toggleIco"></span>
+          <span class="toggle-text">
+            <span class="toggle-head">音声ガイド</span>
+            <span class="toggle-help">合図の音と読み上げで、感覚の切り替えをそっと促します</span>
+          </span>
+          <span class="switch" id="toggleSwitch"><span class="knob"></span></span>
+        </button>
+        <button class="testbtn" id="testBtn"></button>
+        <p class="tts-note" id="ttsNote" hidden>この環境では読み上げが使えないため、合図音のみで案内します。</p>
+
+        <button class="btn primary wide" id="beginBtn"></button>
+      </div>
+
+      <div class="controls run" id="ctlRun" hidden>
+        <button class="btn ghost" id="playPauseBtn"></button>
+        <button class="btn ghost" id="endBtn"></button>
+      </div>
+
+      <div class="controls done" id="ctlDone" hidden>
+        <div>
+          <div class="rating-label">鮮明さ（任意）</div>
+          <div class="rating-row" id="ratingRow"></div>
+        </div>
+        <textarea class="note" id="noteEl" rows="2" placeholder="どれくらい鮮明でしたか？気づいたことがあれば（任意）"></textarea>
+        <div class="done-actions">
+          <button class="btn ghost" id="discardBtn">破棄</button>
+          <button class="btn primary" id="saveBtn">記録する</button>
+        </div>
+      </div>
+    </main>
+
+    <section class="tenten">
+      <div class="tenten-head">
+        <span class="block-label">Ten/Ten</span>
+        <span class="cycle" id="cycleTxt">0 / 10</span>
+      </div>
+      <div class="strip" id="strip" role="img" aria-label="練習の記録"></div>
+      <div class="cycle-done" id="cycleDone" hidden></div>
+
+      <div class="stats">
+        <div class="stat"><span class="stat-n" id="statDays">·</span><span class="stat-l">練習した日</span></div>
+        <div class="stat"><span class="stat-n" id="statStreak">·</span><span class="stat-l">連続日数</span></div>
+        <div class="stat"><span class="stat-n" id="statMin">·</span><span class="stat-l">分</span></div>
+      </div>
+
+      <div id="spark"></div>
+
+      <div class="tenten-foot">
+        <p class="guide">ウェンガーのTen/Ten：1日10分を10日間。変化がなければ別の方法を。何かが動き出したら、続けてみましょう。</p>
+        <div id="clearWrap"></div>
+        <p class="persist-note" id="persistNote" hidden>このプレビューでは履歴が保存されません。ダウンロードして開くと、記録がこの端末に残ります。</p>
+      </div>
+    </section>
+
+    <section class="journal" id="journalSec" hidden>
+      <button class="jtoggle" id="journalToggle">
+        <span>練習の記録</span>
+        <span class="jchev" id="jchev"></span>
+      </button>
+      <div class="jlist" id="jlist" hidden></div>
+    </section>
+
+    <footer class="foot">
+      治療ではなく、ひとつの練習です。証拠はまだ限られています——焦らず、自分にやさしく。
+    </footer>
+  </div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ---------- data ---------- */
+  var SENSES = [
+    { key:"see",   label:"視覚", hue:"var(--see)",   prompt:"光、色、形。",                 speak:"何が見えますか。光、色、形を。" },
+    { key:"hear",  label:"聴覚", hue:"var(--hear)",  prompt:"近くの音、遠くの音。",         speak:"何が聞こえますか。近くの音、遠くの音を。" },
+    { key:"smell", label:"嗅覚", hue:"var(--smell)", prompt:"空気に漂うにおい。",           speak:"どんなにおいがしますか。空気に漂うものを。" },
+    { key:"touch", label:"触覚", hue:"var(--touch)", prompt:"温度、質感、肌に触れる感覚。", speak:"肌に何が触れていますか。温度や質感を。" },
+    { key:"taste", label:"味覚", hue:"var(--taste)", prompt:"唇や舌に感じる味。",           speak:"何か味はしますか。唇や、舌に。" }
+  ];
+
+  var SCENES = [
+    "まな板の上の、切ったばかりのレモン","温まった舗装に降りはじめた雨","熾火になっていく焚き火",
+    "暑い午後の温室","冷たい窓辺で湯気を立てるコーヒー","膝まで海に入っていく","大雨のあとの森の地面",
+    "朝いちばんのパン屋","夜、人けのない通りに降る雪","暖かい台所でオレンジの皮をむく","長い鈍行列車の車窓",
+    "コンロでことことと煮えるスープ","土砂降りのなか、木の下で雨宿り","吹き消した直後のろうそく",
+    "取り込んだばかりの洗濯物","熟れた桃が積まれた市場の台","冷えたスイカの最初のひと口",
+    "雨の降る、どんよりした午後の図書館","夕暮れ、素足で踏むひんやりした芝生","引き潮の港",
+    "焼きたてで温かいパンをちぎる","真昼のプール","小さな山小屋で燃える薪ストーブ","指でつぶしたミントの葉",
+    "日が暮れたあとの夏の庭","波打ち際の、足裏に熱い砂","日陰で飲む冷たいレモネード","乾いた落ち葉を踏みしめて歩く"
+  ];
+
+  var DURATIONS = [3, 5, 10];
+  var CUE_INTERVAL = 50000;
+  var SENSE_FREQS = [523.25, 587.33, 659.25, 783.99, 880.0];
+  var CIRC = 2 * Math.PI * 92;
+  var KEY = "image-streaming:v1";
+
+  /* ---------- helpers ---------- */
+  function pad(n){ return n < 10 ? "0" + n : "" + n; }
+  function localDate(d){ return d.getFullYear() + "-" + pad(d.getMonth()+1) + "-" + pad(d.getDate()); }
+  function fmtClock(sec){ return Math.floor(sec/60) + ":" + pad(sec % 60); }
+  function fmtDay(s){ var p = s.split("-"); return Number(p[1]) + "月" + Number(p[2]) + "日"; }
+  function esc(t){ return String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+  function $(id){ return document.getElementById(id); }
+
+  /* ---------- storage (localStorage with safe fallback) ---------- */
+  var store = (function(){
+    var mem = {}, ok = false;
+    try { var k = "__t" + Math.random(); localStorage.setItem(k, "1"); localStorage.removeItem(k); ok = true; } catch(e){ ok = false; }
+    return {
+      persistent: ok,
+      get: function(key){ try { if(ok) return localStorage.getItem(key); } catch(e){} return (key in mem) ? mem[key] : null; },
+      set: function(key,val){ try { if(ok){ localStorage.setItem(key,val); return; } } catch(e){} mem[key] = val; },
+      remove: function(key){ try { if(ok){ localStorage.removeItem(key); return; } } catch(e){} delete mem[key]; }
+    };
+  })();
+
+  /* ---------- icons ---------- */
+  var ICON = {
+    shuffle: function(s){ return svg(s,'<path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/><path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/><path d="m18 14 4 4-4 4"/>'); },
+    play: function(s){ return '<svg width="'+s+'" height="'+s+'" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>'; },
+    pause: function(s){ return '<svg width="'+s+'" height="'+s+'" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>'; },
+    square: function(s){ return svg(s,'<rect x="5" y="5" width="14" height="14" rx="2"/>'); },
+    volOn: function(s){ return svg(s,'<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>'); },
+    volOff: function(s){ return svg(s,'<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/>'); },
+    rotate: function(s){ return svg(s,'<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>'); },
+    check: function(s){ return '<svg width="'+s+'" height="'+s+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>'; },
+    chev: function(s){ return svg(s,'<path d="m6 9 6 6 6-6"/>'); }
+  };
+  function svg(s, inner){ return '<svg width="'+s+'" height="'+s+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+inner+'</svg>'; }
+
+  /* ---------- state ---------- */
+  var S = {
+    phase: "idle",
+    durationMin: 10,
+    secondsLeft: 600,
+    scene: SCENES[(Math.random()*SCENES.length)|0],
+    speakCues: false,
+    activeSense: 0,
+    rating: null,
+    pending: { sec:0, scene:"" },
+    history: [],
+    confirmClear: false,
+    journalOpen: false
+  };
+  var justFlash = false;
+  var ttsSupported = ("speechSynthesis" in window);
+
+  /* ---------- audio ---------- */
+  var audioCtx = null;
+  var voice = null;
+
+  function ensureAudio(){
+    try {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      if(!Ctx) return null;
+      if(!audioCtx) audioCtx = new Ctx();
+      if(audioCtx.state === "suspended") audioCtx.resume();
+      return audioCtx;
+    } catch(e){ return null; }
+  }
+  function playTone(freq, delay, dur, peak){
+    delay = delay||0; dur = dur||1.0; peak = peak||0.13;
+    var ctx = ensureAudio(); if(!ctx) return;
+    var t = ctx.currentTime + delay;
+    var o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = "sine"; o.frequency.value = freq;
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(peak, t + 0.04);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(ctx.destination);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+  function senseTone(idx){ playTone(SENSE_FREQS[idx % SENSE_FREQS.length], 0, 1.1, 0.12); }
+  function playChime(){ playTone(528,0,1.7,0.16); playTone(660,0.16,1.7,0.16); playTone(792,0.32,1.7,0.16); }
+
+  function pickVoice(){
+    if(!ttsSupported) return;
+    try {
+      var vs = window.speechSynthesis.getVoices();
+      for(var i=0;i<vs.length;i++){ if((vs[i].lang||"").toLowerCase().indexOf("ja")===0){ voice = vs[i]; return; } }
+    } catch(e){}
+  }
+  function speak(text){
+    try {
+      if(!ttsSupported) return;
+      var ss = window.speechSynthesis;
+      var u = new SpeechSynthesisUtterance(text);
+      if(voice){ u.voice = voice; u.lang = voice.lang; } else { u.lang = "ja-JP"; }
+      u.rate = 0.92; u.pitch = 1; u.volume = 1;
+      if(ss.speaking || ss.pending){ ss.cancel(); setTimeout(function(){ try{ ss.speak(u); }catch(e){} }, 80); }
+      else ss.speak(u);
+    } catch(e){}
+  }
+  function stopSpeech(){ try { if(ttsSupported) window.speechSynthesis.cancel(); } catch(e){} }
+
+  /* ---------- wake lock ---------- */
+  var wakeLock = null;
+  function reqWake(){ try { if("wakeLock" in navigator){ navigator.wakeLock.request("screen").then(function(w){ wakeLock = w; }).catch(function(){}); } } catch(e){} }
+  function relWake(){ try { if(wakeLock){ wakeLock.release(); wakeLock = null; } } catch(e){} }
+  document.addEventListener("visibilitychange", function(){ if(document.visibilityState === "visible" && S.phase === "running") reqWake(); });
+
+  /* ---------- timers ---------- */
+  var tick = null, cueTick = null;
+  function startTimer(){ stopTimer(); tick = setInterval(function(){ S.secondsLeft = Math.max(0, S.secondsLeft - 1); renderClock(); if(S.secondsLeft === 0) onComplete(); }, 1000); }
+  function stopTimer(){ if(tick){ clearInterval(tick); tick = null; } }
+  function startCues(){ stopCues(); cueTick = setInterval(function(){
+      S.activeSense = (S.activeSense + 1) % SENSES.length;
+      renderSense();
+      if(S.speakCues){ senseTone(S.activeSense); speak(SENSES[S.activeSense].speak); }
+    }, CUE_INTERVAL); }
+  function stopCues(){ if(cueTick){ clearInterval(cueTick); cueTick = null; } }
+
+  /* ---------- actions ---------- */
+  function nextScene(cur){ var n = cur; while(n === cur) n = SCENES[(Math.random()*SCENES.length)|0]; return n; }
+
+  function begin(){
+    S.rating = null; $("noteEl").value = "";
+    S.activeSense = 0;
+    S.secondsLeft = S.durationMin * 60;
+    ensureAudio();
+    S.phase = "running";
+    renderPhase(); renderClock(); renderSense();
+    startTimer(); startCues(); reqWake();
+    if(S.speakCues){ senseTone(0); speak("目を閉じて、「" + S.scene + "」を思い浮かべてください。気づいたことを、声に出して、詳しく。"); }
+  }
+  function pause(){ S.phase = "paused"; renderPhase(); stopTimer(); stopCues(); stopSpeech(); relWake(); }
+  function resume(){ S.phase = "running"; renderPhase(); startTimer(); startCues(); reqWake(); }
+  function endNow(){
+    var sec = S.durationMin*60 - S.secondsLeft;
+    stopTimer(); stopCues(); stopSpeech(); relWake();
+    S.pending = { sec: sec, scene: S.scene }; S.rating = null; $("noteEl").value = "";
+    S.phase = "done"; renderPhase(); renderDone();
+  }
+  function onComplete(){
+    stopTimer(); stopCues(); stopSpeech(); relWake();
+    playChime();
+    S.pending = { sec: S.durationMin*60, scene: S.scene }; S.rating = null; $("noteEl").value = "";
+    S.phase = "done"; renderPhase(); renderDone();
+  }
+  function discard(){ S.phase = "idle"; renderPhase(); }
+  function save(){
+    var today = localDate(new Date());
+    var prev = {}; for(var i=0;i<S.history.length;i++) prev[S.history[i].date] = true;
+    var isNew = !prev[today];
+    S.history.push({ date: today, ts: Date.now(), sec: S.pending.sec, scene: S.pending.scene, note: ($("noteEl").value||"").trim(), vivid: S.rating });
+    try { store.set(KEY, JSON.stringify(S.history)); } catch(e){}
+    S.phase = "idle"; renderPhase();
+    S.scene = nextScene(S.scene); renderScene();
+    if(isNew){ justFlash = true; renderTenten(); setTimeout(function(){ justFlash = false; renderTenten(); }, 1200); }
+    else renderTenten();
+    renderJournal();
+  }
+  function clearAll(){ S.history = []; S.confirmClear = false; try { store.remove(KEY); } catch(e){} renderTenten(); renderJournal(); }
+
+  /* ---------- derived ---------- */
+  function distinctDays(){ var seen = {}, out = []; for(var i=0;i<S.history.length;i++){ var d = S.history[i].date; if(!seen[d]){ seen[d]=true; out.push(d); } } out.sort(); return out; }
+  function streakCount(days){
+    if(!days.length) return 0;
+    var set = {}; for(var i=0;i<days.length;i++) set[days[i]] = true;
+    var cur = new Date(); var str = localDate(cur);
+    if(!set[str]){ cur.setDate(cur.getDate()-1); str = localDate(cur); if(!set[str]) return 0; }
+    var n = 0;
+    while(set[str]){ n++; cur.setDate(cur.getDate()-1); str = localDate(cur); }
+    return n;
+  }
+
+  /* ---------- render ---------- */
+  function renderScene(){
+    var el = $("scene");
+    el.textContent = S.scene;
+    el.style.animation = "none"; void el.offsetWidth; el.style.animation = "";
+  }
+  function renderPhase(){
+    var p = S.phase;
+    $("tray").className = "tray phase-" + p;
+    $("pIdle").hidden = (p !== "idle");
+    $("pRun").hidden  = !(p === "running" || p === "paused");
+    $("pDone").hidden = (p !== "done");
+    $("ring").hidden  = !(p === "running" || p === "paused");
+    $("ctlIdle").hidden = (p !== "idle");
+    $("ctlRun").hidden  = !(p === "running" || p === "paused");
+    $("ctlDone").hidden = (p !== "done");
+
+    if(p === "running" || p === "paused"){
+      $("sceneMini").textContent = S.scene;
+      var ppb = $("playPauseBtn");
+      if(p === "running"){ ppb.className = "btn ghost"; ppb.innerHTML = ICON.pause(16) + " 一時停止"; }
+      else { ppb.className = "btn primary"; ppb.innerHTML = ICON.play(16) + " 再開"; }
+      $("senseLive").hidden = (p !== "running");
+      $("pausedLbl").hidden = (p !== "paused");
+    }
+  }
+  function renderClock(){
+    $("clock").textContent = fmtClock(S.secondsLeft);
+    var total = S.durationMin * 60;
+    var frac = total ? (total - S.secondsLeft) / total : 0;
+    $("ringArc").setAttribute("stroke-dashoffset", (CIRC * frac).toFixed(2));
+  }
+  function renderSense(){
+    var s = SENSES[S.activeSense];
+    var el = $("senseLive");
+    el.style.setProperty("--sense", s.hue);
+    el.innerHTML = '<span class="sense-dot"></span><span class="sense-name">' + s.label + '</span><span class="sense-line">' + s.prompt + '</span>';
+    el.style.animation = "none"; void el.offsetWidth; el.style.animation = "";
+  }
+  function renderDone(){
+    $("doneMark").innerHTML = ICON.check(26);
+    $("doneMeta").textContent = fmtClock(S.pending.sec) + " の練習";
+    $("doneScene").textContent = S.pending.scene;
+    renderRating();
+  }
+  function renderRating(){
+    var row = $("ratingRow");
+    var html = "";
+    for(var n=1;n<=5;n++){ html += '<button class="vbtn' + (S.rating === n ? " on" : "") + '" data-v="' + n + '">' + n + '</button>'; }
+    row.innerHTML = html;
+    var btns = row.querySelectorAll(".vbtn");
+    for(var i=0;i<btns.length;i++){ btns[i].addEventListener("click", function(){ S.rating = Number(this.getAttribute("data-v")); renderRating(); }); }
+  }
+  function renderLength(){
+    var seg = $("lengthSeg");
+    var html = "";
+    for(var i=0;i<DURATIONS.length;i++){ var d = DURATIONS[i];
+      html += '<button class="seg' + (S.durationMin === d ? " on" : "") + '" data-d="' + d + '">' + d + '分' + (d === 10 ? '<span class="seg-tag">Ten/Ten</span>' : '') + '</button>';
+    }
+    seg.innerHTML = html;
+    var btns = seg.querySelectorAll(".seg");
+    for(var j=0;j<btns.length;j++){ btns[j].addEventListener("click", function(){ S.durationMin = Number(this.getAttribute("data-d")); renderLength(); }); }
+  }
+  function renderToggle(){
+    $("toggleBtn").className = "toggle" + (S.speakCues ? " on" : "");
+    $("toggleIco").innerHTML = S.speakCues ? ICON.volOn(16) : ICON.volOff(16);
+    $("toggleSwitch").className = "switch" + (S.speakCues ? " on" : "");
+  }
+  function sparkline(vals){
+    var w = 100, h = 40, p = 4, lo = 1, hi = 5;
+    var step = vals.length > 1 ? (w - p*2) / (vals.length - 1) : 0;
+    var pts = [];
+    for(var i=0;i<vals.length;i++){
+      var x = p + i*step;
+      var y = h - p - ((vals[i]-lo)/(hi-lo))*(h - p*2);
+      pts.push(x.toFixed(1) + "," + y.toFixed(1));
+    }
+    var lastX = p + (vals.length-1)*step;
+    var lastY = h - p - ((vals[vals.length-1]-lo)/(hi-lo))*(h - p*2);
+    return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
+      '<polyline points="' + pts.join(" ") + '" fill="none" stroke="var(--ember)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<circle cx="' + lastX.toFixed(1) + '" cy="' + lastY.toFixed(1) + '" r="2.4" fill="var(--glow)"/></svg>';
+  }
+  function renderTenten(){
+    var days = distinctDays();
+    var count = days.length;
+    var cycleNumber = Math.max(1, Math.ceil(count / 10));
+    var filled = count === 0 ? 0 : ((count - 1) % 10) + 1;
+    var cycleDays = days.slice((cycleNumber-1)*10, (cycleNumber-1)*10 + filled);
+    var today = localDate(new Date());
+
+    $("cycleTxt").textContent = (cycleNumber > 1 ? cycleNumber + "周目 · " : "") + filled + " / 10";
+
+    var html = "";
+    for(var i=0;i<10;i++){
+      var dev = i < filled;
+      var just = justFlash && i === filled - 1;
+      var title = dev ? fmtDay(cycleDays[i]) : "まだ";
+      html += '<div class="frame' + (dev ? " dev" : "") + (just ? " just" : "") + '" title="' + title + '"><span class="frame-num">' + (i+1) + '</span></div>';
+    }
+    $("strip").innerHTML = html;
+
+    var totalMin = 0; for(var k=0;k<S.history.length;k++) totalMin += (S.history[k].sec || 0);
+    totalMin = Math.round(totalMin / 60);
+    $("statDays").textContent = count;
+    $("statStreak").textContent = streakCount(days);
+    $("statMin").textContent = totalMin;
+
+    var cd = $("cycleDone");
+    if(filled === 10 && days.indexOf(today) !== -1){ cd.hidden = false; cd.textContent = "10日のうち10日。何か兆しを感じるなら、新しいフィルムを。感じなくても、損はありません。"; }
+    else cd.hidden = true;
+
+    var rated = S.history.filter(function(h){ return typeof h.vivid === "number"; });
+    var sp = $("spark");
+    if(rated.length >= 2){
+      var vals = rated.slice(-12).map(function(h){ return h.vivid; });
+      var avg = 0; for(var m=0;m<rated.length;m++) avg += rated[m].vivid; avg = avg / rated.length;
+      sp.innerHTML = '<div class="spark"><div class="spark-head"><span class="spark-label">鮮明さの推移</span><span class="spark-val">平均 ' + avg.toFixed(1) + ' / 5</span></div>' + sparkline(vals) + '</div>';
+    } else sp.innerHTML = "";
+
+    var cw = $("clearWrap");
+    if(S.history.length > 0){
+      if(S.confirmClear){
+        cw.innerHTML = '<span class="clear-confirm">保存した練習をすべて消去しますか？<button class="link danger" id="clearYes">消去する</button><button class="link" id="clearNo">キャンセル</button></span>';
+        $("clearYes").addEventListener("click", clearAll);
+        $("clearNo").addEventListener("click", function(){ S.confirmClear = false; renderTenten(); });
+      } else {
+        cw.innerHTML = '<button class="link reset" id="clearBtn">' + ICON.rotate(12) + ' 履歴を消去</button>';
+        $("clearBtn").addEventListener("click", function(){ S.confirmClear = true; renderTenten(); });
+      }
+    } else cw.innerHTML = "";
+  }
+  function renderJournal(){
+    var sec = $("journalSec");
+    sec.hidden = (S.history.length === 0);
+    $("journalToggle").className = "jtoggle" + (S.journalOpen ? " open" : "");
+    $("jchev").innerHTML = ICON.chev(15);
+    var list = $("jlist");
+    list.hidden = !S.journalOpen;
+    if(!S.journalOpen) return;
+
+    var items = S.history.slice().reverse().slice(0, 30);
+    if(items.length === 0){ list.innerHTML = '<div class="jempty">まだ記録がありません。</div>'; return; }
+    var html = "";
+    for(var i=0;i<items.length;i++){
+      var h = items[i];
+      var dots = "";
+      if(typeof h.vivid === "number"){
+        dots = '<span class="jvivid">';
+        for(var n=1;n<=5;n++) dots += '<span class="jdot' + (n <= h.vivid ? " on" : "") + '"></span>';
+        dots += '</span>';
+      } else dots = '<span class="jvivid"></span>';
+      html += '<div class="jitem"><div class="jtop"><span class="jdate">' + fmtDay(h.date) + '</span>' + dots + '</div>' +
+        '<div class="jscene">' + esc(h.scene) + '</div>' +
+        (h.note ? '<div class="jnote">' + esc(h.note) + '</div>' : '') + '</div>';
+    }
+    list.innerHTML = html;
+  }
+
+  /* ---------- init ---------- */
+  function init(){
+    // static labels with icons
+    $("newScene").innerHTML = ICON.shuffle(15) + " 別の情景";
+    $("testBtn").innerHTML = ICON.volOn(13) + " 音声をテスト";
+    $("beginBtn").innerHTML = ICON.play(16) + " はじめる";
+    $("endBtn").innerHTML = ICON.square(14) + " 終了";
+
+    // sense legend
+    var grid = $("senseGrid"), gh = "";
+    for(var i=0;i<SENSES.length;i++){ var s = SENSES[i];
+      gh += '<div class="sense-row"><span class="legend-dot" style="background:' + s.hue + '"></span><span class="legend-name">' + s.label + '</span><span class="legend-prompt">' + s.prompt + '</span></div>';
+    }
+    grid.innerHTML = gh;
+
+    renderLength();
+    renderToggle();
+    $("ringArc").setAttribute("stroke-dasharray", CIRC.toFixed(2));
+    $("ringArc").setAttribute("stroke-dashoffset", "0");
+    if(!ttsSupported) $("ttsNote").hidden = false;
+    if(!store.persistent) $("persistNote").hidden = false;
+
+    // load history
+    try { var raw = store.get(KEY); if(raw) S.history = JSON.parse(raw) || []; } catch(e){ S.history = []; }
+
+    renderScene();
+    renderPhase();
+    renderClock();
+    renderTenten();
+    renderJournal();
+
+    // events
+    $("newScene").addEventListener("click", function(){ S.scene = nextScene(S.scene); renderScene(); });
+    $("beginBtn").addEventListener("click", begin);
+    $("toggleBtn").addEventListener("click", function(){ S.speakCues = !S.speakCues; if(S.speakCues) ensureAudio(); else stopSpeech(); renderToggle(); });
+    $("testBtn").addEventListener("click", function(){ ensureAudio(); senseTone(0); speak("これは音声ガイドのテストです。聞こえていますか。"); });
+    $("playPauseBtn").addEventListener("click", function(){ if(S.phase === "running") pause(); else if(S.phase === "paused") resume(); });
+    $("endBtn").addEventListener("click", endNow);
+    $("discardBtn").addEventListener("click", discard);
+    $("saveBtn").addEventListener("click", save);
+    $("journalToggle").addEventListener("click", function(){ S.journalOpen = !S.journalOpen; renderJournal(); });
+
+    // voices may load async
+    if(ttsSupported){ pickVoice(); try { window.speechSynthesis.onvoiceschanged = pickVoice; } catch(e){} }
+
+    // keyboard: space to start / pause / resume
+    document.addEventListener("keydown", function(e){
+      if(e.code === "Space" && e.target.tagName !== "TEXTAREA"){
+        e.preventDefault();
+        if(S.phase === "idle") begin();
+        else if(S.phase === "running") pause();
+        else if(S.phase === "paused") resume();
+      }
+    });
+  }
+
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
+})();
+</script>
+</body>
+</html>
