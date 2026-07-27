@@ -234,6 +234,16 @@
     <header class="head">
       <div class="eyebrow">イメージストリーミング · ウェンガー式</div>
       <h1 class="title">暗室</h1>
+      <div id="syncWrap" style="margin-top:10px">
+        <button id="bSync" type="button" style="font:inherit;font-size:12px;padding:6px 11px;border-radius:8px;border:1px solid currentColor;background:transparent;color:inherit;opacity:.65;cursor:pointer">☁ 同期</button>
+        <div id="syncPanel" style="display:none;margin-top:9px;font-size:12px;line-height:1.7;opacity:.8">
+          <div id="syncMsg">—</div>
+          <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+            <button id="bSyncNow" type="button" style="font:inherit;font-size:12px;padding:5px 10px;border-radius:7px;border:1px solid currentColor;background:transparent;color:inherit;cursor:pointer">今すぐ同期</button>
+            <button id="bSyncAuto" type="button" style="font:inherit;font-size:12px;padding:5px 10px;border-radius:7px;border:1px solid currentColor;background:transparent;color:inherit;cursor:pointer">自動同期: ON</button>
+          </div>
+        </div>
+      </div>
       <p class="sub">心の目を現像する。情景を思い浮かべ、感覚の細部を声に出して描写しましょう。</p>
     </header>
 
@@ -348,6 +358,8 @@
     </footer>
   </div>
 
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="sync.js"></script>
 <script>
 (function(){
   "use strict";
@@ -377,6 +389,7 @@
   var SENSE_FREQS = [523.25, 587.33, 659.25, 783.99, 880.0];
   var CIRC = 2 * Math.PI * 92;
   var KEY = "image-streaming:v1";
+  var CLR_KEY = "image-streaming:clearedAt";
 
   /* ---------- helpers ---------- */
   function pad(n){ return n < 10 ? "0" + n : "" + n; }
@@ -423,6 +436,7 @@
     rating: null,
     pending: { sec:0, scene:"" },
     history: [],
+    clearedAt: 0,
     confirmClear: false,
     journalOpen: false
   };
@@ -528,13 +542,78 @@
     var isNew = !prev[today];
     S.history.push({ date: today, ts: Date.now(), sec: S.pending.sec, scene: S.pending.scene, note: ($("noteEl").value||"").trim(), vivid: S.rating });
     try { store.set(KEY, JSON.stringify(S.history)); } catch(e){}
+    if (window.__isTouch) window.__isTouch(true);   // 練習1回ぶんは「意味のある変更」
     S.phase = "idle"; renderPhase();
     S.scene = nextScene(S.scene); renderScene();
     if(isNew){ justFlash = true; renderTenten(); setTimeout(function(){ justFlash = false; renderTenten(); }, 1200); }
     else renderTenten();
     renderJournal();
   }
-  function clearAll(){ S.history = []; S.confirmClear = false; try { store.remove(KEY); } catch(e){} renderTenten(); renderJournal(); }
+  /* ── 端末間の同期（sync.js の共通エンジン）───────────────
+     練習の記録は追記型なので、時刻で重ねてつなぐだけでよい。
+     ただし「全消去」は消した時刻を持ち回らないと同期で復活する。 */
+  var sync = null;
+  window.__isTouch = function(urgent){ if(sync) sync.touch(!!urgent); };
+  function recKey(h){ return (h && (h.ts || (h.date + "|" + (h.sec||0)))) + ""; }
+  function syncGetLocal(){ return { history: S.history, clearedAt: S.clearedAt || 0 }; }
+  function syncSetLocal(d){
+    S.history = d.history || [];
+    S.clearedAt = d.clearedAt || 0;
+    try { store.set(KEY, JSON.stringify(S.history)); } catch(e){}
+    try { store.set(CLR_KEY, String(S.clearedAt)); } catch(e){}
+    renderTenten(); renderJournal();
+  }
+  function syncMerge(local, remote){
+    if(!remote) return local;
+    var cleared = Math.max(local.clearedAt || 0, remote.clearedAt || 0);
+    var seen = {}, out = [];
+    [].concat(local.history || [], remote.history || []).forEach(function(h){
+      if(!h || !h.date) return;
+      if(cleared && (h.ts || 0) <= cleared) return;   // 消去より前の記録は復活させない
+      var k = recKey(h);
+      if(seen[k]) return;
+      seen[k] = 1; out.push(h);
+    });
+    out.sort(function(a,b){ return (a.ts||0) - (b.ts||0); });
+    return { history: out, clearedAt: cleared };
+  }
+  function paintSync(st, auto){
+    var b = document.getElementById("bSync"); if(!b) return;
+    b.style.opacity = st.phase === "syncing" ? ".35" : (st.phase === "error" ? "1" : ".65");
+    b.textContent = st.phase === "error" ? "⚠ 同期" : "☁ 同期";
+    var a = document.getElementById("bSyncAuto"); if(a) a.textContent = "自動同期: " + (auto ? "ON" : "OFF");
+    var m = document.getElementById("syncMsg"); if(!m) return;
+    if(!sync || !sync.hasClientId()) m.textContent = "まだつながっていません。先に「気になり帳」でGoogleドライブの同期設定（クライアントID）を済ませると、こちらは追加設定なしで使えます。";
+    else if(st.phase === "error") m.textContent = "⚠️ " + (st.msg || "同期に失敗しました");
+    else if(st.phase === "syncing") m.textContent = "同期しています…";
+    else if(st.phase === "ok") m.textContent = "同期しました（" + new Date(st.at).toLocaleTimeString() + "）。練習の記録がPCとスマホで揃います。";
+    else m.textContent = "練習の記録をGoogleドライブ経由でPCとスマホで揃えます。";
+  }
+  function setupSync(){
+    var b = document.getElementById("bSync");
+    if(!window.NKSync){ if(b) b.style.display = "none"; return; }
+    sync = NKSync.create({ app:"anshitsu", getLocal:syncGetLocal, setLocal:syncSetLocal, merge:syncMerge });
+    sync.onChange(paintSync);
+    if(b) b.addEventListener("click", function(){
+      var p = document.getElementById("syncPanel");
+      p.style.display = (p.style.display === "none" ? "block" : "none");
+    });
+    var bn = document.getElementById("bSyncNow");
+    if(bn) bn.addEventListener("click", function(){ sync.syncNow().catch(function(){}); });
+    var ba = document.getElementById("bSyncAuto");
+    if(ba) ba.addEventListener("click", function(){ sync.setAuto(!sync.autoOn()); });
+    setTimeout(function(){ sync.start(); }, 900);
+  }
+
+  function clearAll(){
+    S.history = []; S.confirmClear = false;
+    // 単純に消すだけだと、他端末との同期で復活してしまう。消した時刻を残す。
+    S.clearedAt = Date.now();
+    try { store.remove(KEY); } catch(e){}
+    try { store.set(CLR_KEY, String(S.clearedAt)); } catch(e){}
+    if (window.__isTouch) window.__isTouch(true);
+    renderTenten(); renderJournal();
+  }
 
   /* ---------- derived ---------- */
   function distinctDays(){ var seen = {}, out = []; for(var i=0;i<S.history.length;i++){ var d = S.history[i].date; if(!seen[d]){ seen[d]=true; out.push(d); } } out.sort(); return out; }
@@ -731,6 +810,8 @@
 
     // load history
     try { var raw = store.get(KEY); if(raw) S.history = JSON.parse(raw) || []; } catch(e){ S.history = []; }
+    try { S.clearedAt = parseInt(store.get(CLR_KEY) || "0", 10) || 0; } catch(e){ S.clearedAt = 0; }
+    setupSync();
 
     renderScene();
     renderPhase();

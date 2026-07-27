@@ -7,6 +7,7 @@
 - image-streaming.html …… 暗室（イメージストリーミング）本体
 - bgm.html ……………………… 音（作業用BGMランチャー・就寝用の音）
 - audio/ ………………………… 就寝用の音（brown/pink/rain の各wav。合計約1.8MB）
+- sync.js ……………………… 音・暗室の端末間同期（Googleドライブ経由）
 - sw.js ………………………… オフライン動作・タスク通知用
 - manifest.webmanifest …… PWA設定（ホーム画面に追加・共有メニュー対応）
 - icon-192.png / icon-512.png / icon-512-maskable.png … アプリアイコン
@@ -19,7 +20,7 @@ ZIPの中身を「まるごと同じフォルダ」に置き、https で公開�
 （一部だけ置くと、暗室タブが開かない・ホーム画面に追加できない等になります）
 
   必須: index.html / diary.html / kininari.html / image-streaming.html /
-        bgm.html / audio/（フォルダごと） / sw.js / manifest.webmanifest /
+        bgm.html / audio/（フォルダごと） / sync.js / sw.js / manifest.webmanifest /
         icon-192.png / icon-512.png / icon-512-maskable.png
   任意: clipper.html（拡張の配布ページ。使わないなら不要）
 
@@ -48,6 +49,14 @@ ZIPの中身を「まるごと同じフォルダ」に置き、https で公開�
 - 「就寝用の音」（ブラウンノイズ/ピンクノイズ/雨）は端末内の音なので、画面を
   消しても鳴り続けます。寝るときはこちらを使ってください。
 - Androidでは、YouTubeアプリの「共有」からこのアプリに送ると音タブに登録されます。
+
+【端末間の同期（音・暗室）】
+- 「気になり帳」でGoogleドライブの同期設定（クライアントID）を済ませてあれば、
+  音・暗室は追加設定なしで同期できます（認証を使い回します）。
+- 同期されるもの: 音＝登録リスト/ジャンル/★/再生履歴、暗室＝練習の記録
+- 同期されないもの: 音量・夜間モード・表示の絞り込みなど、端末ごとの設定
+- 再生中の曲が連動することはありません（データだけの同期です）
+- Driveには nikki-apps-data.json が1つできます。
 
 【データについて】
 すべて自分専用です。データは自分の端末に保存され、Google連携も自分のアカウント/自分のクライアントIDのみを使います。

@@ -27,6 +27,9 @@ header .grow{flex:1;min-width:0}
 .iconbtn{height:36px;min-width:40px;padding:0 9px;border:1px solid var(--line);background:var(--card);color:var(--soft);border-radius:9px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:700}
 .iconbtn:hover{border-color:var(--red);color:var(--red)}
 .iconbtn.on{background:color-mix(in srgb,var(--red) 12%,var(--card));border-color:var(--red);color:var(--red-d)}
+.iconbtn.err{color:#b3402f;border-color:#e0a99f;background:#fdf0ec;position:relative}
+.iconbtn.err:after{content:"";position:absolute;top:-2px;right:-2px;width:9px;height:9px;border-radius:50%;background:#c0463c;border:1.5px solid var(--card)}
+.iconbtn.busy{opacity:.5}
 
 .modes{display:flex;gap:6px;margin-bottom:12px}
 .mode{flex:1;border:1px solid var(--line);background:var(--card);color:var(--soft);border-radius:11px;padding:11px 8px;font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit}
@@ -116,8 +119,19 @@ header .grow{flex:1;min-width:0}
     <div class="hbtns">
       <button class="iconbtn" id="bNight" title="夜間モード">🌙</button>
       <button class="iconbtn" id="bWake" title="画面を消さない">💡</button>
+      <button class="iconbtn" id="bSync" title="同期">☁</button>
     </div>
   </header>
+  <div id="syncPanel" style="display:none">
+    <div class="note" style="margin:0 0 12px">
+      <div id="syncMsg" style="line-height:1.7">—</div>
+      <div style="display:flex;gap:6px;margin-top:9px;flex-wrap:wrap">
+        <button class="cbtn solid" id="bSyncNow">今すぐ同期</button>
+        <button class="cbtn" id="bSyncAuto">自動同期: ON</button>
+        <button class="cbtn" id="bSyncClose">とじる</button>
+      </div>
+    </div>
+  </div>
 
   <div class="modes">
     <button class="mode on" id="mYt">YouTube</button>
@@ -194,6 +208,8 @@ header .grow{flex:1;min-width:0}
 <div id="toast"></div>
 
 <audio id="scAudio" loop preload="none"></audio>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="sync.js"></script>
 <script src="https://www.youtube.com/iframe_api" async></script>
 <script>
 (function(){
@@ -227,13 +243,15 @@ var SOUNDS=[
   {id:"rain", n:"雨・シャワー",  d:"やわらかな雨だれのような音。静かすぎる部屋が苦手なときに。",f:"audio/rain.wav"}
 ];
 
-var S={items:[],hist:[],genres:[],vol:60,scVol:70,shuffle:false,night:false,mode:"yt",filter:"all",gfilter:"",lastCats:[],timer:0};
+var S={items:[],hist:[],genres:[],delItems:[],delGenres:[],vol:60,scVol:70,shuffle:false,night:false,mode:"yt",filter:"all",gfilter:"",lastCats:[],timer:0};
 try{
   var raw=store.get(KEY);
   if(raw){var o=JSON.parse(raw)||{};
     if(Array.isArray(o.items))S.items=o.items;
     if(Array.isArray(o.hist))S.hist=o.hist;
     if(Array.isArray(o.genres))S.genres=o.genres;
+    if(Array.isArray(o.delItems))S.delItems=o.delItems;
+    if(Array.isArray(o.delGenres))S.delGenres=o.delGenres;
     if(Array.isArray(o.lastCats))S.lastCats=o.lastCats;
     ["vol","scVol"].forEach(function(k){if(typeof o[k]==="number")S[k]=o[k];});
     ["shuffle","night"].forEach(function(k){if(typeof o[k]==="boolean")S[k]=o[k];});
@@ -243,21 +261,51 @@ try{
   }
 }catch(e){}
 
-/* ── 移行: 旧 cat（1件に1ジャンル）→ cats（複数）───────── */
-(function migrate(){
+var DEV=(window.NKSync?NKSync.devId():"local");
+/* 同じ動画は端末をまたいで同じIDになるようにする（別々に登録しても重複しない）*/
+function itemKey(vid,list){return "y"+(vid||"")+(list?("|"+list):"");}
+/* 再生回数は端末ごとに数え、表示は合計。単純上書きだと回数が消えるため。 */
+function playCount(it){var p=it&&it.plays,t=0;if(typeof p==="number")return p;for(var d in (p||{}))t+=p[d]||0;return t;}
+
+/* ── 移行: 旧cat→cats、ID採番、端末別の再生回数、updatedAt ── */
+function normalize(){
+  var now=Date.now();
+  // ジャンル: IDは名前を初期値にする（端末間で同じ名前が同じIDになる）
+  if(!S.genres.length) S.genres = DEFAULT_GENRES.map(function(g){return {id:g.name,name:g.name,q:g.q,updatedAt:0};});
+  S.genres = S.genres.filter(function(g){return g&&g.name;}).map(function(g){
+    return {id:String(g.id||g.name),name:String(g.name),q:String(g.q||g.name),
+            updatedAt:(typeof g.updatedAt==="number"?g.updatedAt:0)};
+  });
+  var seenG={}; S.genres=S.genres.filter(function(g){if(seenG[g.id])return false;seenG[g.id]=1;return true;});
+
+  var byKey={}, out=[];
   S.items.forEach(function(it){
     if(!Array.isArray(it.cats)) it.cats = (it.cat && String(it.cat).trim()) ? [String(it.cat).trim()] : [];
     delete it.cat;
+    if(typeof it.plays==="number") { var p={}; if(it.plays)p[DEV]=it.plays; it.plays=p; }
+    if(!it.plays||typeof it.plays!=="object") it.plays={};
+    if(typeof it.updatedAt!=="number") it.updatedAt=it.lastAt||now;
+    it.id=itemKey(it.vid,it.list);
+    var prev=byKey[it.id];
+    if(prev){ // 同じ動画が二重に入っていたら1件にまとめる
+      it.cats.forEach(function(c){if(prev.cats.indexOf(c)<0)prev.cats.push(c);});
+      for(var d in it.plays) prev.plays[d]=Math.max(prev.plays[d]||0,it.plays[d]||0);
+      prev.lastAt=Math.max(prev.lastAt||0,it.lastAt||0);
+      prev.fav=prev.fav||it.fav;
+      prev.updatedAt=Math.max(prev.updatedAt||0,it.updatedAt||0);
+      return;
+    }
+    byKey[it.id]=it; out.push(it);
   });
-  if(!S.genres.length) S.genres = DEFAULT_GENRES.map(function(g){return {name:g.name,q:g.q};});
-  S.genres = S.genres.filter(function(g){return g&&g.name;})
-                     .map(function(g){return {name:String(g.name),q:String(g.q||g.name)};});
+  S.items=out;
+
   var have={}; S.genres.forEach(function(g){have[g.name]=1;});
   S.items.forEach(function(it){it.cats.forEach(function(c){
-    if(c&&!have[c]){S.genres.push({name:c,q:c+" BGM"});have[c]=1;}
+    if(c&&!have[c]){S.genres.push({id:c,name:c,q:c+" BGM",updatedAt:0});have[c]=1;}
   });});
-})();
-function save(){try{store.set(KEY,JSON.stringify({items:S.items,hist:S.hist.slice(0,300),genres:S.genres,vol:S.vol,scVol:S.scVol,shuffle:S.shuffle,night:S.night,mode:S.mode,filter:S.filter,gfilter:S.gfilter,lastCats:S.lastCats}));}catch(e){}}
+}
+normalize();
+function save(){try{store.set(KEY,JSON.stringify({items:S.items,hist:S.hist.slice(0,300),genres:S.genres,delItems:S.delItems,delGenres:S.delGenres,vol:S.vol,scVol:S.scVol,shuffle:S.shuffle,night:S.night,mode:S.mode,filter:S.filter,gfilter:S.gfilter,lastCats:S.lastCats}));}catch(e){}}
 
 var curId=null, ytReady=false, yt=null, scId=null, wakeLock=null, wakeWanted=false;
 var tEnd=0, tTick=null, fadeTick=null, driftTick=null, driftN=0, gEdit=false, editId=null, addCats=[];
@@ -306,7 +354,7 @@ function oembedTitle(it){
 function setTitleIfBlank(it,t){
   if(!it||!t) return false;
   if(!isBlank(it.title)) return false;
-  it.title=t; save(); render(); if(it.id===curId) updateNow();
+  it.title=t; it.updatedAt=Date.now(); save(); touch(true); render(); if(it.id===curId) updateNow();
   return true;
 }
 function cueForTitle(it){
@@ -374,9 +422,9 @@ function grabTitle(){
 function playItem(id){
   var it=byId(id); if(!it) return;
   curId=id;
-  it.plays=(it.plays||0)+1; it.lastAt=Date.now();
+  it.plays=it.plays||{}; it.plays[DEV]=(it.plays[DEV]||0)+1; it.lastAt=Date.now();
   S.hist.unshift({at:it.lastAt,id:it.id,title:it.title||it.vid}); S.hist=S.hist.slice(0,300);
-  save();
+  save(); touch(false);
   if(it.noEmbed){ window.open(watchUrl(it),"_blank","noopener"); updateNow(); render(); return; }
   cue(it,true); updateNow(); render();
 }
@@ -407,7 +455,7 @@ function updateNow(){
   if(!it){ $("nowMeta").textContent="下の一覧から選ぶか、ジャンルで探してURLを登録してください。"; return; }
   var bits=[];
   if(it.cats&&it.cats.length)bits.push(it.cats.join("・"));
-  bits.push((it.plays||0)+"回");
+  bits.push(playCount(it)+"回");
   bits.push(it.kind==="playlist"?"再生リスト":"動画");
   if(it.noEmbed)bits.push("埋め込み不可");
   if(S.gfilter&&S.gfilter!=="__none")bits.push("次へ: "+S.gfilter+"の中");
@@ -460,8 +508,8 @@ function addGenre(){
   n=n.trim(); if(!n) return null;
   if(genreByName(n)){toast("そのジャンルはすでにあります。",3000);return n;}
   var q=prompt("YouTubeで探すときの検索語（空欄なら「"+n+" BGM」）","");
-  S.genres.push({name:n,q:(q||"").trim()||(n+" BGM")});
-  save(); renderGenreSearch(); renderAddCats(); renderGFilters();
+  S.genres.push({id:n,name:n,q:(q||"").trim()||(n+" BGM"),updatedAt:Date.now()});
+  save(); touch(true); renderGenreSearch(); renderAddCats(); renderGFilters();
   return n;
 }
 $("bGEdit").addEventListener("click",function(){gEdit=!gEdit;renderGenreSearch();});
@@ -489,23 +537,32 @@ $("genreSearch").addEventListener("click",function(e){
     var nq=prompt("検索語",g.q||""); if(nq==null)nq=g.q;
     if(nn!==g.name){
       if(genreByName(nn)){toast("その名前は既に使われています。",3000);return;}
-      S.items.forEach(function(it){it.cats=(it.cats||[]).map(function(c){return c===g.name?nn:c;});});
+      S.items.forEach(function(it){
+        if((it.cats||[]).indexOf(g.name)>=0){
+          it.cats=it.cats.map(function(c){return c===g.name?nn:c;});
+          it.updatedAt=Date.now();
+        }
+      });
       if(S.gfilter===g.name)S.gfilter=nn;
       addCats=addCats.map(function(c){return c===g.name?nn:c;});
     }
-    g.name=nn; g.q=(nq||"").trim()||(nn+" BGM");
-    save(); renderGenreSearch(); renderAddCats(); renderGFilters(); render();
+    g.name=nn; g.q=(nq||"").trim()||(nn+" BGM"); g.updatedAt=Date.now();
+    save(); touch(true); renderGenreSearch(); renderAddCats(); renderGFilters(); render();
     return;
   }
   name=t.getAttribute("data-gdel");
   if(name){
     var used=counts()[name]||0;
     if(!confirm("ジャンル「"+name+"」を削除しますか？"+(used?"\n"+used+"件の登録から外れます（登録自体は消えません）。":""))) return;
+    var gone=S.genres.filter(function(g2){return g2.name===name;});
     S.genres=S.genres.filter(function(g2){return g2.name!==name;});
-    S.items.forEach(function(it){it.cats=(it.cats||[]).filter(function(c){return c!==name;});});
+    gone.forEach(function(g2){S.delGenres.push({id:g2.id,at:Date.now()});});
+    S.items.forEach(function(it){
+      if((it.cats||[]).indexOf(name)>=0){it.cats=it.cats.filter(function(c){return c!==name;});it.updatedAt=Date.now();}
+    });
     if(S.gfilter===name)S.gfilter="";
     addCats=addCats.filter(function(c){return c!==name;});
-    save(); renderGenreSearch(); renderAddCats(); renderGFilters(); render();
+    save(); touch(true); renderGenreSearch(); renderAddCats(); renderGFilters(); render();
   }
 });
 $("addCats").addEventListener("click",function(e){
@@ -532,7 +589,7 @@ function visible(){
   else if(S.gfilter) l=l.filter(function(x){return (x.cats||[]).indexOf(S.gfilter)>=0;});
   if(S.filter==="fav") l=l.filter(function(x){return x.fav;});
   if(S.filter==="recent") l=l.filter(function(x){return x.lastAt;}).sort(function(a,b){return b.lastAt-a.lastAt;});
-  else if(S.filter==="often") l=l.sort(function(a,b){return (b.plays||0)-(a.plays||0);});
+  else if(S.filter==="often") l=l.sort(function(a,b){return playCount(b)-playCount(a);});
   else l=l.sort(function(a,b){return (b.fav?1:0)-(a.fav?1:0)||(b.lastAt||0)-(a.lastAt||0);});
   return l;
 }
@@ -553,7 +610,7 @@ function render(){
        + (t?'<img class="ithumb" src="'+t+'" alt="" loading="lazy" data-play="'+it.id+'" onerror="this.style.visibility=\'hidden\'">'
            :'<button class="mini" data-play="'+it.id+'" title="再生">▶</button>')
        +   '<div class="body"><div class="t">'+esc(it.title||it.vid)+'</div><div class="m">'
-       +     ((it.cats&&it.cats.length)?esc(it.cats.join("・")):"未分類")+' · '+ago(it.lastAt)+' · '+(it.plays||0)+'回'
+       +     ((it.cats&&it.cats.length)?esc(it.cats.join("・")):"未分類")+' · '+ago(it.lastAt)+' · '+playCount(it)+'回'
        +     (it.noEmbed?' · <span style="color:var(--red-d)">埋め込み不可</span>':'')
        +   '</div></div>'
        +   '<div class="acts">'
@@ -581,10 +638,10 @@ $("list").addEventListener("click",function(e){
   var b=e.target.closest("button,img"); if(!b) return;
   var id=b.getAttribute("data-play");
   if(id) return playItem(id);
-  if((id=b.getAttribute("data-fav"))){var a=byId(id);if(a){a.fav=!a.fav;save();render();}return;}
+  if((id=b.getAttribute("data-fav"))){var a=byId(id);if(a){a.fav=!a.fav;a.updatedAt=Date.now();save();touch(true);render();}return;}
   if((id=b.getAttribute("data-open"))){
     var o=byId(id);
-    if(o){o.lastAt=Date.now();o.plays=(o.plays||0)+1;S.hist.unshift({at:o.lastAt,id:o.id,title:o.title||o.vid});save();render();window.open(watchUrl(o),"_blank","noopener");}
+    if(o){o.lastAt=Date.now();o.plays=o.plays||{};o.plays[DEV]=(o.plays[DEV]||0)+1;S.hist.unshift({at:o.lastAt,id:o.id,title:o.title||o.vid});save();touch(false);render();window.open(watchUrl(o),"_blank","noopener");}
     return;
   }
   if((id=b.getAttribute("data-ed"))){editId=(editId===id?null:id);render();return;}
@@ -600,19 +657,20 @@ $("list").addEventListener("click",function(e){
     t3.cats=t3.cats||[];
     var i3=t3.cats.indexOf(ec);
     if(i3>=0)t3.cats.splice(i3,1); else t3.cats.push(ec);
-    save(); render(); renderGFilters(); return;
+    t3.updatedAt=Date.now(); save(); touch(true); render(); renderGFilters(); return;
   }
   if((id=b.getAttribute("data-esave"))){
     var t4=byId(id), inp=$("edName");
-    if(t4&&inp)t4.title=(inp.value||"").trim()||t4.vid;
-    editId=null; save(); render(); renderGFilters(); updateNow(); return;
+    if(t4&&inp){t4.title=(inp.value||"").trim()||t4.vid;t4.updatedAt=Date.now();}
+    editId=null; save(); touch(true); render(); renderGFilters(); updateNow(); return;
   }
   if((id=b.getAttribute("data-del"))){
     var d2=byId(id);
     if(d2&&confirm("「"+(d2.title||d2.vid)+"」を一覧から削除しますか？")){
       S.items=S.items.filter(function(x){return x.id!==id;});
+      S.delItems.push({id:id,at:Date.now()});   // 削除を他端末にも伝える
       if(curId===id)curId=null; if(editId===id)editId=null;
-      save();render();renderGFilters();updateNow();
+      save();touch(true);render();renderGFilters();updateNow();
     }
     return;
   }
@@ -627,13 +685,15 @@ function addItem(url,name,cats){
   if(dup){
     var added=0;
     (cats||[]).forEach(function(c){if(dup.cats.indexOf(c)<0){dup.cats.push(c);added++;}});
-    save();render();renderGFilters();
+    if(added)dup.updatedAt=Date.now();
+    save();touch(true);render();renderGFilters();
     toast(added?"すでに登録済みだったので、ジャンルだけ追加しました。":"すでに登録されています。",3600);
     return dup;
   }
-  var it={id:uid(),kind:p.kind,vid:p.vid,list:p.list||"",title:(name||"").trim()||"(タイトル未取得)",
-          cats:(cats||[]).slice(),fav:false,plays:0,lastAt:0};
-  S.items.unshift(it); save(); render(); renderGFilters();
+  var it={id:itemKey(p.vid,p.list),kind:p.kind,vid:p.vid,list:p.list||"",title:(name||"").trim()||"(タイトル未取得)",
+          cats:(cats||[]).slice(),fav:false,plays:{},lastAt:0,updatedAt:Date.now()};
+  S.delItems=S.delItems.filter(function(t){return t.id!==it.id;});  // 消した動画を入れ直したら墓標を外す
+  S.items.unshift(it); save(); touch(true); render(); renderGFilters();
   if(isBlank(it.title)){ toast("追加しました。タイトルを取得しています…",3000); resolveTitle(it); }
   else toast("追加しました。",2600);
   return it;
@@ -839,6 +899,75 @@ $("bPlus10").addEventListener("click",function(){
   }
 });
 
+/* ── 端末間の同期（sync.js の共通エンジンを使う）───────
+   同期するのは 登録リスト・ジャンル・履歴 と削除の墓標だけ。
+   音量/夜間モード/表示状態は端末ごとに違って当然なので含めない。 */
+var sync=null;
+function touch(urgent){ if(sync) sync.touch(!!urgent); }
+function syncGetLocal(){
+  return {items:S.items,genres:S.genres,hist:S.hist.slice(0,300),delItems:S.delItems,delGenres:S.delGenres};
+}
+function syncSetLocal(d){
+  S.items=d.items||[]; S.genres=d.genres||[]; S.hist=d.hist||[];
+  S.delItems=d.delItems||[]; S.delGenres=d.delGenres||[];
+  normalize(); save();
+  if(curId&&!byId(curId))curId=null;
+  if(editId&&!byId(editId))editId=null;
+  if(S.gfilter&&S.gfilter!=="__none"&&!genreByName(S.gfilter))S.gfilter="";
+  addCats=addCats.filter(function(c){return !!genreByName(c);});
+  renderGenreSearch(); renderAddCats(); renderGFilters(); render(); updateNow();
+}
+function syncMerge(local,remote,lastSync){
+  if(!remote) return local;
+  var tI=NKSync.mergeTombs(local.delItems,remote.delItems);
+  var tG=NKSync.mergeTombs(local.delGenres,remote.delGenres);
+  var items=NKSync.mergeById(local.items,remote.items,lastSync,tI,"id",function(l,r,win){
+    // 再生回数は端末ごとの内訳を持っているので、両方を突き合わせて合算する
+    var o={}; for(var k in win) o[k]=win[k];
+    var plays={};
+    [r.plays,l.plays].forEach(function(pp){for(var d in (pp||{})) plays[d]=Math.max(plays[d]||0,pp[d]||0);});
+    o.plays=plays;
+    o.lastAt=Math.max(l.lastAt||0,r.lastAt||0);
+    return o;
+  });
+  var genres=NKSync.mergeById(local.genres,remote.genres,lastSync,tG,"id");
+  // 履歴は追記型。時刻＋IDで重複を除いて合流する
+  var seen={},hist=[];
+  [].concat(local.hist||[],remote.hist||[]).forEach(function(h){
+    if(!h||!h.at)return;
+    var k=h.at+"|"+(h.id||"");
+    if(seen[k])return; seen[k]=1; hist.push(h);
+  });
+  hist.sort(function(a,b){return b.at-a.at;});
+  return {items:items,genres:genres,hist:hist.slice(0,300),delItems:tI,delGenres:tG};
+}
+function paintSync(st,auto){
+  var b=$("bSync");
+  b.classList.toggle("err",st.phase==="error");
+  b.classList.toggle("busy",st.phase==="syncing");
+  b.classList.toggle("on",st.phase==="ok");
+  b.title=st.phase==="error"?(st.msg||"同期に失敗"):st.phase==="syncing"?"同期中…":st.phase==="ok"?"同期しました":"同期";
+  $("bSyncAuto").textContent="自動同期: "+(auto?"ON":"OFF");
+  var m=$("syncMsg");
+  if(!sync||!sync.hasClientId()){
+    m.textContent="まだつながっていません。先に「気になり帳」でGoogleドライブの同期設定（クライアントID）を済ませると、こちらは追加設定なしで使えます。";
+  } else if(st.phase==="error"){ m.textContent="⚠️ "+(st.msg||"同期に失敗しました");
+  } else if(st.phase==="syncing"){ m.textContent="同期しています…";
+  } else if(st.phase==="ok"){ m.textContent="同期しました（"+new Date(st.at).toLocaleTimeString()+"）。登録・ジャンル・★・履歴がPCとスマホで揃います。音量や夜間モードは端末ごとのままです。";
+  } else { m.textContent="登録・ジャンル・★・履歴をGoogleドライブ経由でPCとスマホで揃えます。"; }
+}
+$("bSync").addEventListener("click",function(){
+  var p2=$("syncPanel");
+  p2.style.display=(p2.style.display==="none"?"block":"none");
+});
+$("bSyncClose").addEventListener("click",function(){$("syncPanel").style.display="none";});
+$("bSyncNow").addEventListener("click",function(){
+  if(!sync)return;
+  sync.syncNow().then(function(){toast("同期しました。",3000);})
+                .catch(function(e){toast(sync.status().msg||"同期に失敗しました。",6000);});
+});
+$("bSyncAuto").addEventListener("click",function(){ if(sync) sync.setAuto(!sync.autoOn()); });
+
 /* ── 共有からの受け取り ───────────────────────────── */
 (function(){
   var m=(location.hash||"").match(/(?:#|&)bgmadd=([^&]+)/);
@@ -859,6 +988,11 @@ Array.prototype.forEach.call(document.querySelectorAll("#sfilters .f"),function(
 setTimer(0); render(); updateNow();
 if(!wakeSupported())$("bWake").style.display="none";
 /* 未取得のタイトルを起動時に静かに埋める（oEmbedのみ・最大8件・0.3秒間隔）*/
+if(window.NKSync){
+  sync=NKSync.create({app:"bgm",getLocal:syncGetLocal,setLocal:syncSetLocal,merge:syncMerge});
+  sync.onChange(paintSync);
+  setTimeout(function(){sync.start();},900);
+} else { $("bSync").style.display="none"; }
 setTimeout(function(){
   S.items.filter(function(it){return isBlank(it.title);}).slice(0,8)
     .forEach(function(it,i){
