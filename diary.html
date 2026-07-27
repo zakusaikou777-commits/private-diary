@@ -350,15 +350,31 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
 
                     <button id="encDisableBtn" class="btn btn-secondary" type="button" onclick="disableEncryption()" style="width: 100%; margin-top: var(--space-8); display: none;">暗号化を解除（平文に戻す）</button>
 
-                    <p style="margin: var(--space-8) 0 0; font-size: 12px; color: var(--color-text-secondary); line-height: 1.5;">⚠️ パスフレーズを忘れると復元できません（運営側でも復号できません）。安全な場所に控え、JSONバックアップも併用してください。<br>※「JSON/Markdownダウンロード」は明示的な書き出しのため<strong>平文</strong>です。フォルダ同期・Drive同期は暗号化有効時に暗号化されます。</p>
+                    <p style="margin: var(--space-8) 0 0; font-size: 12px; color: var(--color-text-secondary); line-height: 1.5;">※「JSON/Markdownダウンロード」は明示的な書き出しのため<strong>平文</strong>です。フォルダ同期・Drive同期は暗号化有効時に暗号化されます。</p>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">すべてのデータをエクスポート</label>
-                    <button class="btn btn-primary" onclick="exportAllData()" style="width: 100%;">ダウンロード</button>
+
+                <div class="form-group" style="border-top:1px solid var(--color-border); padding-top: var(--space-16);">
+                    <label class="form-label">この暗号化が役に立つのは、次のどれかに当てはまるときです</label>
+                    <ul style="margin: var(--space-8) 0; padding-left: 1.2em; font-size: 13px; line-height: 1.85; color: var(--color-text);">
+                        <li>このPCやスマホを、自分以外の人も触ることがある</li>
+                        <li>Googleドライブ上のコピーを、平文で置いておきたくない</li>
+                        <li>書き出したバックアップを、他の場所にも保管している</li>
+                    </ul>
+                    <p style="margin: var(--space-8) 0 0; font-size: 13px; line-height: 1.75; color: var(--color-text);">
+                        <strong>ひとつも当てはまらないなら、有効にしないほうが安全です。</strong>
+                        自分専用の端末なら、端末のロック（パスコード・ログイン）がすでに同じ役割を果たしています。
+                        暗号化を足しても守れるものはあまり増えず、パスフレーズを忘れる危険だけが増えます。
+                    </p>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">データをインポート</label>
-                    <button class="btn btn-secondary" style="width: 100%;" onclick="closeModal('securityModal'); openExportModal(); switchExportTab('import');">インポート画面を開く</button>
+
+                <div class="form-group" style="background: rgba(168,75,47,0.10); border: 1px solid var(--color-warning); border-radius: var(--radius-base); padding: var(--space-12);">
+                    <label class="form-label" style="margin-bottom: var(--space-8);">⚠️ 有効にする前に必ずお読みください</label>
+                    <ul style="margin: 0; padding-left: 1.2em; font-size: 13px; line-height: 1.85; color: var(--color-text);">
+                        <li>パスフレーズを忘れると、日記は<strong>永久に復元できません</strong>。開発者にも復号できません。</li>
+                        <li>パスワード管理アプリか紙に控えて、安全な場所に保管してください。</li>
+                        <li>暗号化されるのは<strong>日記帳だけ</strong>です。気になり帳・暗室・音は平文のままです。</li>
+                        <li>暗号化したまま同期しても、他の端末で同じパスフレーズを入れれば読めます。</li>
+                    </ul>
                 </div>
             </div>
             <div class="modal-footer">
@@ -2081,7 +2097,18 @@ const DRIVESCOPE = 'https://www.googleapis.com/auth/drive.appdata https://www.go
 const DRIVEDIARYFILENAME = 'diary.json';
 
 // TODO: OAuth Client ID (Web)
-const DRIVECLIENTID = '312868081144-nsjo9gfkm94ol1pha2nhq913g9p1m4e0.apps.googleusercontent.com';
+const DRIVECLIENTID_DEFAULT = '312868081144-nsjo9gfkm94ol1pha2nhq913g9p1m4e0.apps.googleusercontent.com';
+// クライアントIDは4アプリ共通（shared:gd:cid）。旧版はここだけ定数を直接
+// 使っていたため、☁パネルでIDを変えても日記帳だけ古いままになっていた。
+function driveClientId(){
+  try{
+    var v=(localStorage.getItem('shared:gd:cid')||'').trim();
+    if(v) return v;
+    v=(localStorage.getItem('kininari:gd:cid')||'').trim()||DRIVECLIENTID_DEFAULT;
+    if(v) localStorage.setItem('shared:gd:cid', v);
+    return v;
+  }catch(e){ return DRIVECLIENTID_DEFAULT; }
+}
 function sharedTokenGet(){ try{ var o=JSON.parse(localStorage.getItem('shared:gd:token')||'null'); if(o&&o.token&&Date.now()<o.exp-60000) return o.token; }catch(e){} return null; }
 function sharedTokenSet(t,exp){ try{ localStorage.setItem('shared:gd:token', JSON.stringify({token:t, exp:Date.now()+((exp||3600)*1000)})); }catch(e){} }
 function sharedTokenClear(){ try{ localStorage.removeItem('shared:gd:token'); }catch(e){} }
@@ -2097,7 +2124,7 @@ function initDriveTokenClient() {
     return;
   }
   driveTokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: DRIVECLIENTID,
+    client_id: driveClientId(),
     scope: DRIVESCOPE,
     callback: () => {},
     error_callback: () => showToast('Drive認証エラー', 'error')
@@ -2465,11 +2492,40 @@ function toggleAutoSyncDrive() {
     }catch(e){}
     return Promise.resolve();
   }
+  function encOn(){
+    // encEnabled は let 宣言で window に出ていないため、保存データ自体を見る
+    try{
+      var raw=localStorage.getItem('diaryEntries'); if(!raw) return false;
+      var o=JSON.parse(raw);
+      return !!(o && (o.__enc__ || o.enc === true || (o.salt && o.iv && o.ct)));
+    }catch(e){ return false; }
+  }
+  function reportEnc(){
+    try{ parent.postMessage({nkDiaryInfo:{enc:encOn()}},'*'); }catch(e){}
+  }
   window.addEventListener('message',function(e){
     var d=e.data; if(!d||!d.nkSync) return;
-    if(d.nkSync==='status') return report();
+    if(d.nkSync==='status'){ report(); reportEnc(); return; }
     if(d.nkSync==='now'){ syncNow().then(function(){setTimeout(report,300);}).catch(report); return; }
+    // シェルの☁パネルから移設した操作
+    if(d.nkSync==='markdown'){ try{ window.exportMarkdown(); }catch(err){} return; }
+    if(d.nkSync==='share'){ try{ window.shareBackup(); }catch(err){} return; }
+    if(d.nkSync==='security'){ try{ window.openSecurityModal(); }catch(err){} setTimeout(reportEnc,400); return; }
+    if(d.nkSync==='cid'){ try{ localStorage.removeItem('shared:gd:token'); }catch(err){} return; }
   });
+
+  /* 入口を☁に一本化するため、日記帳自身の 💾エクスポート と 🔐セキュリティ は隠す。
+     どちらもシェルの☁パネルから開ける。 */
+  function hideOwnButtons(){
+    var hit=0;
+    var btns=document.querySelectorAll('button');
+    for(var i=0;i<btns.length;i++){
+      var oc=btns[i].getAttribute('onclick')||'';
+      if(oc.indexOf('openExportModal')>=0||oc.indexOf('openSecurityModal')>=0){ btns[i].style.display='none'; hit++; }
+    }
+    return hit>=2;
+  }
+  var t2=0, iv2=setInterval(function(){ if(hideOwnButtons()||++t2>40) clearInterval(iv2); },250);
 
   /* バックアップ督促バナーは残す（警告として有用）。ただし押したときは
      日記帳だけの画面ではなく、シェルの統合パネルを開く。 */
@@ -2485,7 +2541,7 @@ function toggleAutoSyncDrive() {
   }
   var tries=0;
   var iv=setInterval(function(){ if(hookBanner()||++tries>40) clearInterval(iv); },250);
-  setTimeout(report,600);
+  setTimeout(function(){report();reportEnc();},600);
   setInterval(report,30000);
 })();
 </script>

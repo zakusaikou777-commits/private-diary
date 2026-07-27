@@ -96,7 +96,18 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 <button id="knExport" class="knbtn solid" type="button">まとめて書き出す（.json）</button>
 <label class="knbtn ghost">取り込む（ファイルを選択）<input id="knImport" type="file" accept="application/json,.json" hidden></label>
 </div>
+<div class="knmodal-row">
+<button id="knMd" class="knbtn ghost" type="button">📄 日記をMarkdownで書き出す</button>
+<button id="knShare" class="knbtn ghost" type="button">📤 バックアップを共有</button>
+</div>
 <p id="knMsg" class="knmodal-msg"></p>
+
+<div class="knsec">セキュリティ</div>
+<div class="knrow" id="knEncRow"><span class="nm">🔐 日記の暗号化</span><span class="st" id="knEncSt">—</span></div>
+<p class="knmodal-note">暗号化されるのは<b>日記帳だけ</b>です。気になり帳・暗室・音は平文のまま保存されます。パスフレーズを忘れると日記は復元できないので、必要かどうかは設定画面の説明を読んでからお決めください。</p>
+<div class="knmodal-row">
+<button id="knSecurity" class="knbtn ghost" type="button">暗号化の設定を開く →</button>
+</div>
 </div>
 </div>
 <div id="knHelp" class="knmodal">
@@ -150,7 +161,7 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 <li><b>気になり帳</b>：ヘッダーの同期アイコンから、ドライブに保存／読み込み（自動同期も可）。</li>
 <li><b>日記帳</b>：日記の設定からドライブに保存。</li>
 <li>端末をまたいでデータを引き継げます。</li>
-<li>上部の <b>☁</b> がデータの同期・バックアップの入口です。4つのアプリの同期状態がこの1画面で確認でき、「今すぐ全部同期」でまとめて実行できます。Googleを使わないファイルへの書き出し／取り込み（画像も含む）も同じ画面にあります。クライアントIDは4アプリ共通なので、設定は一度だけです。</li>
+<li>上部の <b>☁</b> がデータの同期・バックアップ・セキュリティのすべての入口です。日記帳の中にあった「エクスポート」「セキュリティ」ボタンは、ここから開くようになりました。4つのアプリの同期状態がこの1画面で確認でき、「今すぐ全部同期」でまとめて実行できます。Googleを使わないファイルへの書き出し／取り込み（画像も含む）も同じ画面にあります。クライアントIDは4アプリ共通なので、設定は一度だけです。</li>
 </ul>
 
 <h4>うまくいかないとき</h4>
@@ -225,6 +236,7 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     if(e.data.knTab){ show(e.data.knTab); return; }
     if(e.data.nkOpenSync){ knModalOpen(true); return; }      // 日記帳のバナーから
     if(e.data.nkSyncStatus){ knOnStatus(e.data.nkSyncStatus); return; }
+    if(e.data.nkDiaryInfo){ knEnc = !!e.data.nkDiaryInfo.enc; knPaintEnc(); return; }
   });
 
   /* ── 統合された同期パネル ────────────────────────────
@@ -237,6 +249,13 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
   var knApps=['diary','kininari','anshitsu','bgm'];
   var knLabels={diary:'📕 日記帳',kininari:'📝 気になり帳',anshitsu:'🎞️ 暗室',bgm:'🎧 音'};
   var knSt={};
+  var knEnc=null;   // 日記の暗号化が有効か（日記帳から届く）
+  function knPaintEnc(){
+    var el=document.getElementById('knEncSt'); if(!el) return;
+    el.textContent = (knEnc===null) ? '確認中…' : (knEnc ? '✅ 有効' : '無効');
+    var row=document.getElementById('knEncRow');
+    if(row) row.classList.toggle('ok', knEnc===true);
+  }
 
   function knCid(){
     try{
@@ -293,7 +312,7 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     if(v){
       knMsg('');
       var i=document.getElementById('knCid'); if(i) i.value=knCid();
-      knPaint(); knRefresh();
+      knPaint(); knPaintEnc(); knRefresh();
     }
   }
 
@@ -303,9 +322,12 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     var kdata = localStorage.getItem('kininari:data:v2');
     var anshitsu = localStorage.getItem('image-streaming:v1');
     var bgm = localStorage.getItem('bgm:v1');
+    // 暗室の「全消去した時刻」。これが無いと、復元後の同期で消したはずの記録が戻る
+    var anshitsuCleared = localStorage.getItem('image-streaming:clearedAt');
+    var gdCid = localStorage.getItem('shared:gd:cid');
     var files=[];
     try{ var db=await knOpenDB(); var recs=await knIdbAll(db); for(var i=0;i<recs.length;i++){ var r=recs[i]; if(r&&r.blob){ try{ files.push({id:r.id,name:r.name,type:r.type,dataUrl:await blobToDataURL(r.blob)}); }catch(e){} } } }catch(e){}
-    return { app:'nikki-kininari', v:2, exportedAt:new Date().toISOString(), diary:diary, diaryLastBackup:diaryLast, kininari:{ data:kdata, files:files }, anshitsu:anshitsu, bgm:bgm };
+    return { app:'nikki-kininari', v:2, exportedAt:new Date().toISOString(), diary:diary, diaryLastBackup:diaryLast, kininari:{ data:kdata, files:files }, anshitsu:anshitsu, anshitsuCleared:anshitsuCleared, bgm:bgm, gdCid:gdCid };
   }
   async function knExport(){
     knMsg('準備中…');
@@ -335,6 +357,8 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
       if(obj.diaryLastBackup) localStorage.setItem('diaryLastBackup', obj.diaryLastBackup);
       if(typeof obj.anshitsu==='string') localStorage.setItem('image-streaming:v1', obj.anshitsu);
       if(typeof obj.bgm==='string') localStorage.setItem('bgm:v1', obj.bgm);
+      if(typeof obj.anshitsuCleared==='string') localStorage.setItem('image-streaming:clearedAt', obj.anshitsuCleared);
+      if(typeof obj.gdCid==='string' && obj.gdCid) localStorage.setItem('shared:gd:cid', obj.gdCid);
       if(obj.kininari){
         if(typeof obj.kininari.data==='string') localStorage.setItem('kininari:data:v2', obj.kininari.data);
         var files=(obj.kininari.files||[]);
@@ -358,6 +382,20 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     setTimeout(function(){ knSend({nkSync:'status'}); }, 6000);
   });
   document.getElementById('knSyncAuto').addEventListener('click', function(){ knSetAuto(!knAuto()); });
+  // 日記帳から移設した操作。実体は日記帳側に残し、ここは入口だけ持つ。
+  document.getElementById('knMd').addEventListener('click', function(){
+    load('diary'); setTimeout(function(){ knSend({nkSync:'markdown'}); }, 400);
+    knMsg('日記帳からMarkdownを書き出します…');
+  });
+  document.getElementById('knShare').addEventListener('click', function(){
+    load('diary'); setTimeout(function(){ knSend({nkSync:'share'}); }, 400);
+    knMsg('バックアップの共有を開きます…');
+  });
+  document.getElementById('knSecurity').addEventListener('click', function(){
+    // 設定画面は日記帳が持っている（パスフレーズやロック解除と一体のため）
+    knModalOpen(false); show('diary');
+    setTimeout(function(){ knSend({nkSync:'security'}); }, 500);
+  });
   document.getElementById('knCidSave').addEventListener('click', function(){
     var v=(document.getElementById('knCid').value||'').trim();
     try{
