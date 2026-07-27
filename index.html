@@ -46,6 +46,17 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 .knhelp a{color:#3E6CA3}
 .knhelp code{background:#efe6d2;padding:1px 5px;border-radius:5px;font-size:11px;word-break:break-all;font-family:ui-monospace,monospace}
 .knhelp .note{font-size:11.5px;color:#7a6f5e;line-height:1.7;margin:8px 0;background:#f6efdf;border:1px solid #e7dcc4;border-radius:8px;padding:8px 10px}
+.knsec{font-size:11px;font-weight:700;letter-spacing:.04em;color:#7a6f5e;margin:18px 0 7px;padding-top:14px;border-top:1px solid #e2d6bd}
+.knsec:first-of-type{margin-top:6px;padding-top:0;border-top:0}
+.knstatus{margin:10px 0}
+.knrow{display:flex;align-items:center;gap:9px;padding:7px 10px;border:1px solid #e2d6bd;border-radius:9px;margin-bottom:5px;font-size:12.5px;background:#fdf8ec}
+.knrow .nm{flex:1;min-width:0}
+.knrow .st{font-size:11.5px;color:#7a6f5e;text-align:right}
+.knrow.ok{border-color:#bcd0bb}
+.knrow.err{border-color:#e0a99f;background:#fdf0ec}
+.knrow.err .st{color:#a3392f}
+.iconbtn.knerr{color:#a3392f;position:relative}
+.iconbtn.knerr:after{content:"";position:absolute;top:1px;right:1px;width:8px;height:8px;border-radius:50%;background:#c0463c}
 </style>
 </head>
 <body>
@@ -54,7 +65,7 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 <button class="apptab" type="button" data-app="kininari">📝 気になり帳</button>
 <button class="apptab" type="button" data-app="anshitsu">🎞️ 暗室</button>
 <button class="apptab" type="button" data-app="bgm">🎧 音</button>
-<button id="knBackupBtn" class="iconbtn" type="button" title="まとめてバックアップ">💾</button>
+<button id="knBackupBtn" class="iconbtn" type="button" title="データの同期・バックアップ">☁</button>
 <button id="knHelpBtn" class="iconbtn" type="button" title="ヘルプ・設定ガイド">❓</button>
 </div>
 <div id="frames">
@@ -65,8 +76,22 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 </div>
 <div id="knModal" class="knmodal">
 <div class="knmodal-card">
-<div class="knmodal-h">💾 まとめてバックアップ<button id="knModalX" class="knmodal-x" type="button">×</button></div>
-<p class="knmodal-note">日記帳と気になり帳の両方のデータ（添付の画像・ファイルも含む）を1つのファイルに書き出し／取り込みします。取り込むと現在のデータは置き換わり、自動で再読み込みします。</p>
+<div class="knmodal-h">☁ データの同期・バックアップ<button id="knModalX" class="knmodal-x" type="button">×</button></div>
+
+<div class="knsec">Googleドライブで同期（PC・スマホで揃える）</div>
+<p class="knmodal-note">クライアントIDは4つのアプリで共通です。ここで一度だけ設定すれば、日記帳・気になり帳・暗室・音のすべてで使われます。</p>
+<div class="knmodal-row">
+<input id="knCid" type="text" placeholder="Google OAuth クライアントID" style="flex:1;min-width:180px;padding:9px 11px;border:1px solid var(--kn-line,#e2d6bd);border-radius:9px;font:inherit;font-size:13px">
+<button id="knCidSave" class="knbtn ghost" type="button">保存</button>
+</div>
+<div id="knStatus" class="knstatus"></div>
+<div class="knmodal-row">
+<button id="knSyncAll" class="knbtn solid" type="button">今すぐ全部同期</button>
+<button id="knSyncAuto" class="knbtn ghost" type="button">自動同期: ON</button>
+</div>
+
+<div class="knsec">ファイルに保存（Googleを使わない場合）</div>
+<p class="knmodal-note">4つのアプリのデータ（添付の画像・ファイルも含む）を1つのファイルに書き出し／取り込みします。取り込むと現在のデータは置き換わり、自動で再読み込みします。</p>
 <div class="knmodal-row">
 <button id="knExport" class="knbtn solid" type="button">まとめて書き出す（.json）</button>
 <label class="knbtn ghost">取り込む（ファイルを選択）<input id="knImport" type="file" accept="application/json,.json" hidden></label>
@@ -80,7 +105,7 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 <p class="lead">日記帳・気になり帳・暗室・音（BGM）の4-in-1アプリです。データはこの端末（各アプリ内）に保存されます。GoogleドライブやGoogleカレンダーと連携するときは、最初に少しだけ設定が必要です。</p>
 
 <h4>暗室（イメージストリーミング）</h4>
-<p><b>🎞️ 暗室</b>タブは、情景を思い浮かべて五感の細部を声に出して描写する練習（ウェンガー式イメージストリーミング）のためのタイマーと記録です。情景のお題・3/5/10分タイマー・音声ガイド・Ten/Ten（10分×10日）の進捗が使えます。練習記録はこの端末に保存され、上部の <b>💾</b> まとめてバックアップにも含まれます。</p>
+<p><b>🎞️ 暗室</b>タブは、情景を思い浮かべて五感の細部を声に出して描写する練習（ウェンガー式イメージストリーミング）のためのタイマーと記録です。情景のお題・3/5/10分タイマー・音声ガイド・Ten/Ten（10分×10日）の進捗が使えます。練習記録はこの端末に保存され、上部の <b>☁</b> から同期・バックアップできます。</p>
 
 <h4>音（BGM）</h4>
 <p><b>🎧 音</b>タブは、YouTubeのBGMを毎回探さずに呼び出すためのものです。ジャンルから検索して、気に入った動画のURLを登録しておくと、次回はタップだけで再生できます。お気に入り（★）と再生履歴が残り、スリープタイマー・連続再生・シャッフルが使えます。</p>
@@ -125,7 +150,7 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 <li><b>気になり帳</b>：ヘッダーの同期アイコンから、ドライブに保存／読み込み（自動同期も可）。</li>
 <li><b>日記帳</b>：日記の設定からドライブに保存。</li>
 <li>端末をまたいでデータを引き継げます。</li>
-<li>上部の <b>💾</b> は「<b>まとめてバックアップ</b>」：日記＋気になり帳＋暗室＋音（BGMの登録・履歴）を1つのファイルに書き出し／取り込み（画像も含む。Googleなしでも使えるローカル保存）。</li>
+<li>上部の <b>☁</b> がデータの同期・バックアップの入口です。4つのアプリの同期状態がこの1画面で確認でき、「今すぐ全部同期」でまとめて実行できます。Googleを使わないファイルへの書き出し／取り込み（画像も含む）も同じ画面にあります。クライアントIDは4アプリ共通なので、設定は一度だけです。</li>
 </ul>
 
 <h4>うまくいかないとき</h4>
@@ -195,7 +220,67 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
   for(var k=0;k<tabs.length;k++){
     tabs[k].addEventListener('click', (function(t){ return function(){ show(t.getAttribute('data-app')); }; })(tabs[k]));
   }
-  window.addEventListener('message', function(e){ if(e.data && e.data.knTab){ show(e.data.knTab); } });
+  window.addEventListener('message', function(e){
+    if(!e.data) return;
+    if(e.data.knTab){ show(e.data.knTab); return; }
+    if(e.data.nkOpenSync){ knModalOpen(true); return; }      // 日記帳のバナーから
+    if(e.data.nkSyncStatus){ knOnStatus(e.data.nkSyncStatus); return; }
+  });
+
+  /* ── 統合された同期パネル ────────────────────────────
+     同期そのものは各アプリが持っている（マージの仕方がアプリごとに違うため）。
+     ここは「1か所で状態を見て、まとめて操作する」ための司令塔。 */
+  var KN_CID_KEY='shared:gd:cid';
+  var KN_CID_OLD='kininari:gd:cid';
+  var KN_CID_BUILTIN='312868081144-nsjo9gfkm94ol1pha2nhq913g9p1m4e0.apps.googleusercontent.com';
+  var KN_AUTO_KEY='shared:nksync:auto';
+  var knApps=['diary','kininari','anshitsu','bgm'];
+  var knLabels={diary:'📕 日記帳',kininari:'📝 気になり帳',anshitsu:'🎞️ 暗室',bgm:'🎧 音'};
+  var knSt={};
+
+  function knCid(){
+    try{
+      var v=(localStorage.getItem(KN_CID_KEY)||'').trim();
+      if(v) return v;
+      v=(localStorage.getItem(KN_CID_OLD)||'').trim()||KN_CID_BUILTIN;
+      if(v) localStorage.setItem(KN_CID_KEY,v);
+      return v;
+    }catch(e){ return KN_CID_BUILTIN; }
+  }
+  function knAuto(){ try{ return localStorage.getItem(KN_AUTO_KEY)!=='0'; }catch(e){ return true; } }
+  function knSetAuto(v){ try{ localStorage.setItem(KN_AUTO_KEY, v?'1':'0'); }catch(e){} knPaint(); }
+  function knAgo(at){
+    if(!at) return '—';
+    var m=Math.floor((Date.now()-at)/60000);
+    if(m<1) return 'たった今';
+    if(m<60) return m+'分前';
+    var h=Math.floor(m/60); if(h<24) return h+'時間前';
+    return Math.floor(h/24)+'日前';
+  }
+  function knOnStatus(s){ if(!s||!s.app) return; knSt[s.app]=s; knPaint(); }
+  function knPaint(){
+    var host=document.getElementById('knStatus'); if(!host) return;
+    var anyErr=false, h='';
+    knApps.forEach(function(a){
+      var s=knSt[a]||{phase:'?',at:0,msg:''};
+      var cls='', txt;
+      if(s.phase==='ok'){ cls='ok'; txt='✅ '+knAgo(s.at); }
+      else if(s.phase==='error'){ cls='err'; anyErr=true; txt='⚠️ '+(s.msg||'失敗'); }
+      else if(s.phase==='syncing'){ txt='同期中…'; }
+      else if(s.phase==='off'){ txt='未接続'; }
+      else { txt='タブを開くと確認します'; }
+      h+='<div class="knrow '+cls+'"><span class="nm">'+(knLabels[a]||a)+'</span><span class="st">'+txt+'</span></div>';
+    });
+    host.innerHTML=h;
+    var b=document.getElementById('knSyncAuto'); if(b) b.textContent='自動同期: '+(knAuto()?'ON':'OFF');
+    var btn=document.getElementById('knBackupBtn'); if(btn) btn.classList.toggle('knerr', anyErr);
+  }
+  function knSend(msg){
+    var fr=document.querySelectorAll('.appframe');
+    for(var i=0;i<fr.length;i++){ try{ fr[i].contentWindow.postMessage(msg,'*'); }catch(e){} }
+  }
+  function knLoadAll(){ knApps.forEach(function(a){ try{ load(a); }catch(e){} }); }
+  function knRefresh(){ knLoadAll(); setTimeout(function(){ knSend({nkSync:'status'}); },600); }
 
   // ---- combined backup (shell reads same-origin storage of both apps) ----
   function knOpenDB(){ return new Promise(function(res,rej){ var r=indexedDB.open('kininari',1); r.onupgradeneeded=function(){ try{ if(!r.result.objectStoreNames.contains('files')) r.result.createObjectStore('files',{keyPath:'id'}); }catch(e){} }; r.onsuccess=function(){ res(r.result); }; r.onerror=function(){ rej(r.error); }; }); }
@@ -203,7 +288,14 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
   function knIdbPut(db,rec){ return new Promise(function(res){ try{ var tx=db.transaction('files','readwrite'); tx.objectStore('files').put(rec); tx.oncomplete=function(){res(true);}; tx.onerror=function(){res(false);}; }catch(e){ res(false);} }); }
   function blobToDataURL(b){ return new Promise(function(res,rej){ var fr=new FileReader(); fr.onload=function(){res(fr.result);}; fr.onerror=function(){rej(fr.error);}; fr.readAsDataURL(b); }); }
   function knMsg(t,ok){ var el=document.getElementById('knMsg'); if(!el) return; el.textContent=t||''; el.className='knmodal-msg'+(ok===true?' ok':(ok===false?' err':'')); }
-  function knModalOpen(v){ document.getElementById('knModal').classList.toggle('open', !!v); if(v) knMsg(''); }
+  function knModalOpen(v){
+    document.getElementById('knModal').classList.toggle('open', !!v);
+    if(v){
+      knMsg('');
+      var i=document.getElementById('knCid'); if(i) i.value=knCid();
+      knPaint(); knRefresh();
+    }
+  }
 
   async function knBuildBackup(){
     var diary = localStorage.getItem('diaryEntries');
@@ -259,6 +351,24 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
   var hb=document.getElementById('knHelpBtn'); if(hb) hb.addEventListener('click', function(){ document.getElementById('knHelp').classList.add('open'); });
   var hx=document.getElementById('knHelpX'); if(hx) hx.addEventListener('click', function(){ document.getElementById('knHelp').classList.remove('open'); });
   var hl=document.getElementById('knHelp'); if(hl) hl.addEventListener('click', function(e){ if(e.target.id==='knHelp') hl.classList.remove('open'); });
+  document.getElementById('knSyncAll').addEventListener('click', function(){
+    knApps.forEach(function(a){ knSt[a]={phase:'syncing',at:0,msg:''}; });
+    knPaint(); knLoadAll();
+    setTimeout(function(){ knSend({nkSync:'now'}); }, 500);
+    setTimeout(function(){ knSend({nkSync:'status'}); }, 6000);
+  });
+  document.getElementById('knSyncAuto').addEventListener('click', function(){ knSetAuto(!knAuto()); });
+  document.getElementById('knCidSave').addEventListener('click', function(){
+    var v=(document.getElementById('knCid').value||'').trim();
+    try{
+      if(v) localStorage.setItem(KN_CID_KEY, v); else localStorage.removeItem(KN_CID_KEY);
+      localStorage.removeItem('shared:gd:token');   // IDが変わったら古いトークンは捨てる
+      localStorage.removeItem('shared:nksync:file');
+    }catch(e){}
+    knSend({nkSync:'cid'});
+    knMsg('クライアントIDを保存しました。「今すぐ全部同期」でつないでください。', true);
+  });
+  knCid();  // 起動時に共通の置き場へ移しておく（旧版は定数のままだった）
   document.getElementById('knExport').addEventListener('click', knExport);
   document.getElementById('knImport').addEventListener('change', function(e){ var f=e.target.files&&e.target.files[0]; if(f) knDoImport(f); e.target.value=''; });
 

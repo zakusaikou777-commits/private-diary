@@ -19,7 +19,11 @@
 
   var FILE_NAME = "nikki-apps-data.json";
   var TOKEN_KEY = "shared:gd:token";   // 3アプリ共有
-  var CID_KEY   = "kininari:gd:cid";   // 気になり帳で設定済みのものを借りる
+  var CID_KEY   = "shared:gd:cid";     // 4アプリ共通の置き場
+  var CID_OLD   = "kininari:gd:cid";   // 旧: 気になり帳だけが持っていた
+  // 気になり帳に埋め込まれている既定ID。旧版はこれを定数で持っていたため
+  // localStorage が空のままでも動いてしまい、他アプリから見つけられなかった。
+  var CID_BUILTIN = "312868081144-nsjo9gfkm94ol1pha2nhq913g9p1m4e0.apps.googleusercontent.com";
   var DEV_KEY   = "shared:devid";
   var FILE_KEY  = "shared:nksync:file";
   var SCOPE     = "https://www.googleapis.com/auth/drive.file";
@@ -48,7 +52,19 @@
     return d;
   }
 
-  function clientId() { return (store.get(CID_KEY) || "").trim(); }
+  function clientId() {
+    var v = (store.get(CID_KEY) || "").trim();
+    if (v) return v;
+    v = (store.get(CID_OLD) || "").trim() || CID_BUILTIN;
+    if (v) store.set(CID_KEY, v);   // 一度だけ共通の置き場へ移す
+    return v;
+  }
+  function setClientId(v) {
+    v = (v || "").trim();
+    if (v) store.set(CID_KEY, v); else store.del(CID_KEY);
+    store.del(TOKEN_KEY);           // IDが変わったら古いトークンは捨てる
+    store.del(FILE_KEY);
+  }
 
   /* ── 汎用マージ部品（各アプリから使う）───────────────────── */
   function itemTime(o) { return (o && (o.updatedAt || o.createdAt)) || 0; }
@@ -310,8 +326,49 @@
     };
   }
 
+  /* ── シェル(index.html)との橋渡し ──────────────────────────
+     iframe の中で開かれているときは、自前の同期UIを隠して
+     シェルの☁パネルに状態を送り、命令を受け取る。
+     単体で開いたときは従来どおり自分のUIで動く。 */
+  function embedded() {
+    try { return window.top !== window.self; } catch (e) { return true; }
+  }
+  function bridge(cfg) {
+    // cfg: {app, label, hideSel[], syncNow(), getStatus()}
+    if (!embedded()) return false;
+    try { document.documentElement.classList.add("nk-embed"); } catch (e) {}
+    (cfg.hideSel || []).forEach(function (sel) {
+      try {
+        var els = document.querySelectorAll(sel);
+        for (var i = 0; i < els.length; i++) els[i].style.display = "none";
+      } catch (e) {}
+    });
+    function report() {
+      var st = {};
+      try { st = cfg.getStatus() || {}; } catch (e) {}
+      try { parent.postMessage({ nkSyncStatus: { app: cfg.app, label: cfg.label, phase: st.phase || "idle", at: st.at || 0, msg: st.msg || "" } }, "*"); } catch (e) {}
+    }
+    window.addEventListener("message", function (e) {
+      var d = e.data;
+      if (!d || !d.nkSync) return;
+      if (d.nkSync === "status") { report(); return; }
+      if (d.nkSync === "now") {
+        Promise.resolve().then(function () { return cfg.syncNow && cfg.syncNow(); })
+          .then(report).catch(report);
+        return;
+      }
+      if (d.nkSync === "cid") { store.del(TOKEN_KEY); store.del(FILE_KEY); report(); return; }
+    });
+    setTimeout(report, 300);
+    return { report: report };
+  }
+
   global.NKSync = {
     create: create,
+    bridge: bridge,
+    embedded: embedded,
+    clientId: clientId,
+    setClientId: setClientId,
     mergeById: mergeById,
     mergeTombs: mergeTombs,
     itemTime: itemTime,

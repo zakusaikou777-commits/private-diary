@@ -991,6 +991,10 @@ if(!wakeSupported())$("bWake").style.display="none";
 if(window.NKSync){
   sync=NKSync.create({app:"bgm",getLocal:syncGetLocal,setLocal:syncSetLocal,merge:syncMerge});
   sync.onChange(paintSync);
+  // シェル(index.html)の中で開かれているときは、自前のUIを隠して親に任せる
+  var br=NKSync.bridge({app:"bgm",label:"🎧 音",hideSel:["#bSync","#syncPanel"],
+    syncNow:function(){return sync.syncNow();},getStatus:function(){return sync.status();}});
+  if(br) sync.onChange(function(){br.report();});
   setTimeout(function(){sync.start();},900);
 } else { $("bSync").style.display="none"; }
 setTimeout(function(){

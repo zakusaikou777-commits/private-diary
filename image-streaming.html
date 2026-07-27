@@ -594,6 +594,9 @@
     if(!window.NKSync){ if(b) b.style.display = "none"; return; }
     sync = NKSync.create({ app:"anshitsu", getLocal:syncGetLocal, setLocal:syncSetLocal, merge:syncMerge });
     sync.onChange(paintSync);
+    var br = NKSync.bridge({app:"anshitsu",label:"🎞️ 暗室",hideSel:["#syncWrap"],
+      syncNow:function(){return sync.syncNow();},getStatus:function(){return sync.status();}});
+    if(br) sync.onChange(function(){br.report();});
     if(b) b.addEventListener("click", function(){
       var p = document.getElementById("syncPanel");
       p.style.display = (p.style.display === "none" ? "block" : "none");

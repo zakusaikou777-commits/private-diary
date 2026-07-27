@@ -2431,5 +2431,63 @@ function toggleAutoSyncDrive() {
   start();
 })();
 </script>
+<script>
+/* ── シェル(index.html)の☁パネルとの橋渡し ──────────────────
+   入口が散らばらないよう、iframeの中では日記帳ぶんの同期／バックアップも
+   シェル側の1画面に集約する。単体で開いたときは従来どおり。 */
+(function(){
+  var embedded=false; try{ embedded = window.top !== window.self; }catch(e){ embedded = true; }
+  if(!embedded) return;
+  try{ document.documentElement.classList.add('nk-embed'); }catch(e){}
+
+  function lastBackup(){ try{ return localStorage.getItem('diaryLastBackup')||''; }catch(e){ return ''; } }
+  function autoOn(){ try{ return localStorage.getItem('autoSyncDrive')==='true'; }catch(e){ return false; } }
+  function status(){
+    var lb=lastBackup();
+    if(!autoOn() && !lb) return {phase:'off', at:0, msg:''};
+    var at=lb?new Date(lb).getTime():0;
+    var days=at?Math.floor((Date.now()-at)/86400000):999;
+    if(!at) return {phase:'off', at:0, msg:'まだ保存されていません'};
+    if(days>=7) return {phase:'error', at:at, msg:days+'日バックアップされていません'};
+    return {phase:'ok', at:at, msg:''};
+  }
+  function report(){
+    try{ parent.postMessage({nkSyncStatus:{app:'diary',label:'📕 日記帳',
+      phase:status().phase, at:status().at, msg:status().msg}},'*'); }catch(e){}
+  }
+  function syncNow(){
+    // Drive保存があればそれを使い、無ければ書き出しに落とす
+    try{
+      if(typeof window.drivePushAll==='function') return Promise.resolve(window.drivePushAll(true));
+    }catch(e){}
+    try{
+      if(typeof window.shareBackup==='function') return Promise.resolve(window.shareBackup());
+    }catch(e){}
+    return Promise.resolve();
+  }
+  window.addEventListener('message',function(e){
+    var d=e.data; if(!d||!d.nkSync) return;
+    if(d.nkSync==='status') return report();
+    if(d.nkSync==='now'){ syncNow().then(function(){setTimeout(report,300);}).catch(report); return; }
+  });
+
+  /* バックアップ督促バナーは残す（警告として有用）。ただし押したときは
+     日記帳だけの画面ではなく、シェルの統合パネルを開く。 */
+  function hookBanner(){
+    var b=document.getElementById('backupReminder'); if(!b) return false;
+    var btns=b.querySelectorAll('button');
+    if(!btns.length) return false;
+    btns[0].onclick=function(ev){
+      ev.preventDefault();
+      try{ parent.postMessage({nkOpenSync:true},'*'); }catch(e){}
+    };
+    return true;
+  }
+  var tries=0;
+  var iv=setInterval(function(){ if(hookBanner()||++tries>40) clearInterval(iv); },250);
+  setTimeout(report,600);
+  setInterval(report,30000);
+})();
+</script>
 </body>
 </html>

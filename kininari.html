@@ -817,6 +817,18 @@ async function restoreBackupFiles(files) {
   }
 }
 const SHARED_GD_CID = "312868081144-nsjo9gfkm94ol1pha2nhq913g9p1m4e0.apps.googleusercontent.com";
+// クライアントIDは4アプリ共通の shared:gd:cid に置く。
+// 旧版はここの定数を直接使っていたため localStorage が空のままになり、
+// 暗室・音からは「未設定」に見えてしまっていた。
+function readSharedCid() {
+  try {
+    const v = (localStorage.getItem("shared:gd:cid") || "").trim();
+    if (v) return v;
+    const old = (localStorage.getItem("kininari:gd:cid") || "").trim() || SHARED_GD_CID;
+    if (old) localStorage.setItem("shared:gd:cid", old);
+    return old;
+  } catch (e) { return SHARED_GD_CID; }
+}
 const GD_SCOPE = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/calendar.events";
 const GD_FILE_NAME = "kininari-data.json";
 function sharedTokenGet() {
@@ -848,7 +860,7 @@ function gisReady() {
 }
 function currentGdCid() {
   try {
-    return localStorage.getItem("kininari:gd:cid") || SHARED_GD_CID;
+    return readSharedCid();
   } catch (e) {
     return SHARED_GD_CID;
   }
@@ -3087,7 +3099,7 @@ function App() {
   });
   const [gdCid, setGdCid] = useState(() => {
     try {
-      return localStorage.getItem("kininari:gd:cid") || SHARED_GD_CID;
+      return readSharedCid();
     } catch (e) {
       return SHARED_GD_CID;
     }
@@ -3140,6 +3152,10 @@ function App() {
   const [syncState, setSyncState] = useState({
     phase: "idle"
   });
+  // シェル(index.html)の中にいるときは自前の同期ボタンを隠し、☁パネルに任せる
+  const embedded = (() => {
+    try { return window.top !== window.self; } catch (e) { return true; }
+  })();
   const notifiedRef = useRef(new Set());
   const notifyInited = useRef(false);
   const inputRef = useRef(null);
@@ -3348,6 +3364,7 @@ function App() {
     setGdLinked(true);
     try {
       localStorage.setItem("kininari:gd:cid", id);
+      localStorage.setItem("shared:gd:cid", id);   // 他アプリからも見えるように
     } catch (e) {}
   };
   const gdDisconnect = () => {
@@ -3358,10 +3375,41 @@ function App() {
     setGdLinked(false);
     sharedTokenClear();
     try {
-      ["kininari:gd:cid", "kininari:gd:file", "kininari:gd:sync"].forEach(k => localStorage.removeItem(k));
+      ["kininari:gd:cid", "shared:gd:cid", "kininari:gd:file", "kininari:gd:sync"].forEach(k => localStorage.removeItem(k));
       localStorage.setItem("kininari:gd:auto", "0");
     } catch (e) {}
   };
+  // シェルからの遠隔操作と状態報告
+  useEffect(() => {
+    if (!embedded) return;
+    const report = () => {
+      try {
+        parent.postMessage({ nkSyncStatus: {
+          app: "kininari", label: "📝 気になり帳",
+          phase: gdLinked ? syncState.phase : "off",
+          at: gdSync ? new Date(gdSync).getTime() : (syncState.at || 0),
+          msg: syncState.msg || ""
+        } }, "*");
+      } catch (e) {}
+    };
+    const onMsg = e => {
+      const d = e.data;
+      if (!d || !d.nkSync) return;
+      if (d.nkSync === "status") return report();
+      if (d.nkSync === "now") {
+        setSyncState({ phase: "syncing" });
+        gdPush().then(() => setSyncState({ phase: "ok", at: Date.now() }))
+                .catch(er => setSyncState({ phase: "error", at: Date.now(), msg: syncErrMsg(er) }))
+                .then(() => setTimeout(report, 80));
+        return;
+      }
+      if (d.nkSync === "cid") { setGdCid(readSharedCid()); return; }
+    };
+    window.addEventListener("message", onMsg);
+    report();
+    return () => window.removeEventListener("message", onMsg);
+  }, [embedded, syncState, gdSync, gdLinked]);
+
   const gdPush = async () => {
     const token = await gdGetToken(gdCid, false);
     let id = gdFileId || ((await gdFindFile(token)) || {}).id;
@@ -3941,6 +3989,7 @@ function App() {
     d: "M3 9h18M8 3v4M16 3v4"
   }))), React.createElement("button", {
     className: "data-btn" + (syncState.phase === "error" ? " sync-err" : syncState.phase === "syncing" ? " sync-busy" : ""),
+    style: embedded ? { display: "none" } : undefined,
     onClick: () => setDataOpen(true),
     title: syncState.phase === "error" ? syncState.msg || "同期に失敗しました" : syncState.phase === "syncing" ? "同期中…" : syncState.phase === "ok" ? "同期しました" : "端末間でデータを引き継ぐ",
     "aria-label": "\u7AEF\u672B\u9593\u3067\u30C7\u30FC\u30BF\u3092\u5F15\u304D\u7D99\u3050"
