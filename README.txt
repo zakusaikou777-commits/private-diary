@@ -1,17 +1,28 @@
 日記帳 & 気になり帳 一式
 
 【中身】
-- index.html ……… 入口（タブで日記帳/気になり帳を切替）
-- kininari.html …… 気になり帳本体（クリップ取り込み対応）
-- diary.html ……… 日記帳本体
-- sw.js …………… タスク通知用
-- clipper.html …… Chrome拡張の説明＆ダウンロードページ（ZIP同梱）
-- kininari-clipper/ … Chrome拡張のフォルダ（そのまま読み込めます）
+- index.html ……………………… 入口（タブで日記帳/気になり帳/暗室/音を切替）
+- diary.html …………………… 日記帳本体
+- kininari.html ……………… 気になり帳本体（クリップ取り込み対応）
+- image-streaming.html …… 暗室（イメージストリーミング）本体
+- bgm.html ……………………… 音（作業用BGMランチャー・就寝用の音）
+- audio/ ………………………… 就寝用の音（brown/pink/rain の各wav。合計約1.8MB）
+- sw.js ………………………… オフライン動作・タスク通知用
+- manifest.webmanifest …… PWA設定（ホーム画面に追加・共有メニュー対応）
+- icon-192.png / icon-512.png / icon-512-maskable.png … アプリアイコン
+- clipper.html ……………… Chrome拡張の説明＆ダウンロードページ
+- kininari-clipper/ ……… Chrome拡張のフォルダ（そのまま読み込めます）
 
 ━━━━━━━━━━━━━━━━━━
 【1. サイトに置く（ホスティング）】
-次の5つを「同じフォルダ」に置き、https で公開してください。
-  index.html / kininari.html / diary.html / sw.js / clipper.html
+ZIPの中身を「まるごと同じフォルダ」に置き、https で公開してください。
+（一部だけ置くと、暗室タブが開かない・ホーム画面に追加できない等になります）
+
+  必須: index.html / diary.html / kininari.html / image-streaming.html /
+        bgm.html / audio/（フォルダごと） / sw.js / manifest.webmanifest /
+        icon-192.png / icon-512.png / icon-512-maskable.png
+  任意: clipper.html（拡張の配布ページ。使わないなら不要）
+
 - 開くときは index.html。
 - file:// では動きません（ログイン・カレンダー・通知のため https 必須）。
 - 無料の例: GitHub Pages、Netlify、Cloudflare Pages など。
@@ -28,5 +39,19 @@
 【3. Google連携（ドライブ/カレンダー）の事前設定】
 アプリ内の ❓ ヘルプ画面に手順をまとめています（API有効化・スコープ・JavaScript生成元の登録など）。
 
+【音（BGM）タブについて】
+- YouTubeのBGMを毎回検索せずに呼び出すためのタブです。ジャンル検索 → 気に入った
+  URLを登録 → 次回はタップだけ。お気に入り★と再生履歴が残ります。
+- 他のタブに切り替えても鳴り続けます（アプリを開いている間）。
+- ★重要: スマホで画面を消すとYouTubeは止まります。ブラウザ側の仕様で回避でき
+  ません（iPhoneのSafariも同じ）。💡ボタンで消灯を防げますが電池を多く使います。
+- 「就寝用の音」（ブラウンノイズ/ピンクノイズ/雨）は端末内の音なので、画面を
+  消しても鳴り続けます。寝るときはこちらを使ってください。
+- Androidでは、YouTubeアプリの「共有」からこのアプリに送ると音タブに登録されます。
+
 【データについて】
 すべて自分専用です。データは自分の端末に保存され、Google連携も自分のアカウント/自分のクライアントIDのみを使います。
+
+【更新時の注意】
+ファイルを差し替えたら、ブラウザで一度リロードしてください。Service Worker は
+オンライン時つねに最新を取りに行く設定なので、通常はこれだけで新しい版になります。

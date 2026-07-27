@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>気になり帳</title>
 <meta name="theme-color" content="#f4ecda" />
 <style>html,body{margin:0;height:100%;background:#f4ecda;}#root{min-height:100vh;}</style>
@@ -326,6 +326,83 @@ const {
 } = React;
 const STORAGE_KEY = "kininari:data:v2";
 const OLD_KEY = "kininari:memos:v1";
+const TOMB_KEY = "kininari:deleted:v1";
+const TOMB_TTL = 90 * 24 * 3600 * 1000; // 90日で墓標を掃除
+// 削除を端末間で伝えるための「墓標」。これが無いと、片方で消したメモが
+// もう片方からの同期で復活してしまう。
+function tombstonesGet() {
+  try {
+    const a = JSON.parse(localStorage.getItem(TOMB_KEY) || "[]");
+    if (!Array.isArray(a)) return [];
+    const cut = Date.now() - TOMB_TTL;
+    return a.filter(t => t && t.id && (t.at || 0) > cut);
+  } catch (e) { return []; }
+}
+function tombstonesSet(list) {
+  try { localStorage.setItem(TOMB_KEY, JSON.stringify(list || [])); } catch (e) {}
+}
+function tombstonesAdd(ids) {
+  const now = Date.now();
+  const cur = tombstonesGet();
+  const seen = new Set(cur.map(t => t.id));
+  (Array.isArray(ids) ? ids : [ids]).forEach(id => { if (id && !seen.has(id)) { cur.push({ id, at: now }); seen.add(id); } });
+  tombstonesSet(cur);
+  return cur;
+}
+function tombstonesMerge(remote) {
+  const map = new Map();
+  [...tombstonesGet(), ...(Array.isArray(remote) ? remote : [])].forEach(t => {
+    if (!t || !t.id) return;
+    const at = t.at || 0;
+    if (!map.has(t.id) || map.get(t.id) < at) map.set(t.id, at);
+  });
+  const cut = Date.now() - TOMB_TTL;
+  const out = [...map.entries()].filter(([, at]) => at > cut).map(([id, at]) => ({ id, at }));
+  tombstonesSet(out);
+  return out;
+}
+const itemTime = o => (o && (o.updatedAt || o.createdAt)) || 0;
+// updatedAt 以外を安定した順序で文字列化して、実際に中身が変わったかを判定する
+function itemSig(o) {
+  try {
+    return JSON.stringify(Object.keys(o).filter(k => k !== "updatedAt").sort().map(k => [k, o[k]]));
+  } catch (e) { return Math.random().toString(); }
+}
+// 変更のあった項目にだけ updatedAt を打つ（全経路をここ1か所で面倒みる）
+function stampUpdated(next, prev) {
+  const prevById = new Map((prev || []).map(o => [o.id, o]));
+  const now = Date.now();
+  return (next || []).map(o => {
+    const p = prevById.get(o.id);
+    if (!p) return o.updatedAt ? o : { ...o, updatedAt: o.createdAt || now };
+    if (itemSig(o) === itemSig(p)) return o.updatedAt ? o : { ...o, updatedAt: p.updatedAt || p.createdAt || now };
+    return { ...o, updatedAt: now };
+  });
+}
+// 端末間マージ: id ごとに updatedAt の新しい方を採用し、墓標で削除を反映する
+function mergeById(localList, remoteList, lastSync, tombs) {
+  const tombAt = new Map();
+  (tombs || []).forEach(t => { if (t && t.id) tombAt.set(t.id, Math.max(tombAt.get(t.id) || 0, t.at || 0)); });
+  const byId = new Map();
+  (remoteList || []).forEach(o => byId.set(o.id, o));
+  (localList || []).forEach(o => {
+    const r = byId.get(o.id);
+    if (!r) {
+      // ローカルにしか無い = 最終同期より後に作られた/直されたものだけ残す
+      if (itemTime(o) > lastSync) byId.set(o.id, o);
+      return;
+    }
+    if (itemTime(o) > itemTime(r)) byId.set(o.id, o);
+  });
+  const out = [];
+  byId.forEach((o, id) => {
+    const t = tombAt.get(id);
+    // 削除より後に更新されていれば復活を許す（編集が削除に勝つ）
+    if (t && itemTime(o) <= t) return;
+    out.push(o);
+  });
+  return out;
+}
 const API_KEY_KEY = "kininari:apikey";
 const AI_MODEL = "claude-sonnet-4-6";
 const CATEGORIES = [{
@@ -380,7 +457,8 @@ function normalizeMemo(m) {
     links,
     notebookId: m.notebookId || null,
     attachments: Array.isArray(m.attachments) ? m.attachments : [],
-    remind: typeof m.remind === "number" ? m.remind : null
+    remind: typeof m.remind === "number" ? m.remind : null,
+    updatedAt: typeof m.updatedAt === "number" ? m.updatedAt : (m.createdAt || 0)
   };
   delete o.link;
   return o;
@@ -390,7 +468,8 @@ function normalizeFolder(f, i) {
     color: NB_COLORS[i % NB_COLORS.length],
     ...f,
     parentId: f.parentId ?? null,
-    pinned: !!f.pinned
+    pinned: !!f.pinned,
+    updatedAt: typeof f.updatedAt === "number" ? f.updatedAt : (f.createdAt || 0)
   };
 }
 const PinIcon = () => React.createElement("svg", {
@@ -443,9 +522,10 @@ function htmlToText(s) {
   if (!s) return "";
   if (!looksLikeHtmlKn(s)) return s;
   try {
-    const d = document.createElement("div");
-    d.innerHTML = s.replace(/<\/(p|div|h[1-6]|li|tr)>/gi, "\n").replace(/<br\s*\/?>/gi, "\n");
-    return (d.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
+    // <template> の中身は inert（img の読み込みや onerror が走らない）
+    const t = document.createElement("template");
+    t.innerHTML = s.replace(/<\/(p|div|h[1-6]|li|tr)>/gi, "\n").replace(/<br\s*\/?>/gi, "\n");
+    return (t.content.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
   } catch (e) {
     return "";
   }
@@ -455,12 +535,15 @@ function looksLikeHtmlKn(s) {
   return KN_HTML_RE.test(s || "");
 }
 const KN_SAFE_STYLE = new Set(["color", "background-color", "font-size", "font-family", "font-weight", "font-style", "text-decoration", "text-decoration-line", "text-align"]);
-const KN_SAFE_ATTR = new Set(["alt", "target", "rel", "size", "face", "color"]);
+const KN_SAFE_ATTR = new Set(["alt", "target", "rel", "size", "face", "color", "data-kid"]);
 const KN_DANGEROUS_RE = /<\s*\/?\s*(script|iframe|object|embed|svg|math|link|meta|base|form|input|textarea|button|select|option|noscript|frame|frameset|applet|audio|video|source|track|canvas|picture|style|title)\b|\son\w+\s*=|javascript:/i;
 // メモ本文のHTMLをサニタイズ（インポート/Drive取り込み/貼り付け由来のonerror等を除去）
 function sanitizeMemoHtml(s) {
   if (!s) return "";
-  if (!looksLikeHtmlKn(s) && !KN_DANGEROUS_RE.test(s)) return s;
+  // 以前はタグらしき文字列が無ければ素通ししていたが、許可リストに無いタグ
+  // （marquee, details 等）＋空白を使わない on... 属性で両方の判定をすり抜けた。
+  // "<" が含まれるなら必ずサニタイザを通す。
+  if (s.indexOf("<") === -1) return s;
   try {
     const tpl = document.createElement("template");
     tpl.innerHTML = String(s);
@@ -640,10 +723,46 @@ const idbPut = record => idbOp("readwrite", s => s.put(record));
 const idbGet = id => idbOp("readonly", s => s.get(id));
 const idbDelete = id => idbOp("readwrite", s => s.delete(id));
 const idbKeys = () => idbOp("readonly", s => s.getAllKeys());
+// 本文HTML中の <img data-kid="..."> から IndexedDB のIDを取り出す。
+// 本文画像は data: URL ではなく IndexedDB に置き、HTMLにはIDだけを残す。
+const KID_RE = /data-kid\s*=\s*"([^"]+)"/gi;
+function bodyImageIds(html) {
+  const out = [];
+  if (!html) return out;
+  let m;
+  KID_RE.lastIndex = 0;
+  while ((m = KID_RE.exec(html))) out.push(m[1]);
+  return out;
+}
+// メモ1件が参照している全ファイルID（添付＋本文画像）
+function memoFileIds(m) {
+  return [...(m.attachments || []).map(a => a.id), ...bodyImageIds(m.body)];
+}
+// data-kid を持つ <img> に IndexedDB から blob URL を割り当てる。
+// 返り値は生成したURLの配列（呼び出し側で revoke する）
+async function hydrateBodyImages(rootEl) {
+  const made = [];
+  if (!rootEl) return made;
+  const imgs = rootEl.querySelectorAll("img[data-kid]");
+  for (const im of imgs) {
+    const id = im.getAttribute("data-kid");
+    if (!id || im.dataset.kidResolved === id) continue;
+    try {
+      const rec = await idbGet(id);
+      if (rec && rec.blob) {
+        const u = URL.createObjectURL(rec.blob);
+        im.src = u;
+        im.dataset.kidResolved = id;
+        made.push(u);
+      }
+    } catch (e) {}
+  }
+  return made;
+}
 async function gcAttachments(memos) {
   try {
     const used = new Set();
-    memos.forEach(m => (m.attachments || []).forEach(a => used.add(a.id)));
+    memos.forEach(m => memoFileIds(m).forEach(id => used.add(id)));
     const keys = await idbKeys();
     for (const k of keys) if (!used.has(k)) await idbDelete(k);
   } catch (e) {}
@@ -659,15 +778,18 @@ function blobToDataUrl(blob) {
 async function buildBackupObject(memos, folders) {
   const files = [];
   const seen = new Set();
-  for (const m of memos) for (const a of m.attachments || []) {
-    if (seen.has(a.id)) continue;
-    seen.add(a.id);
+  // 添付（📎）だけでなく本文に貼った画像（data-kid）も書き出す
+  const meta = {};
+  for (const m of memos) for (const a of m.attachments || []) meta[a.id] = a;
+  for (const m of memos) for (const id of memoFileIds(m)) {
+    if (seen.has(id)) continue;
+    seen.add(id);
     try {
-      const rec = await idbGet(a.id);
+      const rec = await idbGet(id);
       if (rec && rec.blob) files.push({
-        id: a.id,
-        name: rec.name || a.name,
-        type: rec.type || a.type,
+        id: id,
+        name: rec.name || (meta[id] && meta[id].name) || "image",
+        type: rec.type || (meta[id] && meta[id].type) || rec.blob.type || "",
         dataUrl: await blobToDataUrl(rec.blob)
       });
     } catch (e) {}
@@ -676,7 +798,8 @@ async function buildBackupObject(memos, folders) {
     app: "kininari",
     memos,
     notebooks: folders,
-    files
+    files,
+    deleted: tombstonesGet()
   };
 }
 async function restoreBackupFiles(files) {
@@ -822,6 +945,14 @@ async function gdGetMeta(token, id) {
   return r.json();
 }
 const GCAL_BASE = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+function syncErrMsg(e) {
+  const m = String(e && e.message || e);
+  if (/403/.test(m)) return "Driveの権限が不足しています。設定を確認してください。";
+  if (/401/.test(m)) return "Googleログインの期限が切れました。もう一度サインインしてください。";
+  if (/読み込みが未完了|認証に失敗/.test(m)) return "自動サインインできませんでした。同期ボタンから手動で接続してください。";
+  if (/Failed to fetch|NetworkError/i.test(m)) return "ネットワークに接続できませんでした。";
+  return "同期に失敗しました：" + m.slice(0, 80);
+}
 function calErr(e) {
   const m = String(e && e.message || e);
   if (/403/.test(m)) return "カレンダーの権限が不足しています。一度ログインし直すか、Cloud側でCalendar APIとスコープの設定が必要です。";
@@ -1159,6 +1290,60 @@ function FolderPicker({
     className: "dot"
   }), folder.name)));
 }
+// 本文画像用: data URL ではなく Blob を返す（IndexedDB に入れるため）
+function downscaleImageBlob(file, maxDim, quality) {
+  return new Promise(resolve => {
+    try {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        let w = img.width, h = img.height;
+        const scale = Math.min(1, maxDim / Math.max(w, h));
+        w = Math.max(1, Math.round(w * scale));
+        h = Math.max(1, Math.round(h * scale));
+        const c = document.createElement("canvas");
+        c.width = w; c.height = h;
+        c.getContext("2d").drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(url);
+        const type = file.type === "image/png" && w * h < 240 * 240 ? "image/png" : "image/jpeg";
+        try {
+          c.toBlob(b => resolve(b || null), type, quality);
+        } catch (e) { resolve(null); }
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+      img.src = url;
+    } catch (e) { resolve(null); }
+  });
+}
+// 旧版で data: URL のまま本文に埋め込まれた画像を IndexedDB に移す（1回だけ走る）
+async function migrateBodyImages(memos) {
+  let moved = 0, changed = false;
+  const out = [];
+  for (const m of memos) {
+    const b = m.body || "";
+    if (!/<img[^>]+src\s*=\s*["\']data:image\//i.test(b)) { out.push(m); continue; }
+    try {
+      const tpl = document.createElement("template"); // inert: data URL を読みに行かない
+      tpl.innerHTML = b;
+      const imgs = tpl.content.querySelectorAll('img[src^="data:image/"]');
+      for (const im of imgs) {
+        try {
+          const blob = await (await fetch(im.getAttribute("src"))).blob();
+          const id = uid();
+          await idbPut({ id, blob, name: "画像", type: blob.type, size: blob.size });
+          im.removeAttribute("src");
+          im.setAttribute("data-kid", id);
+          moved++;
+        } catch (e) {}
+      }
+      const div = document.createElement("div");
+      div.appendChild(tpl.content.cloneNode(true));
+      out.push({ ...m, body: div.innerHTML });
+      changed = true;
+    } catch (e) { out.push(m); }
+  }
+  return { memos: out, moved, changed };
+}
 function downscaleImage(file, maxDim, quality) {
   return new Promise(resolve => {
     try {
@@ -1194,11 +1379,21 @@ function downscaleImage(file, maxDim, quality) {
 }
 function RichEditor({
   value,
-  onChange
+  onChange,
+  autoFocus
 }) {
   const ref = useRef(null);
   const fileRef = useRef(null);
   const savedRange = useRef(null);
+  const madeUrls = useRef([]);
+  // contenteditable は全消ししても <br> が残るため :empty が偽になる。
+  // プレースホルダが二度と戻らない問題を避けるため、自前で空判定する。
+  const updateEmpty = () => {
+    const el = ref.current;
+    if (!el) return;
+    const empty = !(el.textContent || "").trim() && !el.querySelector("img");
+    el.setAttribute("data-empty", empty ? "1" : "0");
+  };
   const saveSel = () => {
     try {
       const s = window.getSelection();
@@ -1219,9 +1414,29 @@ function RichEditor({
     if (!ref.current) return;
     const v = value || "";
     if (looksLikeHtmlKn(v)) ref.current.innerHTML = v;else ref.current.innerText = v;
+    updateEmpty();
+    hydrateBodyImages(ref.current).then(us => {
+      madeUrls.current.push(...us);
+      updateEmpty();
+    });
+    if (autoFocus) {
+      try { ref.current.focus(); } catch (e) {}
+    }
+    return () => {
+      madeUrls.current.forEach(u => URL.revokeObjectURL(u));
+      madeUrls.current = [];
+    };
   }, []);
   const emit = () => {
-    if (ref.current) onChange(ref.current.innerHTML);
+    if (!ref.current) return;
+    updateEmpty();
+    // 保存するHTMLからは一時的な blob: URL を落とし、data-kid（ID）だけを残す
+    const clone = ref.current.cloneNode(true);
+    clone.querySelectorAll("img[data-kid]").forEach(im => {
+      im.removeAttribute("src");
+      im.removeAttribute("data-kid-resolved");
+    });
+    onChange(clone.innerHTML);
   };
   const cmd = (c, val) => {
     restoreSel();
@@ -1238,12 +1453,23 @@ function RichEditor({
     restoreSel();
     for (const f of files) {
       if (!(f.type || "").startsWith("image/")) continue;
-      const dataUrl = await downscaleImage(f, 1280, 0.72);
-      if (dataUrl) {
-        try {
-          document.execCommand("insertHTML", false, '<img src="' + dataUrl + '" alt="">');
-        } catch (e) {}
-      }
+      // 旧版は data: URL を本文に直接埋めていたため localStorage を食い潰した。
+      // 縮小した Blob を IndexedDB に置き、本文にはIDだけを残す。
+      const blob = await downscaleImageBlob(f, 1280, 0.72);
+      if (!blob) continue;
+      const id = uid();
+      try {
+        await idbPut({
+          id,
+          blob,
+          name: f.name || "画像",
+          type: blob.type || "image/jpeg",
+          size: blob.size
+        });
+        const u = URL.createObjectURL(blob);
+        madeUrls.current.push(u);
+        document.execCommand("insertHTML", false, '<img data-kid="' + id + '" src="' + u + '" alt="">');
+      } catch (e) {}
     }
     emit();
   };
@@ -1534,6 +1760,28 @@ function ReminderField({
     value: v == null ? "" : String(v)
   }, label))));
 }
+// 本文HTMLの描画。<img data-kid> を IndexedDB から復元して表示する
+function RichBody({ html }) {
+  const ref = useRef(null);
+  const made = useRef([]);
+  useEffect(() => {
+    if (!ref.current) return;
+    let alive = true;
+    hydrateBodyImages(ref.current).then(us => {
+      if (alive) made.current.push(...us);else us.forEach(u => URL.revokeObjectURL(u));
+    });
+    return () => { alive = false; };
+  }, [html]);
+  useEffect(() => () => {
+    made.current.forEach(u => URL.revokeObjectURL(u));
+    made.current = [];
+  }, []);
+  return React.createElement("div", {
+    ref: ref,
+    className: "memo-rich",
+    dangerouslySetInnerHTML: { __html: html }
+  });
+}
 function MemoCard({
   memo,
   folders,
@@ -1760,11 +2008,8 @@ function MemoCard({
     "aria-label": "\u30D4\u30F3"
   }, React.createElement(PinIcon, null))), React.createElement("div", {
     className: "title"
-  }, memo.title), memo.body && (looksLikeHtmlKn(memo.body) ? React.createElement("div", {
-    className: "memo-rich",
-    dangerouslySetInnerHTML: {
-      __html: memo.body
-    }
+  }, memo.title), memo.body && (looksLikeHtmlKn(memo.body) ? React.createElement(RichBody, {
+    html: memo.body
   }) : React.createElement("div", {
     className: "body"
   }, memo.body)), memo.tags && memo.tags.length > 0 && React.createElement("div", {
@@ -2431,6 +2676,7 @@ function DataModal({
   onClose,
   gdCid,
   gdSync,
+  syncState,
   gdAuto,
   gdConnected,
   onGdConnect,
@@ -2619,7 +2865,9 @@ function DataModal({
     className: "gd-status"
   }, React.createElement("span", {
     className: "gd-dot"
-  }), "\u9023\u643A\u6E08\u307F", gdSync ? ` ・ 最終同期 ${new Date(gdSync).toLocaleString()}` : ""), React.createElement("div", {
+  }), "\u9023\u643A\u6E08\u307F", gdSync ? ` ・ 最終同期 ${new Date(gdSync).toLocaleString()}` : ""), syncState && syncState.phase === "error" ? React.createElement("p", {
+    className: "gd-err"
+  }, "\u26A0\uFE0F \u81EA\u52D5\u540C\u671F\u304C\u6B62\u307E\u3063\u3066\u3044\u307E\u3059: ", syncState.msg || "原因不明") : null, React.createElement("div", {
     className: "data-actions"
   }, React.createElement("button", {
     className: "btn solid",
@@ -2797,6 +3045,10 @@ function App() {
   const [freshId, setFreshId] = useState(null);
   const [nt, setNt] = useState("");
   const [showDetail, setShowDetail] = useState(false);
+  // 本文欄は「タイトルを書き始めたら自動で開く」。ただし自分で閉じたら以後は開かない。
+  const [showBody, setShowBody] = useState(false);
+  const [bodyFocus, setBodyFocus] = useState(false);
+  const bodyClosed = useRef(false);
   const [ncat, setNcat] = useState("メモ");
   const [ntags, setNtags] = useState([]);
   const [nlinks, setNlinks] = useState([]);
@@ -2806,7 +3058,13 @@ function App() {
   const [nattach, setNattach] = useState([]);
   const [nbody, setNbody] = useState("");
   const [capKey, setCapKey] = useState(0);
-  const nbodyHas = !!(nbody && (htmlToText(nbody).replace(/\s/g, "") || /<img/i.test(nbody)));
+  // タイトルを書き始めたら本文欄を自動で開く（フォーカスは奪わない）
+  useEffect(() => {
+    if (nt.trim() && !showBody && !bodyClosed.current) {
+      setBodyFocus(false);
+      setShowBody(true);
+    }
+  }, [nt]);
   const [q, setQ] = useState("");
   const [activeFolder, setActiveFolder] = useState(null);
   const [includeSub, setIncludeSub] = useState(false);
@@ -2878,6 +3136,10 @@ function App() {
     }
   });
   const [toast, setToast] = useState(null);
+  // 同期の状態。旧版は失敗しても完全に無言だったので、必ず画面に出す
+  const [syncState, setSyncState] = useState({
+    phase: "idle"
+  });
   const notifiedRef = useRef(new Set());
   const notifyInited = useRef(false);
   const inputRef = useRef(null);
@@ -2908,9 +3170,27 @@ function App() {
     setLoading(false);
     requestAnimationFrame(() => setLoaded(true));
     skipPush.current = true;
-    gcAttachments(m);
+    // 旧版が本文に埋めた data: URL の画像を IndexedDB へ逃がす（初回だけ）
+    migrateBodyImages(m).then(res => {
+      if (res && res.changed) {
+        skipPush.current = false;
+        persist(res.memos, f);
+        gcAttachments(res.memos);
+        setToast({
+          title: "本文の画像を整理しました",
+          body: `${res.moved}件の画像を端末内データベースへ移動し、保存容量に余裕を作りました。`
+        });
+      } else {
+        gcAttachments(m);
+      }
+    }).catch(() => gcAttachments(m));
   }, []);
-  const persist = (nextMemos, nextFolders) => {
+  const persist = (nextMemos, nextFolders, opts) => {
+    // 端末間マージのため、実際に中身が変わった項目にだけ updatedAt を打つ。
+    // 取り込み（インポート/Drive受信）のときは stamp:false で抑止する。
+    const stamp = !opts || opts.stamp !== false;
+    nextMemos = stamp ? stampUpdated(nextMemos, memos) : nextMemos;
+    nextFolders = stamp ? stampUpdated(nextFolders, folders) : nextFolders;
     setMemos(nextMemos);
     setFolders(nextFolders);
     try {
@@ -2986,6 +3266,11 @@ function App() {
           createdAt: Date.now()
         };
         persist([normalizeMemo(memo), ...curMemos], curFolders);
+        // 保存が終わったことを Chrome拡張に知らせる。旧版は拡張が「5秒待って閉じる」
+        // 固定タイマーだったため、回線が遅いとクリップを取りこぼすことがあった。
+        try {
+          window.__kininariClipSaved = true;
+        } catch (e) {}
         // クリップ追加は自動同期の対象にする（直前のロードでskipPushが立っていても解除）
         skipPush.current = false;
         setFreshId(memo.id);
@@ -3023,7 +3308,12 @@ function App() {
     notebooks: inb
   }) => {
     const m = im.map(normalizeMemo);
-    persist(m, (inb || []).map(normalizeFolder));
+    // 取り込んだメモの墓標は消す（せっかく戻したものが次の同期で再削除されないように）
+    try {
+      const ids = new Set(m.map(x => x.id));
+      tombstonesSet(tombstonesGet().filter(t => !ids.has(t.id)));
+    } catch (e) {}
+    persist(m, (inb || []).map(normalizeFolder), { stamp: false });
     setActiveFolder(null);
     setIncludeSub(false);
     setExpanded(new Set());
@@ -3074,8 +3364,31 @@ function App() {
   };
   const gdPush = async () => {
     const token = await gdGetToken(gdCid, false);
-    const content = JSON.stringify(await buildBackupObject(memos, folders));
     let id = gdFileId || ((await gdFindFile(token)) || {}).id;
+    // 書き込む前に、最終同期より後に他端末が更新していないか確認する。
+    // 更新されていれば、先にマージしてから書く（相手の変更を潰さない）
+    if (id && gdSync) {
+      const cur = await gdGetMeta(token, id);
+      if (cur.modifiedTime && cur.modifiedTime > gdSync) {
+        const obj = JSON.parse(await gdDownload(token, id));
+        if (Array.isArray(obj.memos)) {
+          await restoreBackupFiles(obj.files);
+          const tombs = tombstonesMerge(obj.deleted);
+          const lastSync = new Date(gdSync).getTime();
+          const mm = mergeById(memos, (obj.memos || []).map(normalizeMemo), lastSync, tombs);
+          const mf = mergeById(folders, (obj.notebooks || []).map(normalizeFolder), lastSync, tombs);
+          skipPush.current = true;
+          importData({ memos: mm, notebooks: mf });
+          const merged = JSON.stringify(await buildBackupObject(mm, mf));
+          const m2 = await gdUpdate(token, id, merged);
+          gdSetFile(id);
+          gdSetSyncTime(m2.modifiedTime || new Date().toISOString());
+          setGdLinked(true);
+          return;
+        }
+      }
+    }
+    const content = JSON.stringify(await buildBackupObject(memos, folders));
     let meta;
     if (id) meta = await gdUpdate(token, id, content);else {
       meta = await gdCreate(token, content);
@@ -3092,6 +3405,7 @@ function App() {
     const obj = JSON.parse(await gdDownload(token, id));
     if (!Array.isArray(obj.memos)) throw new Error("データ形式が不正です");
     await restoreBackupFiles(obj.files);
+    tombstonesMerge(obj.deleted);
     skipPush.current = true;
     importData({
       memos: obj.memos,
@@ -3115,8 +3429,9 @@ function App() {
           const obj = JSON.parse(await gdDownload(token, id));
           if (Array.isArray(obj.memos)) {
             await restoreBackupFiles(obj.files);
-            // 置き換えではなくマージ：最終同期より後にこの端末で作られたメモ/フォルダ
-            // （クリップ取り込み等）はDrive側に無くても残す
+            // 置き換えではなくマージ。id ごとに updatedAt の新しい方を採用し、
+            // 墓標で削除を反映する（旧版は「リモートに同じidがあれば無条件で
+            // リモート優先」だったため、この端末の編集が消えていた）
             let localData = {
               memos: [],
               notebooks: []
@@ -3126,24 +3441,27 @@ function App() {
               if (v) localData = JSON.parse(v) || localData;
             } catch (e) {}
             const lastSync = gdSync ? new Date(gdSync).getTime() : 0;
+            const tombs = tombstonesMerge(obj.deleted);
             const remoteMemos = (obj.memos || []).map(normalizeMemo);
-            const remoteIds = new Set(remoteMemos.map(m => m.id));
-            const localNewMemos = (localData.memos || []).map(normalizeMemo).filter(m => !remoteIds.has(m.id) && (m.createdAt || 0) > lastSync);
             const remoteNbs = (obj.notebooks || []).map(normalizeFolder);
-            const remoteNbIds = new Set(remoteNbs.map(f => f.id));
-            const localNewNbs = (localData.notebooks || []).map(normalizeFolder).filter(f => !remoteNbIds.has(f.id) && (f.createdAt || 0) > lastSync);
-            const keptLocal = localNewMemos.length > 0 || localNewNbs.length > 0;
-            // ローカル新規を残した場合はマージ結果を自動アップロードさせる
-            skipPush.current = !keptLocal;
+            const mergedMemos = mergeById((localData.memos || []).map(normalizeMemo), remoteMemos, lastSync, tombs);
+            const mergedNbs = mergeById((localData.notebooks || []).map(normalizeFolder), remoteNbs, lastSync, tombs);
+            // マージ結果がDrive側と一致するなら書き戻す必要はない
+            const same = itemSig({ m: mergedMemos, f: mergedNbs }) === itemSig({ m: remoteMemos, f: remoteNbs });
+            skipPush.current = same;
             importData({
-              memos: [...localNewMemos, ...remoteMemos],
-              notebooks: [...remoteNbs, ...localNewNbs]
+              memos: mergedMemos,
+              notebooks: mergedNbs
             });
             gdSetFile(id);
             gdSetSyncTime(meta.modifiedTime);
           }
         }
-      } catch (e) {}
+        if (alive) setSyncState({ phase: "ok", at: Date.now() });
+      } catch (e) {
+        // 旧版はここで完全に握りつぶしていたため、同期が止まっても気づけなかった
+        if (alive) setSyncState({ phase: "error", at: Date.now(), msg: syncErrMsg(e) });
+      }
     })();
     return () => {
       alive = false;
@@ -3157,7 +3475,12 @@ function App() {
     }
     if (pushTimer.current) clearTimeout(pushTimer.current);
     pushTimer.current = setTimeout(() => {
-      gdPush().catch(() => {});
+      setSyncState({ phase: "syncing" });
+      gdPush().then(() => setSyncState({ phase: "ok", at: Date.now() })).catch(e => setSyncState({
+        phase: "error",
+        at: Date.now(),
+        msg: syncErrMsg(e)
+      }));
     }, 3000);
     return () => {
       if (pushTimer.current) clearTimeout(pushTimer.current);
@@ -3345,9 +3668,36 @@ function App() {
     walk(null, 0);
     return acc;
   }, [folders]);
+  const toggleBody = () => {
+    if (showBody) {
+      bodyClosed.current = true;
+      setShowBody(false);
+      setBodyFocus(false);
+    } else {
+      bodyClosed.current = false;
+      setBodyFocus(true); // 自分で開いたときだけ本文にフォーカスする
+      setShowBody(true);
+    }
+  };
   const add = () => {
-    const title = nt.trim();
-    if (!title) return;
+    let title = nt.trim();
+    // 旧版は title が空だと何も言わずに return していた。本文だけ書いて
+    // ＋を押した人には「壊れている」ようにしか見えなかったので、
+    // 本文/添付から見出しを起こし、それも無ければ理由を伝える。
+    if (!title) {
+      const bt = htmlToText(nbody).trim();
+      if (bt) title = bt.split("\n")[0].trim().slice(0, 60);
+    }
+    if (!title && /<img/i.test(nbody || "")) title = "画像メモ";
+    if (!title && nattach.length) title = nattach[0].name || "添付ファイル";
+    if (!title) {
+      setToast({
+        title: "まだ何も書かれていません",
+        body: "上の欄にひとこと、または本文を入力してください。"
+      });
+      if (inputRef.current) inputRef.current.focus();
+      return;
+    }
     const auto = findUrl(title);
     const links = auto && !nlinks.includes(auto) ? [...nlinks, auto] : nlinks;
     const m = {
@@ -3380,6 +3730,9 @@ function App() {
     setNcat("メモ");
     setNattach([]);
     setShowDetail(false);
+    setShowBody(false);
+    setBodyFocus(false);
+    bodyClosed.current = false;
     inputRef.current && inputRef.current.focus();
   };
   const save = (id, patch) => saveMemos(memos.map(m => m.id === id ? {
@@ -3399,6 +3752,7 @@ function App() {
     let name = target && target.title || "このメモ";
     if (name.length > 24) name = name.slice(0, 24) + "…";
     if (!window.confirm(`「${name}」を削除しますか？\nこの操作は取り消せません。`)) return;
+    tombstonesAdd(id); // 他の端末にも削除を伝える
     saveMemos(memos.filter(m => m.id !== id));
   };
   const applyTag = (id, tag) => saveMemos(memos.map(m => m.id === id ? {
@@ -3586,8 +3940,9 @@ function App() {
   }), React.createElement("path", {
     d: "M3 9h18M8 3v4M16 3v4"
   }))), React.createElement("button", {
-    className: "data-btn",
+    className: "data-btn" + (syncState.phase === "error" ? " sync-err" : syncState.phase === "syncing" ? " sync-busy" : ""),
     onClick: () => setDataOpen(true),
+    title: syncState.phase === "error" ? syncState.msg || "同期に失敗しました" : syncState.phase === "syncing" ? "同期中…" : syncState.phase === "ok" ? "同期しました" : "端末間でデータを引き継ぐ",
     "aria-label": "\u7AEF\u672B\u9593\u3067\u30C7\u30FC\u30BF\u3092\u5F15\u304D\u7D99\u3050"
   }, React.createElement(SyncIcon, null)))), React.createElement("div", {
     className: "locbar"
@@ -3618,7 +3973,7 @@ function App() {
     ref: inputRef,
     className: "capture-input",
     value: nt,
-    placeholder: activeFolder == null ? "気になったこと、書いてみよう…" : "このフォルダに書く…",
+    placeholder: activeFolder == null ? "気になったこと（ひとことで）" : "このフォルダに書く（ひとことで）",
     onChange: e => setNt(e.target.value),
     onKeyDown: e => {
       if (e.key === "Enter") add();
@@ -3627,27 +3982,33 @@ function App() {
     className: "add",
     onClick: add,
     "aria-label": "\u8FFD\u52A0"
-  }, "\uFF0B")), React.createElement("div", {
+  }, "\uFF0B")), showBody && React.createElement("div", {
+    className: "capture-body"
+  }, React.createElement(RichEditor, {
+    key: capKey,
+    value: nbody,
+    onChange: setNbody,
+    autoFocus: bodyFocus
+  })), React.createElement("div", {
     className: "capture-meta"
   }, React.createElement("button", {
+    className: "body-toggle" + (showBody ? " on" : ""),
+    onClick: toggleBody,
+    "aria-expanded": showBody ? "true" : "false"
+  }, showBody ? "本文をとじる" : "✎ 本文を書く"), React.createElement("button", {
     className: "detail-toggle" + (showDetail ? " on" : ""),
-    onClick: () => setShowDetail(s => !s)
-  }, showDetail ? "詳細をとじる" : "本文・分類・タグ・画像など"), !showDetail && (ndate || nlinks.length || ntags.length || nattach.length || nbodyHas || ncat !== "メモ") ? React.createElement("span", {
+    onClick: () => setShowDetail(s => !s),
+    "aria-expanded": showDetail ? "true" : "false"
+  }, showDetail ? "とじる" : "分類・タグ・日付・画像"), !showDetail && (ndate || nlinks.length || ntags.length || nattach.length || ncat !== "メモ") ? React.createElement("span", {
     className: "meta-preview",
     style: {
       "--c": catColor(ncat)
     }
   }, React.createElement("span", {
     className: "dot"
-  }), ncat, ntags.length ? ` ·#${ntags[0]}${ntags.length > 1 ? "+" : ""}` : "", ndate ? ` · ${fmtDate(ndate, ntime)}` : "", nlinks.length ? ` · 🔗${nlinks.length}` : "", nattach.length ? ` · 📎${nattach.length}` : "", nbodyHas ? " · 📝" : "") : null), showDetail && React.createElement("div", {
+  }), ncat, ntags.length ? ` ·#${ntags[0]}${ntags.length > 1 ? "+" : ""}` : "", ndate ? ` · ${fmtDate(ndate, ntime)}` : "", nlinks.length ? ` · 🔗${nlinks.length}` : "", nattach.length ? ` · 📎${nattach.length}` : "") : null), showDetail && React.createElement("div", {
     className: "capture-detail"
   }, React.createElement("div", {
-    className: "mini-label"
-  }, "\u672C\u6587"), React.createElement(RichEditor, {
-    key: capKey,
-    value: nbody,
-    onChange: setNbody
-  }), React.createElement("div", {
     className: "mini-label"
   }, "\u5206\u985E"), React.createElement(CategoryPicker, {
     value: ncat,
@@ -3678,7 +4039,12 @@ function App() {
   }, "\u753B\u50CF\u30FB\u30D5\u30A1\u30A4\u30EB"), React.createElement(AttachmentEditor, {
     attachments: nattach,
     onChange: setNattach
-  }))), React.createElement("section", {
+  })), (showBody || showDetail) && React.createElement("div", {
+    className: "capture-foot"
+  }, React.createElement("button", {
+    className: "capture-add",
+    onClick: add
+  }, "\u3053\u306E\u5185\u5BB9\u3067\u8FFD\u52A0"))), React.createElement("section", {
     className: "controls"
   }, React.createElement("div", {
     className: "controls-top"
@@ -3825,6 +4191,7 @@ function App() {
     onClose: () => setDataOpen(false),
     gdCid: gdCid,
     gdSync: gdSync,
+    syncState: syncState,
     gdAuto: gdAuto,
     gdConnected: gdLinked,
     onGdConnect: gdConnect,
@@ -3903,8 +4270,15 @@ const CSS = `
 .add:hover { background:var(--red-d); }
 .add:active { transform:scale(.92); }
 .capture-meta { display:flex; align-items:center; gap:10px; margin-top:4px; padding:0 4px; flex-wrap:wrap; }
-.detail-toggle { border:none; background:none; color:var(--soft); font-size:12.5px; cursor:pointer; padding:4px 0; font-family:inherit; border-bottom:1px dashed transparent; }
-.detail-toggle:hover, .detail-toggle.on { color:var(--red); border-bottom-color:var(--red); }
+/* 旧: 薄いグレーの文字だけで、押せるものに見えなかった。ボタンの形にする。 */
+.body-toggle, .detail-toggle { border:1px solid var(--line); background:#fff; color:var(--ink); font-size:12.5px; font-weight:700; cursor:pointer; padding:7px 12px; border-radius:9px; font-family:inherit; transition:all .15s; }
+.body-toggle:hover, .detail-toggle:hover { border-color:var(--red); color:var(--red); }
+.body-toggle.on, .detail-toggle.on { background:color-mix(in srgb,var(--red) 8%,#fff); border-color:color-mix(in srgb,var(--red) 40%,var(--line)); color:var(--red-d); }
+.body-toggle { color:var(--red-d); border-color:color-mix(in srgb,var(--red) 35%,var(--line)); }
+.capture-body { margin-top:10px; }
+.capture-foot { margin-top:12px; display:flex; justify-content:flex-end; }
+.capture-add { border:none; border-radius:11px; background:var(--red); color:#fdf1e6; font-size:14.5px; font-weight:700; padding:12px 22px; cursor:pointer; font-family:inherit; box-shadow:0 4px 12px rgba(160,57,47,.3); }
+.capture-add:hover { background:var(--red-d); }
 .meta-preview { display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--soft); }
 .capture-detail { margin-top:10px; padding-top:12px; border-top:1px dashed var(--line); display:flex; flex-direction:column; gap:8px; }
 .mini-label { font-size:11px; color:var(--soft); font-weight:700; letter-spacing:.03em; margin-top:4px; }
@@ -4133,6 +4507,11 @@ const CSS = `
 .data-btn svg { width:17px; height:17px; }
 .data-btn:hover { color:var(--red-d); border-color:color-mix(in srgb,var(--red) 40%,var(--line)); background:color-mix(in srgb,var(--red) 6%,#fff); }
 .data-btn.bell.on { color:var(--red-d); border-color:color-mix(in srgb,var(--red) 45%,var(--line)); background:color-mix(in srgb,var(--red) 10%,#fff); }
+/* 同期の失敗を黙って隠さない */
+.data-btn.sync-err { color:#b3402f; border-color:#e0a99f; background:#fdf0ec; position:relative; }
+.data-btn.sync-err:after { content:""; position:absolute; top:-2px; right:-2px; width:9px; height:9px; border-radius:50%; background:#c0463c; border:1.5px solid var(--card); }
+.data-btn.sync-busy { opacity:.55; }
+.gd-err { font-size:12.5px; line-height:1.7; color:#8f3325; background:#fdf0ec; border:1px solid #e8c4bb; border-radius:10px; padding:9px 12px; margin:9px 0 0; }
 .remind-chip { display:inline-flex; align-items:center; color:var(--red-d); }
 .remind-chip svg { width:13px; height:13px; }
 .remind-field { margin-top:2px; }
@@ -4200,15 +4579,18 @@ const CSS = `
 .gd-auto { margin-top:2px; }
 
 /* rich text editor */
-.rich { border:1px solid var(--line); border-radius:12px; background:#fff; overflow:hidden; }
-.rich-tb { display:flex; flex-wrap:wrap; gap:4px; align-items:center; padding:6px; border-bottom:1px solid var(--line); background:var(--card); position:sticky; top:0; z-index:1; }
+/* 旧: .rich に overflow:hidden があり、これがスクロールコンテナ扱いになるため
+   .rich-tb の position:sticky が効いていなかった。.rich 自体をスクロール
+   コンテナにして、ツールバーが本文の上に留まるようにする。 */
+.rich { border:1px solid var(--line); border-radius:12px; background:#fff; max-height:70vh; overflow:auto; }
+.rich-tb { display:flex; flex-wrap:wrap; gap:4px; align-items:center; padding:6px; border-bottom:1px solid var(--line); background:var(--card); position:sticky; top:0; z-index:2; border-radius:12px 12px 0 0; }
 .rich-sel { border:1px solid var(--line); border-radius:7px; padding:5px 6px; font-size:12px; background:#fff; color:var(--ink); font-family:inherit; }
 .rich-b { width:30px; height:30px; border:1px solid var(--line); border-radius:7px; background:#fff; color:var(--ink); cursor:pointer; font-size:13px; display:grid; place-items:center; font-family:inherit; padding:0; }
 .rich-b:hover { border-color:var(--red); color:var(--red); }
 .rich-color { width:30px; height:30px; border:1px solid var(--line); border-radius:7px; background:#fff; display:grid; place-items:center; cursor:pointer; position:relative; font-weight:800; color:var(--ink); }
 .rich-color input { position:absolute; inset:0; opacity:0; cursor:pointer; }
-.rich-area { min-height:120px; max-height:50vh; overflow:auto; padding:12px; font-size:15px; line-height:1.85; color:var(--ink); outline:none; }
-.rich-area:empty:before { content: attr(data-ph); color:var(--soft); pointer-events:none; }
+.rich-area { min-height:240px; padding:12px; font-size:15px; line-height:1.85; color:var(--ink); outline:none; }
+.rich-area:empty:before, .rich-area[data-empty="1"]:before { content: attr(data-ph); color:var(--soft); pointer-events:none; }
 .rich-area:focus { background:#fffdf8; }
 .rich-area h1 { font-size:1.5em; margin:.4em 0; font-family:"Shippori Mincho",serif; font-weight:800; }
 .rich-area h2 { font-size:1.28em; margin:.4em 0; font-family:"Shippori Mincho",serif; font-weight:700; }
@@ -4247,6 +4629,8 @@ button.gcal { cursor:pointer; font-family:inherit; }
   .controls-top .search { flex:1; }
   .controls-top .ai-btn { align-self:center; white-space:nowrap; }
   .folders-list, .list { grid-template-columns:repeat(2, minmax(0,1fr)); }
+  /* 画面が広いときは本文欄をさらに広く（従来120px → 360px） */
+  .rich-area { min-height:360px; }
 }
 @media (min-width:1024px) {
   .shell { display:flex; align-items:flex-start; }

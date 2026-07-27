@@ -1,0 +1,620 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>音 — BGM</title>
+<meta name="theme-color" content="#f4ecda" />
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap');
+:root{
+  --paper:#f4ecda; --card:#fdf8ec; --line:#e2d6bd; --ink:#2c2620; --soft:#7a6f5e;
+  --red:#c0463c; --red-d:#a3392f; --green:#57845A; --blue:#3E6CA3;
+}
+html.night{
+  --paper:#0b0a09; --card:#141210; --line:#2a2521; --ink:#7d746a; --soft:#544d46;
+  --red:#7a3a33; --red-d:#8d443b; --green:#3d5a3f; --blue:#2c4a6e;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{background:var(--paper);color:var(--ink);font-family:"Zen Kaku Gothic New",-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN",sans-serif;-webkit-font-smoothing:antialiased;transition:background .4s,color .4s}
+#shell{max-width:760px;margin:0 auto;padding:14px 14px 90px;transition:transform 1.2s linear}
+h1{font-family:"Shippori Mincho",serif;font-size:22px;margin:0;display:flex;align-items:center;gap:8px}
+.sub{font-size:12px;color:var(--soft);margin:3px 0 0}
+header{display:flex;align-items:flex-start;gap:10px;margin-bottom:14px}
+header .grow{flex:1;min-width:0}
+.hbtns{display:flex;gap:6px;flex:none}
+.iconbtn{height:36px;min-width:40px;padding:0 9px;border:1px solid var(--line);background:var(--card);color:var(--soft);border-radius:9px;cursor:pointer;font-size:13px;font-family:inherit;font-weight:700}
+.iconbtn:hover{border-color:var(--red);color:var(--red)}
+.iconbtn.on{background:color-mix(in srgb,var(--red) 12%,var(--card));border-color:var(--red);color:var(--red-d)}
+
+.modes{display:flex;gap:6px;margin-bottom:12px}
+.mode{flex:1;border:1px solid var(--line);background:var(--card);color:var(--soft);border-radius:11px;padding:11px 8px;font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit}
+.mode.on{background:var(--red);color:#fdf1e6;border-color:var(--red)}
+
+.panel{display:none}
+.panel.on{display:block}
+
+/* ── プレーヤー ───────────────────────────────── */
+#pwrap{position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:14px;overflow:hidden;border:1px solid var(--line);transition:max-width .35s}
+#pwrap.mini{max-width:190px}
+#player,#pwrap iframe{width:100%;height:100%;border:0;display:block}
+#pnote{font-size:11.5px;color:var(--soft);margin:6px 2px 0;line-height:1.6}
+
+#nowbar{margin-top:10px;background:var(--card);border:1px solid var(--line);border-radius:13px;padding:11px 12px}
+.nowtitle{font-size:14px;font-weight:700;line-height:1.5;word-break:break-word}
+.nowmeta{font-size:11.5px;color:var(--soft);margin-top:3px}
+.nowrow{display:flex;align-items:center;gap:7px;margin-top:10px;flex-wrap:wrap}
+.cbtn{border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:9px;padding:8px 11px;font-size:13px;cursor:pointer;font-family:inherit;font-weight:700}
+.cbtn:hover{border-color:var(--red);color:var(--red)}
+.cbtn.on{background:color-mix(in srgb,var(--red) 12%,var(--paper));border-color:var(--red);color:var(--red-d)}
+.cbtn.solid{background:var(--red);color:#fdf1e6;border-color:var(--red)}
+.volrow{display:flex;align-items:center;gap:9px;margin-top:11px;font-size:11.5px;color:var(--soft)}
+.volrow input[type=range]{flex:1;min-width:0;accent-color:var(--red)}
+
+/* ── ジャンル・追加 ─────────────────────────── */
+.secttl{font-size:11px;font-weight:700;color:var(--soft);letter-spacing:.04em;margin:18px 2px 7px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:999px;padding:8px 13px;font-size:12.5px;cursor:pointer;font-family:inherit;text-decoration:none;display:inline-flex;align-items:center;gap:5px}
+.chip:hover{border-color:var(--red);color:var(--red)}
+.addrow{display:flex;gap:6px;margin-top:7px;flex-wrap:wrap}
+.addrow input{flex:1;min-width:150px;border:1px solid var(--line);border-radius:9px;padding:10px 11px;font-size:14px;font-family:inherit;background:var(--card);color:var(--ink)}
+.addrow input:focus{outline:none;border-color:var(--red)}
+.hint{font-size:11.5px;color:var(--soft);line-height:1.7;margin:7px 2px 0}
+
+/* ── 一覧 ─────────────────────────────────── */
+.filters{display:flex;gap:6px;margin:16px 0 9px;flex-wrap:wrap}
+.f{border:1px solid var(--line);background:var(--card);color:var(--soft);border-radius:9px;padding:7px 12px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit}
+.f.on{background:var(--red);color:#fdf1e6;border-color:var(--red)}
+.item{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:11px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px}
+.item.playing{border-color:var(--red);box-shadow:0 0 0 1px var(--red) inset}
+.item .body{flex:1;min-width:0}
+.item .t{font-size:14px;font-weight:700;line-height:1.45;word-break:break-word}
+.item .m{font-size:11px;color:var(--soft);margin-top:3px}
+.item .acts{display:flex;gap:4px;flex:none}
+.mini{width:34px;height:34px;border:1px solid var(--line);background:var(--paper);color:var(--soft);border-radius:8px;cursor:pointer;font-size:14px;display:grid;place-items:center;padding:0;font-family:inherit}
+.mini:hover{border-color:var(--red);color:var(--red)}
+.mini.fav{color:var(--red-d);border-color:color-mix(in srgb,var(--red) 40%,var(--line))}
+.empty{text-align:center;color:var(--soft);font-size:13px;padding:26px 10px;line-height:1.8}
+
+/* ── 内蔵音 ───────────────────────────────── */
+.sc{display:grid;gap:9px;grid-template-columns:1fr}
+@media(min-width:560px){.sc{grid-template-columns:repeat(3,1fr)}}
+.sccard{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:15px 13px;cursor:pointer;text-align:left;font-family:inherit;color:var(--ink)}
+.sccard.on{border-color:var(--red);background:color-mix(in srgb,var(--red) 8%,var(--card))}
+.sccard .n{font-size:15px;font-weight:700;font-family:"Shippori Mincho",serif}
+.sccard .d{font-size:11.5px;color:var(--soft);margin-top:5px;line-height:1.65}
+.note{font-size:11.5px;color:var(--soft);line-height:1.75;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:14px}
+.note b{color:var(--ink)}
+
+/* ── スリープタイマー ───────────────────────── */
+#tbar{position:fixed;left:0;right:0;bottom:0;background:color-mix(in srgb,var(--card) 92%,transparent);backdrop-filter:blur(8px);border-top:1px solid var(--line);padding:9px 12px;display:flex;align-items:center;gap:7px;flex-wrap:wrap;z-index:20}
+#tbar .lbl{font-size:11.5px;color:var(--soft);font-weight:700;flex:none}
+.tb{border:1px solid var(--line);background:var(--paper);color:var(--soft);border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer;font-family:inherit;font-weight:700}
+.tb.on{background:var(--red);color:#fdf1e6;border-color:var(--red)}
+#tleft{font-size:12.5px;font-weight:700;color:var(--red-d);margin-left:auto;font-variant-numeric:tabular-nums}
+#toast{position:fixed;left:14px;right:14px;bottom:64px;background:var(--ink);color:var(--paper);border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.6;z-index:40;display:none}
+</style>
+</head>
+<body>
+<div id="shell">
+  <header>
+    <div class="grow">
+      <h1>🎧 音</h1>
+      <p class="sub">聞きたいBGMに、探さずにたどり着く。</p>
+    </div>
+    <div class="hbtns">
+      <button class="iconbtn" id="bNight" title="夜間モード（画面を暗くする）">🌙</button>
+      <button class="iconbtn" id="bWake" title="画面を消さない">💡</button>
+    </div>
+  </header>
+
+  <div class="modes">
+    <button class="mode on" id="mYt">YouTube</button>
+    <button class="mode" id="mSc">就寝用の音</button>
+  </div>
+
+  <!-- ══════ YouTube ══════ -->
+  <section class="panel on" id="pYt">
+    <div id="pwrap"><div id="player"></div></div>
+    <p id="pnote"></p>
+
+    <div id="nowbar">
+      <div class="nowtitle" id="nowTitle">まだ何も選ばれていません</div>
+      <div class="nowmeta" id="nowMeta">下の一覧から選ぶか、ジャンルで探してURLを登録してください。</div>
+      <div class="nowrow">
+        <button class="cbtn" id="bPrev">前</button>
+        <button class="cbtn solid" id="bPlay">▶ 再生</button>
+        <button class="cbtn" id="bNext">次</button>
+        <button class="cbtn" id="bShuffle" title="順番をランダムにする">🔀 シャッフル</button>
+        <button class="cbtn" id="bOpenYt" title="YouTubeで開く">↗ YouTubeで開く</button>
+      </div>
+      <div class="volrow"><span>音量</span><input type="range" id="vol" min="0" max="100" step="1"><span id="volN">60</span></div>
+    </div>
+
+    <div class="secttl">ジャンルから探す（YouTubeの検索結果が別タブで開きます）</div>
+    <div class="chips" id="genres"></div>
+
+    <div class="secttl">URLを登録する</div>
+    <div class="addrow">
+      <input id="addUrl" placeholder="YouTubeのURLを貼り付け" inputmode="url">
+      <input id="addName" placeholder="名前（空欄なら自動取得）">
+      <button class="cbtn solid" id="bAdd">追加</button>
+    </div>
+    <p class="hint">再生リストのURLでも登録できます。Androidでこのアプリをホーム画面に追加していれば、YouTubeアプリの「共有」からも直接ここに入ります。</p>
+
+    <div class="filters">
+      <button class="f on" data-f="all">すべて</button>
+      <button class="f" data-f="fav">★ お気に入り</button>
+      <button class="f" data-f="recent">最近聞いた</button>
+      <button class="f" data-f="often">よく聞く</button>
+    </div>
+    <div id="list"></div>
+  </section>
+
+  <!-- ══════ 内蔵音 ══════ -->
+  <section class="panel" id="pSc">
+    <div class="sc" id="scList"></div>
+    <div class="volrow"><span>音量</span><input type="range" id="scVol" min="0" max="100" step="1"><span id="scVolN">70</span></div>
+    <p id="scVolNote" class="hint"></p>
+    <div class="note">
+      <b>こちらは画面を消しても鳴り続けます。</b>YouTubeと違い、端末内の音を鳴らしているためです。ホーム画面に追加したアプリとして開くと、ロック画面からの停止も使えます。<br>
+      音は20秒のループですが、継ぎ目が出ない作りにしてあるので、つなぎ目は聞こえません。
+    </div>
+  </section>
+</div>
+
+<div id="tbar">
+  <span class="lbl">⏱ スリープ</span>
+  <button class="tb on" data-t="0">なし</button>
+  <button class="tb" data-t="15">15分</button>
+  <button class="tb" data-t="30">30分</button>
+  <button class="tb" data-t="45">45分</button>
+  <button class="tb" data-t="60">60分</button>
+  <button class="tb" data-t="90">90分</button>
+  <span id="tleft"></span>
+</div>
+<div id="toast"></div>
+
+<audio id="scAudio" loop preload="none"></audio>
+<script src="https://www.youtube.com/iframe_api" async></script>
+<script>
+(function(){
+"use strict";
+var $=function(id){return document.getElementById(id);};
+var KEY="bgm:v1";
+
+/* ── 保存（プライベートモード等で localStorage が使えなくても落ちない）── */
+var store=(function(){
+  var ok=false,mem={};
+  try{var k="__t"+Math.random();localStorage.setItem(k,"1");localStorage.removeItem(k);ok=true;}catch(e){ok=false;}
+  return {
+    get:function(k){try{if(ok)return localStorage.getItem(k);}catch(e){}return (k in mem)?mem[k]:null;},
+    set:function(k,v){try{if(ok){localStorage.setItem(k,v);return;}}catch(e){}mem[k]=v;}
+  };
+})();
+
+var GENRES=[
+  ["カフェ","カフェ BGM 作業用"],
+  ["自律神経","自律神経を整える 音楽"],
+  ["α波","アルファ波 リラックス 音楽"],
+  ["雨・自然","雨の音 睡眠 自然音"],
+  ["集中","集中力 作業用BGM"],
+  ["ローファイ","lofi hip hop 作業用"],
+  ["ジャズ","ジャズ BGM 落ち着く"],
+  ["睡眠","睡眠用BGM 8時間"]
+];
+var SOUNDS=[
+  {id:"brown",n:"ブラウンノイズ",d:"低くこもった「ゴーッ」という音。生活音を覆い隠す力がいちばん強い。",f:"audio/brown.wav"},
+  {id:"pink", n:"ピンクノイズ",  d:"音域のバランスが自然で、長く流しても耳が疲れにくい。",        f:"audio/pink.wav"},
+  {id:"rain", n:"雨・シャワー",  d:"やわらかな雨だれのような音。静かすぎる部屋が苦手なときに。",  f:"audio/rain.wav"}
+];
+
+/* ── 状態 ───────────────────────────────── */
+var S={items:[],hist:[],vol:60,scVol:70,shuffle:false,night:false,mode:"yt",filter:"all",timer:0};
+try{
+  var raw=store.get(KEY);
+  if(raw){var o=JSON.parse(raw)||{};
+    if(Array.isArray(o.items))S.items=o.items;
+    if(Array.isArray(o.hist))S.hist=o.hist;
+    ["vol","scVol"].forEach(function(k){if(typeof o[k]==="number")S[k]=o[k];});
+    ["shuffle","night"].forEach(function(k){if(typeof o[k]==="boolean")S[k]=o[k];});
+    if(o.mode==="sc"||o.mode==="yt")S.mode=o.mode;
+    if(o.filter)S.filter=o.filter;
+  }
+}catch(e){}
+function save(){try{store.set(KEY,JSON.stringify({items:S.items,hist:S.hist.slice(0,300),vol:S.vol,scVol:S.scVol,shuffle:S.shuffle,night:S.night,mode:S.mode,filter:S.filter}));}catch(e){}}
+
+var curId=null, ytReady=false, yt=null, scId=null, wakeLock=null, wakeWanted=false;
+var tEnd=0, tTick=null, fadeTick=null, driftTick=null, driftN=0;
+
+function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
+function esc(t){return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
+function toast(msg,ms){var el=$("toast");el.textContent=msg;el.style.display="block";clearTimeout(toast._t);toast._t=setTimeout(function(){el.style.display="none";},ms||3800);}
+function byId(id){for(var i=0;i<S.items.length;i++)if(S.items[i].id===id)return S.items[i];return null;}
+
+/* ── URL解析 ─────────────────────────────── */
+function parseYt(u){
+  u=(u||"").trim(); if(!u)return null;
+  var list=(u.match(/[?&]list=([A-Za-z0-9_-]+)/)||[])[1];
+  var v=(u.match(/[?&]v=([A-Za-z0-9_-]{11})/)||[])[1]
+      || (u.match(/youtu\.be\/([A-Za-z0-9_-]{11})/)||[])[1]
+      || (u.match(/\/(?:embed|shorts|live)\/([A-Za-z0-9_-]{11})/)||[])[1];
+  if(!v && /^[A-Za-z0-9_-]{11}$/.test(u)) v=u;
+  if(v) return {kind:"video",vid:v,list:list||""};
+  if(list) return {kind:"playlist",vid:"",list:list};
+  return null;
+}
+function watchUrl(it){
+  if(it.kind==="playlist") return "https://www.youtube.com/playlist?list="+encodeURIComponent(it.list);
+  var u="https://www.youtube.com/watch?v="+encodeURIComponent(it.vid);
+  if(it.list) u+="&list="+encodeURIComponent(it.list);
+  return u;
+}
+
+/* ── YouTubeプレーヤー ───────────────────── */
+window.onYouTubeIframeAPIReady=function(){
+  try{
+    yt=new YT.Player("player",{
+      host:"https://www.youtube-nocookie.com",
+      playerVars:{playsinline:1,rel:0,modestbranding:1,origin:location.origin},
+      events:{
+        onReady:function(){ytReady=true;applyVol();if(curId)cue(byId(curId),false);},
+        onStateChange:function(e){
+          if(e.data===YT.PlayerState.PLAYING){$("bPlay").textContent="⏸ 一時停止";grabTitle();}
+          else $("bPlay").textContent="▶ 再生";
+          if(e.data===YT.PlayerState.ENDED) next(true);
+        },
+        onError:function(e){
+          var c=e.data;
+          var msg=(c===101||c===150)?"この動画は埋め込み再生が許可されていません。「↗ YouTubeで開く」からどうぞ。"
+                 :(c===100)?"動画が見つかりませんでした（削除・非公開の可能性）。"
+                 :"再生できませんでした。「↗ YouTubeで開く」をお試しください。";
+          $("pnote").textContent=msg;
+          toast(msg,6000);
+          if(c===101||c===150){var it=byId(curId);if(it){it.noEmbed=true;save();render();}}
+        }
+      }
+    });
+  }catch(e){}
+};
+function cue(it,play){
+  if(!it||!ytReady||!yt)return;
+  $("pnote").textContent="";
+  try{
+    if(it.kind==="playlist"||it.list){
+      yt.loadPlaylist({list:it.list,listType:"playlist"});
+      if(!play){try{yt.stopVideo();}catch(e){}}
+    } else if(play){ yt.loadVideoById(it.vid); }
+    else { yt.cueVideoById(it.vid); }
+  }catch(e){}
+}
+function grabTitle(){
+  var it=byId(curId); if(!it||!yt||!yt.getVideoData)return;
+  try{
+    var d=yt.getVideoData();
+    if(d&&d.title&&(!it.title||it.title===it.vid||it.title==="(タイトル未取得)")){
+      it.title=d.title;save();render();updateNow();
+    }
+  }catch(e){}
+}
+function playItem(id){
+  var it=byId(id); if(!it)return;
+  curId=id;
+  it.plays=(it.plays||0)+1; it.lastAt=Date.now();
+  S.hist.unshift({at:it.lastAt,id:it.id,title:it.title||it.vid});
+  S.hist=S.hist.slice(0,300);
+  save();
+  if(it.noEmbed){ window.open(watchUrl(it),"_blank","noopener"); updateNow(); render(); return; }
+  cue(it,true); updateNow(); render();
+}
+function next(auto){
+  var l=visible(); if(!l.length)return;
+  var i=l.findIndex(function(x){return x.id===curId;});
+  var n;
+  if(S.shuffle){ if(l.length===1)n=0; else { do{n=Math.floor(Math.random()*l.length);}while(n===i);} }
+  else n=(i+1)%l.length;
+  if(auto&&!S.shuffle&&i===l.length-1&&l.length===1)return;
+  playItem(l[n].id);
+}
+function prev(){
+  var l=visible(); if(!l.length)return;
+  var i=l.findIndex(function(x){return x.id===curId;});
+  playItem(l[(i-1+l.length)%l.length].id);
+}
+function applyVol(){
+  $("vol").value=S.vol; $("volN").textContent=S.vol;
+  if(ytReady&&yt&&yt.setVolume){try{yt.setVolume(S.vol);}catch(e){}}
+}
+function updateNow(){
+  var it=byId(curId);
+  $("nowTitle").textContent=it?(it.title||it.vid):"まだ何も選ばれていません";
+  $("nowMeta").textContent=it?((it.cat?it.cat+" · ":"")+(it.plays||0)+"回 · "+(it.kind==="playlist"?"再生リスト":"動画")+(it.noEmbed?" · 埋め込み不可":"")):"下の一覧から選ぶか、ジャンルで探してURLを登録してください。";
+}
+
+/* ── 一覧 ───────────────────────────────── */
+function visible(){
+  var l=S.items.slice();
+  if(S.filter==="fav") l=l.filter(function(x){return x.fav;});
+  if(S.filter==="recent") l=l.filter(function(x){return x.lastAt;}).sort(function(a,b){return b.lastAt-a.lastAt;});
+  else if(S.filter==="often") l=l.sort(function(a,b){return (b.plays||0)-(a.plays||0);});
+  else l=l.sort(function(a,b){return (b.fav?1:0)-(a.fav?1:0)||(b.lastAt||0)-(a.lastAt||0);});
+  return l;
+}
+function ago(ms){
+  if(!ms)return "未再生";
+  var d=Math.floor((Date.now()-ms)/86400000);
+  if(d<=0)return "今日";
+  if(d===1)return "昨日";
+  if(d<30)return d+"日前";
+  return new Date(ms).toLocaleDateString();
+}
+function render(){
+  var l=visible(),h="";
+  if(!l.length){
+    h='<div class="empty">まだ登録がありません。<br>上のジャンルから探して、気に入ったURLを登録してください。</div>';
+  } else {
+    l.forEach(function(it){
+      h+='<div class="item'+(it.id===curId?" playing":"")+'">'
+       +   '<button class="mini" data-play="'+it.id+'" title="再生">▶</button>'
+       +   '<div class="body"><div class="t">'+esc(it.title||it.vid)+'</div>'
+       +   '<div class="m">'+esc(it.cat||"未分類")+' · '+ago(it.lastAt)+' · '+(it.plays||0)+'回'+(it.noEmbed?' · <span style="color:var(--red-d)">埋め込み不可</span>':'')+'</div></div>'
+       +   '<div class="acts">'
+       +     '<button class="mini'+(it.fav?" fav":"")+'" data-fav="'+it.id+'" title="お気に入り">'+(it.fav?"★":"☆")+'</button>'
+       +     '<button class="mini" data-open="'+it.id+'" title="YouTubeで開く">↗</button>'
+       +     '<button class="mini" data-ren="'+it.id+'" title="名前を変える">✎</button>'
+       +     '<button class="mini" data-del="'+it.id+'" title="削除">🗑</button>'
+       +   '</div></div>';
+    });
+  }
+  $("list").innerHTML=h;
+  $("bShuffle").classList.toggle("on",S.shuffle);
+}
+$("list").addEventListener("click",function(e){
+  var b=e.target.closest("button"); if(!b)return;
+  var id;
+  if((id=b.getAttribute("data-play"))) return playItem(id);
+  if((id=b.getAttribute("data-fav"))){var it=byId(id);if(it){it.fav=!it.fav;save();render();}return;}
+  if((id=b.getAttribute("data-open"))){var it2=byId(id);if(it2){it2.lastAt=Date.now();it2.plays=(it2.plays||0)+1;S.hist.unshift({at:it2.lastAt,id:it2.id,title:it2.title||it2.vid});save();render();window.open(watchUrl(it2),"_blank","noopener");}return;}
+  if((id=b.getAttribute("data-ren"))){var it3=byId(id);if(it3){var n=prompt("名前",it3.title||"");if(n!=null){it3.title=n.trim()||it3.vid;save();render();updateNow();}}return;}
+  if((id=b.getAttribute("data-del"))){var it4=byId(id);if(it4&&confirm("「"+(it4.title||it4.vid)+"」を一覧から削除しますか？")){S.items=S.items.filter(function(x){return x.id!==id;});if(curId===id)curId=null;save();render();updateNow();}return;}
+});
+
+/* ── 追加 ───────────────────────────────── */
+function addItem(url,name,cat){
+  var p=parseYt(url);
+  if(!p){toast("YouTubeのURLとして読み取れませんでした。",5000);return null;}
+  var dup=S.items.find(function(x){return x.vid===p.vid&&(x.list||"")===(p.list||"");});
+  if(dup){toast("すでに登録されています。",3000);return dup;}
+  var it={id:uid(),kind:p.kind,vid:p.vid,list:p.list||"",title:(name||"").trim()||"(タイトル未取得)",cat:cat||"",fav:false,plays:0,lastAt:0};
+  S.items.unshift(it);save();render();
+  toast("追加しました。名前は初回再生時に自動で入ります。",4200);
+  return it;
+}
+$("bAdd").addEventListener("click",function(){
+  var it=addItem($("addUrl").value,$("addName").value,"");
+  if(it){$("addUrl").value="";$("addName").value="";}
+});
+$("addUrl").addEventListener("keydown",function(e){if(e.key==="Enter")$("bAdd").click();});
+
+/* ジャンルチップ: 検索を別タブで開く */
+(function(){
+  var h="";
+  GENRES.forEach(function(g){
+    h+='<a class="chip" target="_blank" rel="noopener" href="https://www.youtube.com/results?search_query='+encodeURIComponent(g[1])+'">🔍 '+esc(g[0])+'</a>';
+  });
+  $("genres").innerHTML=h;
+})();
+
+/* ── 内蔵音 ─────────────────────────────── */
+var scA=$("scAudio"), volCtl=null;
+(function(){
+  var h="";
+  SOUNDS.forEach(function(s){
+    h+='<button class="sccard" data-sc="'+s.id+'"><div class="n">'+esc(s.n)+'</div><div class="d">'+esc(s.d)+'</div></button>';
+  });
+  $("scList").innerHTML=h;
+})();
+function scVolSupported(){
+  // iOSでは audio.volume への代入が無視される（ハードキーのみ）
+  if(volCtl!==null)return volCtl;
+  try{var o=scA.volume;scA.volume=0.37;volCtl=Math.abs(scA.volume-0.37)<0.02;scA.volume=o;}catch(e){volCtl=false;}
+  return volCtl;
+}
+function applyScVol(){
+  $("scVol").value=S.scVol;$("scVolN").textContent=S.scVol;
+  if(scVolSupported()){try{scA.volume=Math.max(0,Math.min(1,S.scVol/100));}catch(e){}}
+  $("scVolNote").textContent=scVolSupported()?"":"※ この端末（iPhone/iPad）では、音量は本体のボタンで調整してください。";
+}
+function playSound(id){
+  var s=SOUNDS.find(function(x){return x.id===id;}); if(!s)return;
+  if(scId===id&&!scA.paused){ scA.pause(); scId=null; renderSc(); return; }
+  scId=id;
+  if(!scA.src||scA.getAttribute("data-id")!==id){scA.src=s.f;scA.setAttribute("data-id",id);}
+  applyScVol();
+  scA.play().then(function(){
+    S.hist.unshift({at:Date.now(),id:"sc:"+id,title:s.n});S.hist=S.hist.slice(0,300);save();
+    mediaMeta(s.n);
+  }).catch(function(){toast("再生できませんでした。もう一度タップしてください。",4000);scId=null;renderSc();});
+  renderSc();
+}
+function renderSc(){
+  Array.prototype.forEach.call($("scList").children,function(b){
+    b.classList.toggle("on",b.getAttribute("data-sc")===scId&&!scA.paused);
+  });
+}
+$("scList").addEventListener("click",function(e){
+  var b=e.target.closest("[data-sc]"); if(b)playSound(b.getAttribute("data-sc"));
+});
+scA.addEventListener("pause",renderSc); scA.addEventListener("play",renderSc);
+function mediaMeta(title){
+  try{
+    if(!("mediaSession" in navigator))return;
+    navigator.mediaSession.metadata=new MediaMetadata({title:title,artist:"就寝用の音",album:"音 — BGM"});
+    navigator.mediaSession.setActionHandler("pause",function(){scA.pause();});
+    navigator.mediaSession.setActionHandler("play",function(){scA.play().catch(function(){});});
+    navigator.mediaSession.setActionHandler("stop",function(){scA.pause();scId=null;renderSc();});
+  }catch(e){}
+}
+
+/* ── 音量 ───────────────────────────────── */
+$("vol").addEventListener("input",function(e){S.vol=+e.target.value;save();applyVol();});
+$("scVol").addEventListener("input",function(e){S.scVol=+e.target.value;save();applyScVol();});
+
+/* ── 再生操作 ───────────────────────────── */
+$("bPlay").addEventListener("click",function(){
+  if(!curId){var l=visible();if(l.length)return playItem(l[0].id);toast("先に一覧に登録してください。",3500);return;}
+  if(!ytReady||!yt)return;
+  try{
+    var st=yt.getPlayerState();
+    if(st===YT.PlayerState.PLAYING)yt.pauseVideo();else yt.playVideo();
+  }catch(e){}
+});
+$("bNext").addEventListener("click",function(){next(false);});
+$("bPrev").addEventListener("click",prev);
+$("bShuffle").addEventListener("click",function(){S.shuffle=!S.shuffle;save();render();});
+$("bOpenYt").addEventListener("click",function(){
+  var it=byId(curId); if(!it)return toast("先に何か選んでください。",3000);
+  window.open(watchUrl(it),"_blank","noopener");
+});
+Array.prototype.forEach.call(document.querySelectorAll(".f"),function(b){
+  b.addEventListener("click",function(){
+    S.filter=b.getAttribute("data-f");save();
+    Array.prototype.forEach.call(document.querySelectorAll(".f"),function(x){x.classList.toggle("on",x===b);});
+    render();
+  });
+});
+
+/* ── モード切替 ─────────────────────────── */
+function setMode(m){
+  S.mode=m;save();
+  $("mYt").classList.toggle("on",m==="yt"); $("mSc").classList.toggle("on",m==="sc");
+  $("pYt").classList.toggle("on",m==="yt"); $("pSc").classList.toggle("on",m==="sc");
+}
+$("mYt").addEventListener("click",function(){setMode("yt");});
+$("mSc").addEventListener("click",function(){setMode("sc");});
+
+/* ── 夜間モード ─────────────────────────── */
+function applyNight(){
+  document.documentElement.classList.toggle("night",S.night);
+  $("bNight").classList.toggle("on",S.night);
+  $("pwrap").classList.toggle("mini",S.night);
+  var mt=document.querySelector('meta[name=theme-color]');
+  if(mt)mt.setAttribute("content",S.night?"#0b0a09":"#f4ecda");
+  updateDrift();
+}
+$("bNight").addEventListener("click",function(){S.night=!S.night;save();applyNight();});
+
+/* 焼き付き対策: 夜間＋画面ONのときだけ、ゆっくり位置をずらす */
+function updateDrift(){
+  var need=S.night&&wakeWanted;
+  if(need&&!driftTick){
+    driftTick=setInterval(function(){
+      driftN=(driftN+1)%4;
+      var dx=[0,6,0,-6][driftN], dy=[0,4,8,4][driftN];
+      $("shell").style.transform="translate("+dx+"px,"+dy+"px)";
+    },60000);
+  } else if(!need&&driftTick){
+    clearInterval(driftTick);driftTick=null;$("shell").style.transform="";
+  }
+}
+
+/* ── Wake Lock（手動ON）───────────────────── */
+function wakeSupported(){return "wakeLock" in navigator;}
+async function wakeAcquire(){
+  if(!wakeSupported())return false;
+  try{
+    wakeLock=await navigator.wakeLock.request("screen");
+    wakeLock.addEventListener("release",function(){wakeLock=null;paintWake();});
+    return true;
+  }catch(e){return false;}
+}
+function wakeRelease(){try{if(wakeLock)wakeLock.release();}catch(e){}wakeLock=null;}
+function paintWake(){
+  $("bWake").classList.toggle("on",wakeWanted&&!!wakeLock);
+  $("bWake").title=wakeWanted?"画面を消さない: ON（電池を多く使います）":"画面を消さない: OFF";
+}
+$("bWake").addEventListener("click",async function(){
+  if(!wakeSupported()){toast("この端末/ブラウザは画面の消灯を止められません。",5000);return;}
+  if(wakeWanted){wakeWanted=false;wakeRelease();paintWake();updateDrift();toast("画面は通常どおり消えます。",3000);return;}
+  wakeWanted=true;
+  var ok=await wakeAcquire();
+  paintWake();updateDrift();
+  toast(ok?"画面を消さないようにしました。電池を多く使うので、就寝時はスリープタイマーと併用してください。"
+          :"画面の消灯を止められませんでした（省電力モード中などでは効きません）。",6000);
+  if(!ok)wakeWanted=false,paintWake();
+});
+// タブに戻ってきたときに取り直す（ロックは非表示になると自動で解除される）
+document.addEventListener("visibilitychange",function(){
+  if(document.visibilityState==="visible"&&wakeWanted&&!wakeLock)wakeAcquire().then(paintWake);
+});
+
+/* ── スリープタイマー ───────────────────── */
+function setTimer(min){
+  S.timer=min;
+  Array.prototype.forEach.call(document.querySelectorAll(".tb"),function(b){
+    b.classList.toggle("on",+b.getAttribute("data-t")===min);
+  });
+  if(fadeTick){clearInterval(fadeTick);fadeTick=null;}
+  if(tTick){clearInterval(tTick);tTick=null;}
+  if(!min){tEnd=0;$("tleft").textContent="";return;}
+  tEnd=Date.now()+min*60000;
+  tTick=setInterval(tickTimer,1000);tickTimer();
+  toast(min+"分後に、ゆっくり音を絞って止めます。",4000);
+}
+function tickTimer(){
+  var left=Math.max(0,Math.round((tEnd-Date.now())/1000));
+  var m=Math.floor(left/60),s=left%60;
+  $("tleft").textContent="残り "+m+":"+(s<10?"0":"")+s;
+  if(left<=0){clearInterval(tTick);tTick=null;beginFade();}
+}
+function beginFade(){
+  var SECS=20, t=0;
+  var v0=S.vol, sv0=S.scVol/100;
+  var canSc=scVolSupported();
+  $("tleft").textContent="停止中…";
+  fadeTick=setInterval(function(){
+    t+=0.5;
+    var k=Math.max(0,1-t/SECS);
+    if(ytReady&&yt&&yt.setVolume){try{yt.setVolume(Math.round(v0*k));}catch(e){}}
+    if(canSc){try{scA.volume=Math.max(0,sv0*k);}catch(e){}}
+    if(k<=0){
+      clearInterval(fadeTick);fadeTick=null;
+      try{if(yt&&yt.pauseVideo)yt.pauseVideo();}catch(e){}
+      try{scA.pause();}catch(e){}
+      scId=null;renderSc();
+      applyVol();applyScVol();                 // 音量つまみは元に戻す
+      wakeWanted=false;wakeRelease();paintWake();updateDrift(); // 画面を消せるようにする
+      setTimer(0);
+      toast("スリープタイマーで停止しました。おやすみなさい。",6000);
+    }
+  },500);
+}
+Array.prototype.forEach.call(document.querySelectorAll(".tb"),function(b){
+  b.addEventListener("click",function(){setTimer(+b.getAttribute("data-t"));});
+});
+
+/* ── 共有からの受け取り（#bgmadd=URL）───── */
+(function(){
+  var m=(location.hash||"").match(/(?:#|&)bgmadd=([^&]+)/);
+  if(!m)return;
+  var url="";try{url=decodeURIComponent(m[1]);}catch(e){}
+  var it=addItem(url,"","");
+  try{history.replaceState(null,"",location.pathname+location.search);}catch(e){}
+  if(it)setTimeout(function(){playItem(it.id);},400);
+})();
+
+/* ── 初期化 ─────────────────────────────── */
+setMode(S.mode);
+applyNight();
+applyVol();
+applyScVol();
+paintWake();
+setTimer(0);
+render();
+updateNow();
+if(!wakeSupported())$("bWake").style.display="none";
+})();
+</script>
+</body>
+</html>

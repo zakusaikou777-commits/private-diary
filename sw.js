@@ -7,18 +7,21 @@
    This worker is kept for: (1) immediate activation, and (2) handling
    clicks on notifications if a supporting browser ever schedules them. */
 
+const CACHE_NAME = "nk-shell-v3";
+const SHELL_ASSETS = ["./", "./index.html", "./kininari.html", "./diary.html", "./image-streaming.html", "./bgm.html", "./clipper.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png",
+  // 就寝用の音はオフラインでも鳴らせるようにキャッシュしておく（各625KB）
+  "./audio/brown.wav", "./audio/pink.wav", "./audio/rain.wav"];
+
 self.addEventListener("install", (event) => {
-  // ネットワーク優先＋オフライン時フォールバック用に主要ファイルを事前キャッシュ
+  // ネットワーク優先＋オフライン時フォールバック用に主要ファイルを事前キャッシュ。
+  // addAll は1つでも失敗すると全体が失敗するので、1件ずつ入れて取りこぼしを防ぐ。
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then((c) => c.addAll(SHELL_ASSETS))
+      .then((c) => Promise.all(SHELL_ASSETS.map((u) => c.add(u).catch(() => {}))))
       .catch(() => {}) // 一部が無くてもインストールは続行
   );
   self.skipWaiting();
 });
-
-const CACHE_NAME = "nk-shell-v1";
-const SHELL_ASSETS = ["./", "./index.html", "./kininari.html", "./diary.html", "./image-streaming.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("activate", (event) => {
   event.waitUntil((async () => {

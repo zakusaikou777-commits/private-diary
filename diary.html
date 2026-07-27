@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>日記帳 Pro - カレンダー完全修正版</title>
+    <title>日記帳</title>
     <style>
 
 .editor-content {
@@ -1001,6 +1001,22 @@ function renderEditor() {
 
   editor.addEventListener('input', () => {
     // 折りたたみ用のゼロ幅スペースは保存対象から除外
+    currentEntry.content = editor.innerHTML.replace(/\u200B/g, '');
+    currentEntry.contentFormat = 'html';
+    updateCharCount();
+    markDirty();
+    scheduleAutoSave();
+  });
+
+  // 貼り付けたHTMLは挿入前にサニタイズする。従来は保存時ではなく「描画時」に
+  // しかサニタイズしていなかったため、貼り付けた直後のDOMは未検査だった。
+  editor.addEventListener('paste', (e) => {
+    const cd = e.clipboardData;
+    if (!cd) return;
+    const html = cd.getData('text/html');
+    if (!html) return; // プレーンテキストはブラウザ既定のままでよい
+    e.preventDefault();
+    insertHtmlAtCursor(sanitizeHtml(html));
     currentEntry.content = editor.innerHTML.replace(/\u200B/g, '');
     currentEntry.contentFormat = 'html';
     updateCharCount();
@@ -2346,6 +2362,72 @@ function toggleAutoSyncDrive() {
   }
   function start(){ if(wrap()){ try{ window.renderCalendar(); }catch(e){} } else { setTimeout(start,150); } }
   window.addEventListener('storage',function(e){ if(e.key==='kininari:data:v2'){ try{ window.renderCalendar(); }catch(_){}} });
+  start();
+})();
+</script>
+<script>
+/* ── 「今日のBGM」: 音タブ（bgm.html）の再生履歴を日記に取り込む ──
+   気になり帳のタスク表示と同じ作りで、同一オリジンの localStorage を直接読む。 */
+(function(){
+  var CSS='#bgm-today{margin:0 0 10px;padding:9px 11px;background:var(--color-bg-1,#f6efdf);border:1px solid var(--color-border,#e2d6bd);border-radius:10px}'
+    +'#bgm-today .bgm-h{font-size:11px;font-weight:700;color:var(--color-text-secondary,#7a6f5e);letter-spacing:.04em;margin-bottom:6px}'
+    +'#bgm-today .bgm-row{display:flex;flex-wrap:wrap;gap:5px;align-items:center}'
+    +'#bgm-today .bgm-i{border:1px solid var(--color-border,#e2d6bd);background:#fff;border-radius:999px;padding:5px 10px;font-size:11.5px;cursor:pointer;font-family:inherit;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+    +'#bgm-today .bgm-i:hover{border-color:#c0463c;color:#c0463c}'
+    +'#bgm-today .bgm-all{border:none;background:#c0463c;color:#fdf1e6;border-radius:999px;padding:5px 11px;font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit}';
+  try{ var st=document.createElement('style'); st.textContent=CSS; document.head.appendChild(st); }catch(e){}
+
+  function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+  function todayList(){
+    try{
+      var d=JSON.parse(localStorage.getItem('bgm:v1')||'{}');
+      var h=Array.isArray(d.hist)?d.hist:[];
+      var t0=new Date(); t0.setHours(0,0,0,0); var t=t0.getTime();
+      var seen={}, out=[];
+      h.forEach(function(x){
+        if(x && (x.at||0)>=t && x.title && !seen[x.title]){ seen[x.title]=1; out.push(x.title); }
+      });
+      return out.slice(0,8);
+    }catch(e){ return []; }
+  }
+  function insert(text){
+    var ed=document.getElementById('contentEditor'); if(!ed) return;
+    ed.focus();
+    var html=esc(text)+'<br>';
+    try{
+      if(typeof window.insertHtmlAtCursor==='function' && window.getSelection && window.getSelection().rangeCount){
+        window.insertHtmlAtCursor(html);
+      } else { ed.innerHTML += html; }
+    }catch(e){ ed.innerHTML += html; }
+    try{ ed.dispatchEvent(new Event('input',{bubbles:true})); }catch(e){}
+  }
+  function render(){
+    var ed=document.getElementById('contentEditor');
+    var host=document.getElementById('bgm-today');
+    var list=todayList();
+    if(!ed || !list.length){ if(host&&host.parentNode) host.parentNode.removeChild(host); return; }
+    if(!host){
+      host=document.createElement('div'); host.id='bgm-today';
+      ed.parentNode.insertBefore(host, ed);
+    }
+    host.innerHTML='<div class="bgm-h">🎧 今日聞いたBGM（押すと本文に入ります）</div><div class="bgm-row">'
+      + list.map(function(t){ return '<button type="button" class="bgm-i" data-t="'+esc(t)+'">'+esc(t)+'</button>'; }).join('')
+      + (list.length>1 ? '<button type="button" class="bgm-all">まとめて書く</button>' : '')
+      + '</div>';
+    Array.prototype.forEach.call(host.querySelectorAll('.bgm-i'),function(b){
+      b.addEventListener('click',function(){ insert('🎧 '+b.getAttribute('data-t')); });
+    });
+    var all=host.querySelector('.bgm-all');
+    if(all) all.addEventListener('click',function(){ insert('🎧 今日のBGM: '+list.join(' / ')); });
+  }
+  function wrap(){
+    if(typeof window.renderEditor!=='function') return false;
+    var orig=window.renderEditor; if(orig.__bgmWrapped) return true;
+    var w=function(){ var r=orig.apply(this,arguments); try{ render(); }catch(e){} return r; };
+    w.__bgmWrapped=true; window.renderEditor=w; return true;
+  }
+  function start(){ if(wrap()){ try{ render(); }catch(e){} } else { setTimeout(start,150); } }
+  window.addEventListener('storage',function(e){ if(e.key==='bgm:v1'){ try{ render(); }catch(_){}} });
   start();
 })();
 </script>

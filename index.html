@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>日記帳 & 気になり帳</title>
 <meta name="theme-color" content="#f4ecda" />
 <link rel="manifest" href="manifest.webmanifest" />
@@ -19,8 +19,11 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 .iconbtn{flex:none;height:36px;width:40px;border:1px solid #e2d6bd;background:#fff;color:#7a6f5e;border-radius:9px;cursor:pointer;font-size:16px}
 .iconbtn:hover{border-color:#c0463c}
 #frames{position:fixed;top:48px;left:0;right:0;bottom:0;background:#f4ecda}
-.appframe{position:absolute;inset:0;width:100%;height:100%;border:0;display:none;background:#fff}
-.appframe.active{display:block}
+/* display:none で隠すと、iframe内の再生が止まったり iframe 自体が作り直される
+   ことがある（Firefoxは再読み込みする）。BGMを鳴らしながら日記を書けるように、
+   隠すときも DOM に残したまま visibility で見えなくする。 */
+.appframe{position:absolute;inset:0;width:100%;height:100%;border:0;background:#fff;visibility:hidden;pointer-events:none}
+.appframe.active{visibility:visible;pointer-events:auto}
 .knmodal{position:fixed;inset:0;background:rgba(40,32,24,.45);display:none;align-items:center;justify-content:center;z-index:50;padding:18px}
 .knmodal.open{display:flex}
 .knmodal-card{background:#fdf8ec;border:1px solid #e2d6bd;border-radius:16px;max-width:440px;width:100%;padding:18px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
@@ -50,13 +53,15 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 <button class="apptab active" type="button" data-app="diary">📔 日記</button>
 <button class="apptab" type="button" data-app="kininari">📝 気になり帳</button>
 <button class="apptab" type="button" data-app="anshitsu">🎞️ 暗室</button>
+<button class="apptab" type="button" data-app="bgm">🎧 音</button>
 <button id="knBackupBtn" class="iconbtn" type="button" title="まとめてバックアップ">💾</button>
 <button id="knHelpBtn" class="iconbtn" type="button" title="ヘルプ・設定ガイド">❓</button>
 </div>
 <div id="frames">
 <iframe id="frame-diary" class="appframe active" title="日記帳" allow="clipboard-read; clipboard-write"></iframe>
 <iframe id="frame-kininari" class="appframe" title="気になり帳" allow="clipboard-read; clipboard-write"></iframe>
-<iframe id="frame-anshitsu" class="appframe" title="暗室 — イメージストリーミング"></iframe>
+<iframe id="frame-anshitsu" class="appframe" title="暗室 — イメージストリーミング" allow="screen-wake-lock"></iframe>
+<iframe id="frame-bgm" class="appframe" title="音 — BGM" allow="autoplay; encrypted-media; picture-in-picture; fullscreen; screen-wake-lock"></iframe>
 </div>
 <div id="knModal" class="knmodal">
 <div class="knmodal-card">
@@ -72,10 +77,20 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 <div id="knHelp" class="knmodal">
 <div class="knmodal-card knhelp-card knhelp">
 <div class="knmodal-h">❓ ヘルプ・設定ガイド<button id="knHelpX" class="knmodal-x" type="button">×</button></div>
-<p class="lead">日記帳・気になり帳・暗室の3-in-1アプリです。データはこの端末（各アプリ内）に保存されます。GoogleドライブやGoogleカレンダーと連携するときは、最初に少しだけ設定が必要です。</p>
+<p class="lead">日記帳・気になり帳・暗室・音（BGM）の4-in-1アプリです。データはこの端末（各アプリ内）に保存されます。GoogleドライブやGoogleカレンダーと連携するときは、最初に少しだけ設定が必要です。</p>
 
 <h4>暗室（イメージストリーミング）</h4>
 <p><b>🎞️ 暗室</b>タブは、情景を思い浮かべて五感の細部を声に出して描写する練習（ウェンガー式イメージストリーミング）のためのタイマーと記録です。情景のお題・3/5/10分タイマー・音声ガイド・Ten/Ten（10分×10日）の進捗が使えます。練習記録はこの端末に保存され、上部の <b>💾</b> まとめてバックアップにも含まれます。</p>
+
+<h4>音（BGM）</h4>
+<p><b>🎧 音</b>タブは、YouTubeのBGMを毎回探さずに呼び出すためのものです。ジャンルから検索して、気に入った動画のURLを登録しておくと、次回はタップだけで再生できます。お気に入り（★）と再生履歴が残り、スリープタイマー・連続再生・シャッフルが使えます。</p>
+<ul>
+<li><b>他のタブに切り替えても鳴り続けます</b>（このアプリを開いている間）。日記を書きながらBGMを流せます。</li>
+<li><b>スマホで画面を消すとYouTubeは止まります。</b>これはブラウザ側の仕様で、回避できません（iPhoneのSafariも同じ）。💡ボタンで「画面を消さない」を有効にすると消灯を防げますが、電池を多く使います。</li>
+<li><b>「就寝用の音」</b>（ブラウンノイズ・ピンクノイズ・雨）は端末内の音なので、<b>画面を消しても鳴り続けます。</b>寝るときはこちらをお使いください。</li>
+<li>埋め込み再生を禁止している動画があります。その場合は「↗ YouTubeで開く」に切り替わります。</li>
+<li>Androidでは、YouTubeアプリの「共有」からこのアプリに送ると、音タブに直接登録されます。</li>
+</ul>
 
 <h4>Chrome拡張（気になり帳クリッパー）</h4>
 <p>見ているページ（ニュースなど）をワンクリックで気になり帳に保存できるChrome拡張があります。ダウンロードと入れ方は <a href="./clipper.html" target="_blank" rel="noopener">こちらのページ</a> から。</p>
@@ -110,7 +125,7 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 <li><b>気になり帳</b>：ヘッダーの同期アイコンから、ドライブに保存／読み込み（自動同期も可）。</li>
 <li><b>日記帳</b>：日記の設定からドライブに保存。</li>
 <li>端末をまたいでデータを引き継げます。</li>
-<li>上部の <b>💾</b> は「<b>まとめてバックアップ</b>」：日記＋気になり帳＋暗室（練習記録）を1つのファイルに書き出し／取り込み（画像も含む。Googleなしでも使えるローカル保存）。</li>
+<li>上部の <b>💾</b> は「<b>まとめてバックアップ</b>」：日記＋気になり帳＋暗室＋音（BGMの登録・履歴）を1つのファイルに書き出し／取り込み（画像も含む。Googleなしでも使えるローカル保存）。</li>
 </ul>
 
 <h4>うまくいかないとき</h4>
@@ -131,7 +146,9 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 <script>
 (function(){
   var clipHash = ((location.hash||'').match(/knadd=([^&]+)/) || [null,null])[1];
+  var bgmHash = ((location.hash||'').match(/bgmadd=([^&]+)/) || [null,null])[1];
   var wasShare = false;
+  function isYt(u){ return /^https?:\/\/(www\.|m\.|music\.)?(youtube\.com|youtu\.be)\//i.test(u || ''); }
   // Android「共有」メニュー（PWA Share Target）からの受け取り:
   // index.html?title=..&text=..&url=.. を #knadd 形式に変換して気になり帳へ渡す
   try{
@@ -145,7 +162,11 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
         var mu = (sx + ' ' + st).match(/https?:\/\/[^\s]+/);
         if(mu){ su = mu[0]; sx = sx.replace(mu[0], '').trim(); st = st.replace(mu[0], '').trim(); }
       }
-      if(st || sx || su){
+      if(su && isYt(su)){
+        // YouTubeの共有は「音」タブ（BGM）へ回す
+        bgmHash = encodeURIComponent(su);
+        wasShare = true;
+      } else if(st || sx || su){
         var pl = { t: st || su || '共有されたページ', u: su, n: sx.slice(0, 2000), img: '', c: 'メモ', f: '' };
         clipHash = encodeURIComponent(JSON.stringify(pl));
         wasShare = true;
@@ -157,7 +178,8 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     if(loaded[app]) return;
     var fr = document.getElementById('frame-'+app);
     if(!fr) return;
-    var base = (app === 'kininari') ? 'kininari.html' : (app === 'anshitsu') ? 'image-streaming.html' : 'diary.html';
+    var base = (app === 'kininari') ? 'kininari.html' : (app === 'anshitsu') ? 'image-streaming.html' : (app === 'bgm') ? 'bgm.html' : 'diary.html';
+    if(app === 'bgm' && bgmHash){ base += '#bgmadd=' + bgmHash; }
     if(app === 'kininari' && clipHash){ base += '#knadd=' + clipHash; }
     fr.src = base;
     loaded[app] = true;
@@ -188,9 +210,10 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     var diaryLast = localStorage.getItem('diaryLastBackup');
     var kdata = localStorage.getItem('kininari:data:v2');
     var anshitsu = localStorage.getItem('image-streaming:v1');
+    var bgm = localStorage.getItem('bgm:v1');
     var files=[];
     try{ var db=await knOpenDB(); var recs=await knIdbAll(db); for(var i=0;i<recs.length;i++){ var r=recs[i]; if(r&&r.blob){ try{ files.push({id:r.id,name:r.name,type:r.type,dataUrl:await blobToDataURL(r.blob)}); }catch(e){} } } }catch(e){}
-    return { app:'nikki-kininari', v:2, exportedAt:new Date().toISOString(), diary:diary, diaryLastBackup:diaryLast, kininari:{ data:kdata, files:files }, anshitsu:anshitsu };
+    return { app:'nikki-kininari', v:2, exportedAt:new Date().toISOString(), diary:diary, diaryLastBackup:diaryLast, kininari:{ data:kdata, files:files }, anshitsu:anshitsu, bgm:bgm };
   }
   async function knExport(){
     knMsg('準備中…');
@@ -207,9 +230,19 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     knMsg('取り込み中…');
     try{
       var text=await file.text(); var obj=JSON.parse(text);
+      // 先に各アプリを止める。動いたままだと、日記帳の自動保存(0.8秒)や
+      // 気になり帳の自動同期が、取り込んだ直後のデータを古い内容で
+      // 上書きしてしまうことがある。
+      try{
+        var frs=document.querySelectorAll('.appframe');
+        for(var fi=0; fi<frs.length; fi++){ frs[fi].src='about:blank'; }
+        loaded={};
+      }catch(e){}
+      await new Promise(function(r){ setTimeout(r, 150); });
       if(typeof obj.diary==='string') localStorage.setItem('diaryEntries', obj.diary);
       if(obj.diaryLastBackup) localStorage.setItem('diaryLastBackup', obj.diaryLastBackup);
       if(typeof obj.anshitsu==='string') localStorage.setItem('image-streaming:v1', obj.anshitsu);
+      if(typeof obj.bgm==='string') localStorage.setItem('bgm:v1', obj.bgm);
       if(obj.kininari){
         if(typeof obj.kininari.data==='string') localStorage.setItem('kininari:data:v2', obj.kininari.data);
         var files=(obj.kininari.files||[]);
@@ -229,7 +262,8 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
   document.getElementById('knExport').addEventListener('click', knExport);
   document.getElementById('knImport').addEventListener('change', function(e){ var f=e.target.files&&e.target.files[0]; if(f) knDoImport(f); e.target.value=''; });
 
-  if(clipHash){ show('kininari'); try{ history.replaceState(null,'',location.pathname+(wasShare?'':location.search)); }catch(e){} }
+  if(bgmHash){ show('bgm'); try{ history.replaceState(null,'',location.pathname+(wasShare?'':location.search)); }catch(e){} }
+  else if(clipHash){ show('kininari'); try{ history.replaceState(null,'',location.pathname+(wasShare?'':location.search)); }catch(e){} }
   else { show('diary'); }
 })();
 </script>
