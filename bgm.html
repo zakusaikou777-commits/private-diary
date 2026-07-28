@@ -188,7 +188,7 @@ header .grow{flex:1;min-width:0}
     <div class="volrow"><span>音量</span><input type="range" id="scVol" min="0" max="100" step="1"><span id="scVolN">70</span></div>
     <p id="scVolNote" class="hint"></p>
     <div class="note">
-      <b>こちらは画面を消しても鳴り続けます。</b>YouTubeと違い、端末内の音を鳴らしているためです。ホーム画面に追加したアプリとして開くと、ロック画面からの停止も使えます。<br>
+      <b>こちらは他のタブに切り替えても、画面を消しても鳴り続けます。</b>YouTubeと違い、端末内の音を鳴らしているためです。再生はアプリの最上位で行うので、日記を書きながらでも止まりません。ロック画面からの再生・停止も使えます。<br>
       音は20秒のループですが、継ぎ目が出ない作りにしてあるので、つなぎ目は聞こえません。
     </div>
   </section>
@@ -706,43 +706,82 @@ $("addUrl").addEventListener("keydown",function(e){if(e.key==="Enter")$("bAdd").
 $("addName").addEventListener("keydown",function(e){if(e.key==="Enter")$("bAdd").click();});
 
 /* ── 内蔵音 ───────────────────────────────────────── */
-var scA=$("scAudio"), volCtl=null;
+/* 音の出口。シェルの中にいるときは、実際の<audio>は index.html が持つ。
+   iframe内で鳴らすと、タブ切替や画面消灯で止められることがあるため。 */
+var scA=$("scAudio");
+var SND=(function(){
+  var emb=(function(){try{return window.top!==window.self;}catch(e){return true;}})();
+  var st={id:null,playing:false,volOk:true};
+  var localVolOk=null;
+  function post(m){ try{ parent.postMessage({nkSound:m},"*"); }catch(e){} }
+  function localVolSupported(){
+    if(localVolOk!==null) return localVolOk;
+    try{var o=scA.volume;scA.volume=0.37;localVolOk=Math.abs(scA.volume-0.37)<0.02;scA.volume=o;}catch(e){localVolOk=false;}
+    return localVolOk;
+  }
+  if(emb){
+    window.addEventListener("message",function(e){
+      var d=e.data; if(!d||!d.nkSoundState) return;
+      st.id=d.nkSoundState.id; st.playing=!!d.nkSoundState.playing;
+      if(typeof d.nkSoundState.volOk==="boolean") st.volOk=d.nkSoundState.volOk;
+      if(d.nkSoundState.err==="tap") toast("もう一度タップしてください。",4000);
+      renderSc();
+    });
+    post({cmd:"state"});
+  }
+  return {
+    embedded:emb,
+    playing:function(){ return emb ? st.playing : !scA.paused; },
+    current:function(){ return emb ? st.id : (scA.paused?null:scA.getAttribute("data-id")); },
+    volOk:function(){ return emb ? st.volOk : localVolSupported(); },
+    setVol:function(v){
+      v=Math.max(0,Math.min(1,v));
+      if(emb){ post({cmd:"vol",vol:v}); return; }
+      if(localVolSupported()){ try{ scA.volume=v; }catch(e){} }
+    },
+    play:function(sd,vol){
+      if(emb){ post({cmd:"play",id:sd.id,file:sd.f,name:sd.n,vol:vol}); return; }
+      if(!scA.src||scA.getAttribute("data-id")!==sd.id){ scA.src=sd.f; scA.setAttribute("data-id",sd.id); }
+      if(localVolSupported()){ try{ scA.volume=Math.max(0,Math.min(1,vol)); }catch(e){} }
+      scA.play().then(function(){ mediaMeta(sd.n); }).catch(function(){ toast("再生できませんでした。もう一度タップしてください。",4000); renderSc(); });
+    },
+    stop:function(){ if(emb){ post({cmd:"stop"}); return; } try{ scA.pause(); }catch(e){} }
+  };
+})();
+var volCtl=null;
 (function(){
   var h="";
   SOUNDS.forEach(function(s){h+='<button class="sccard" data-sc="'+s.id+'"><div class="n">'+esc(s.n)+'</div><div class="d">'+esc(s.d)+'</div></button>';});
   $("scList").innerHTML=h;
 })();
-function scVolSupported(){
-  if(volCtl!==null) return volCtl;
-  try{var o=scA.volume;scA.volume=0.37;volCtl=Math.abs(scA.volume-0.37)<0.02;scA.volume=o;}catch(e){volCtl=false;}
-  return volCtl;
-}
+function scVolSupported(){ return SND.volOk(); }
 function applyScVol(){
   $("scVol").value=S.scVol;$("scVolN").textContent=S.scVol;
-  if(scVolSupported()){try{scA.volume=Math.max(0,Math.min(1,S.scVol/100));}catch(e){}}
+  SND.setVol(S.scVol/100);
   $("scVolNote").textContent=scVolSupported()?"":"※ この端末（iPhone/iPad）では、音量は本体のボタンで調整してください。";
 }
 function playSound(id){
   var s=null; SOUNDS.forEach(function(x){if(x.id===id)s=x;}); if(!s) return;
-  if(scId===id&&!scA.paused){scA.pause();scId=null;renderSc();return;}
+  if(SND.current()===id&&SND.playing()){ SND.stop(); scId=null; renderSc(); return; }
   scId=id;
-  if(!scA.src||scA.getAttribute("data-id")!==id){scA.src=s.f;scA.setAttribute("data-id",id);}
-  applyScVol();
-  scA.play().then(function(){
-    S.hist.unshift({at:Date.now(),id:"sc:"+id,title:s.n});S.hist=S.hist.slice(0,300);save();
-    mediaMeta(s.n);
-  }).catch(function(){toast("再生できませんでした。もう一度タップしてください。",4000);scId=null;renderSc();});
+  SND.play(s, S.scVol/100);
+  S.hist.unshift({at:Date.now(),id:"sc:"+id,title:s.n});S.hist=S.hist.slice(0,300);
+  save(); touch(false);
   renderSc();
 }
 function renderSc(){
+  var cur=SND.current(), on=SND.playing();
+  scId = on ? cur : null;
   Array.prototype.forEach.call($("scList").children,function(b){
-    b.classList.toggle("on",b.getAttribute("data-sc")===scId&&!scA.paused);
+    b.classList.toggle("on", on && b.getAttribute("data-sc")===cur);
   });
 }
 $("scList").addEventListener("click",function(e){var b=e.target.closest("[data-sc]");if(b)playSound(b.getAttribute("data-sc"));});
-scA.addEventListener("pause",renderSc); scA.addEventListener("play",renderSc);
+if(!SND.embedded){ scA.addEventListener("pause",renderSc); scA.addEventListener("play",renderSc); }
 function mediaMeta(title){
   try{
+    // シェルの中にいるときは、ロック画面の操作はシェル側が持つ
+    if(SND.embedded) return;
     if(!("mediaSession" in navigator)) return;
     navigator.mediaSession.metadata=new MediaMetadata({title:title,artist:"就寝用の音",album:"音 — BGM"});
     navigator.mediaSession.setActionHandler("pause",function(){scA.pause();});
@@ -860,11 +899,11 @@ function beginFade(){
     t+=0.5;
     var k=Math.max(0,1-t/SECS);
     if(ytReady&&yt&&yt.setVolume){try{yt.setVolume(Math.round(v0*k));}catch(e){}}
-    if(canSc){try{scA.volume=Math.max(0,sv0*k);}catch(e){}}
+    if(canSc) SND.setVol(Math.max(0,sv0*k));
     if(k<=0){
       clearInterval(fadeTick);fadeTick=null;
       try{if(yt&&yt.pauseVideo)yt.pauseVideo();}catch(e){}
-      try{scA.pause();}catch(e){}
+      SND.stop();
       scId=null;renderSc();
       applyVol();applyScVol();
       wakeWanted=false;wakeRelease();paintWake();updateDrift();
@@ -888,7 +927,7 @@ $("bPlus10").addEventListener("click",function(){
     applyVol();applyScVol();
     var cu=byId(curId);
     try{if(yt&&yt.playVideo&&cu&&!cu.noEmbed)yt.playVideo();}catch(e){}
-    if(scId){scA.play().catch(function(){});}
+    if(scId){ var sd=null; SOUNDS.forEach(function(x){if(x.id===scId)sd=x;}); if(sd) SND.play(sd,S.scVol/100); }
   }
   if(tTick&&tEnd>Date.now()){
     tEnd+=10*60000; S.timer+=10; paintTb(); tickTimer();

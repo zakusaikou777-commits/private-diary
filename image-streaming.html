@@ -137,6 +137,18 @@
   .knob{position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:50%; background:var(--paper); transition:transform .2s ease;}
   .switch.on .knob{transform:translateX(16px);}
 
+  .voicebox{margin-top:10px; padding:11px 12px; border:1px solid var(--line,#2a2521); border-radius:11px; background:rgba(255,255,255,.02);}
+  .vlbl{font-size:11px; color:var(--dim); font-family:var(--fb); flex:none; min-width:26px;}
+  .vsel{width:100%; margin:5px 0 9px; padding:8px 9px; font-family:var(--fb); font-size:12.5px; border-radius:8px; border:1px solid var(--line,#2a2521); background:rgba(0,0,0,.25); color:inherit;}
+  .vpresets{display:flex; gap:5px; margin-bottom:9px;}
+  .vp{flex:1; padding:7px 4px; font-family:var(--fb); font-size:11.5px; border-radius:8px; border:1px solid var(--line,#2a2521); background:none; color:var(--dim); cursor:pointer;}
+  .vp.on{border-color:var(--ember); color:var(--ember);}
+  .vrow{display:flex; align-items:center; gap:8px; margin-bottom:6px;}
+  .vrow input[type=range]{flex:1; min-width:0; accent-color:var(--ember);}
+  .vnum{font-size:11px; color:var(--dim); font-family:var(--fb); min-width:30px; text-align:right; font-variant-numeric:tabular-nums;}
+  .vhelp{margin-top:8px; font-size:11.5px; color:var(--dim);}
+  .vhelp summary{cursor:pointer;}
+  .vhelp-b{margin-top:7px; line-height:1.85;}
   .testbtn{width:100%; display:inline-flex; align-items:center; justify-content:center; gap:6px; background:none; border:none; cursor:pointer; font-family:var(--fb); font-size:12.5px; color:var(--dim); padding:2px 6px; transition:color .15s ease;}
   .testbtn:hover{color:var(--ember);}
   .tts-note{font-size:11.5px; color:var(--dim); line-height:1.5; margin:4px 0 0; text-align:center; opacity:.85;}
@@ -298,6 +310,27 @@
           </span>
           <span class="switch" id="toggleSwitch"><span class="knob"></span></span>
         </button>
+        <div class="voicebox" id="voiceBox">
+          <label class="vlbl" for="voiceSel">声</label>
+          <select id="voiceSel" class="vsel"></select>
+          <div class="vpresets" id="vPresets">
+            <button type="button" class="vp" data-vp="calm">おちついた</button>
+            <button type="button" class="vp on" data-vp="soft">やわらかい</button>
+            <button type="button" class="vp" data-vp="bright">明るい</button>
+          </div>
+          <div class="vrow"><span class="vlbl">高さ</span><input type="range" id="vPitch" min="0.6" max="1.6" step="0.01"><span class="vnum" id="vPitchN">1.15</span></div>
+          <div class="vrow"><span class="vlbl">速さ</span><input type="range" id="vRate" min="0.6" max="1.3" step="0.01"><span class="vnum" id="vRateN">0.90</span></div>
+          <details class="vhelp">
+            <summary>もっと自然な声にするには</summary>
+            <div class="vhelp-b">
+              使える声は、この端末に入っているものだけです（ブラウザ側の仕様で、アプリから声を配ることはできません）。<br><br>
+              <b>iPhone / iPad</b>：設定 → アクセシビリティ → 読み上げコンテンツ → 声 → 日本語 で、高品質版をダウンロードすると格段に自然になります。<br>
+              <b>Windows</b>：設定 → 時刻と言語 → 音声認識 で音声を追加。「Nanami」が入ると滑らかです。<br>
+              <b>Android / Chrome</b>：「Google 日本語」が入っていれば、たいていそれが一番自然です。<br><br>
+              新しく入れたあとは、この画面を再読み込みすると一覧に出てきます。
+            </div>
+          </details>
+        </div>
         <button class="testbtn" id="testBtn"></button>
         <p class="tts-note" id="ttsNote" hidden>この環境では読み上げが使えないため、合図音のみで案内します。</p>
 
@@ -432,6 +465,7 @@
     secondsLeft: 600,
     scene: SCENES[(Math.random()*SCENES.length)|0],
     speakCues: false,
+    voiceURI: "", vPitch: 1.15, vRate: 0.90, vPreset: "soft",
     activeSense: 0,
     rating: null,
     pending: { sec:0, scene:"" },
@@ -471,22 +505,77 @@
   function senseTone(idx){ playTone(SENSE_FREQS[idx % SENSE_FREQS.length], 0, 1.1, 0.12); }
   function playChime(){ playTone(528,0,1.7,0.16); playTone(660,0.16,1.7,0.16); playTone(792,0.32,1.7,0.16); }
 
+  /* 旧版は「最初に見つかった日本語の声」を無条件で使っていた。Windowsでは
+     たいてい Microsoft Haruka が先に来るため、機械的に聞こえていた。
+     同じ端末にもっと自然な声が入っていることが多いので、点数をつけて選ぶ。 */
+  function jaVoices(){
+    try {
+      var vs = window.speechSynthesis.getVoices() || [];
+      return vs.filter(function(v){ return (v.lang||"").toLowerCase().indexOf("ja") === 0; });
+    } catch(e){ return []; }
+  }
+  function voiceScore(v){
+    var nm = ((v.name||"") + " " + (v.voiceURI||"")).toLowerCase();
+    var sc = 0;
+    if(/google/.test(nm)) sc += 100;                       // Chrome/Androidの日本語は総じて自然
+    if(/nanami/.test(nm)) sc += 92;                        // Windows11のニューラル音声
+    if(/(enhanced|premium|neural|拡張|高品質)/.test(nm)) sc += 85;
+    if(/(siri|o-?ren)/.test(nm)) sc += 70;
+    if(/(kyoko|京子|mizuki|ayumi|sayaka|haruka|nanami|o-?ren)/.test(nm)) sc += 40;  // 女性の声
+    if(/(otoya|hattori|ichiro|daichi|keita|男性|male)/.test(nm)) sc -= 60;          // 男性の声
+    if(v.localService === false) sc += 12;                 // ネットワーク音声は概して高品質
+    if(/haruka/.test(nm)) sc -= 20;                        // 古い方式で機械的に聞こえる
+    return sc;
+  }
   function pickVoice(){
     if(!ttsSupported) return;
-    try {
-      var vs = window.speechSynthesis.getVoices();
-      for(var i=0;i<vs.length;i++){ if((vs[i].lang||"").toLowerCase().indexOf("ja")===0){ voice = vs[i]; return; } }
-    } catch(e){}
+    var vs = jaVoices();
+    if(!vs.length){ voice = null; return; }
+    // 明示的に選ばれた声があればそれを最優先
+    if(S.voiceURI){
+      for(var i=0;i<vs.length;i++){ if(vs[i].voiceURI === S.voiceURI){ voice = vs[i]; renderVoices(); return; } }
+    }
+    var best = vs[0], bs = voiceScore(vs[0]);
+    for(var j=1;j<vs.length;j++){ var t = voiceScore(vs[j]); if(t > bs){ bs = t; best = vs[j]; } }
+    voice = best;
+    renderVoices();
+  }
+  function renderVoices(){
+    var sel = $("voiceSel"); if(!sel) return;
+    var vs = jaVoices();
+    var box = $("voiceBox");
+    if(box) box.style.display = (ttsSupported && vs.length) ? "" : "none";
+    if(!vs.length) return;
+    var cur = (voice && voice.voiceURI) || "";
+    if(sel.getAttribute("data-n") !== String(vs.length)){
+      var h = "";
+      vs.slice().sort(function(a,b){ return voiceScore(b) - voiceScore(a); }).forEach(function(v){
+        h += '<option value="' + v.voiceURI.replace(/"/g,"&quot;") + '">' + (v.name||v.voiceURI) + '</option>';
+      });
+      sel.innerHTML = h;
+      sel.setAttribute("data-n", String(vs.length));
+    }
+    if(cur) sel.value = cur;
+  }
+  function mkUtter(t){
+    var u = new SpeechSynthesisUtterance(t);
+    if(voice){ u.voice = voice; u.lang = voice.lang; } else { u.lang = "ja-JP"; }
+    u.rate = S.vRate; u.pitch = S.vPitch; u.volume = 1;
+    return u;
+  }
+  /* 一息で読ませると平板になるので、文ごとに分けて読ませる。
+     発話を分けると engine 側が自然な間を入れてくれる。 */
+  function splitJa(text){
+    var out = String(text||"").split(/(?:。|！|？)\s*/).map(function(x){ return x.trim(); }).filter(Boolean);
+    return out.length ? out : [String(text||"")];
   }
   function speak(text){
     try {
       if(!ttsSupported) return;
       var ss = window.speechSynthesis;
-      var u = new SpeechSynthesisUtterance(text);
-      if(voice){ u.voice = voice; u.lang = voice.lang; } else { u.lang = "ja-JP"; }
-      u.rate = 0.92; u.pitch = 1; u.volume = 1;
-      if(ss.speaking || ss.pending){ ss.cancel(); setTimeout(function(){ try{ ss.speak(u); }catch(e){} }, 80); }
-      else ss.speak(u);
+      var parts = splitJa(text);
+      var go = function(){ parts.forEach(function(t){ try{ ss.speak(mkUtter(t)); }catch(e){} }); };
+      if(ss.speaking || ss.pending){ ss.cancel(); setTimeout(go, 90); } else go();
     } catch(e){}
   }
   function stopSpeech(){ try { if(ttsSupported) window.speechSynthesis.cancel(); } catch(e){} }
@@ -606,6 +695,26 @@
     var ba = document.getElementById("bSyncAuto");
     if(ba) ba.addEventListener("click", function(){ sync.setAuto(!sync.autoOn()); });
     setTimeout(function(){ sync.start(); }, 900);
+  }
+
+  /* 声の設定は端末に入っている音声に依存するので、同期せずこの端末だけに持つ */
+  var VOICE_KEY = "image-streaming:voice";
+  function saveVoicePrefs(){
+    try {
+      store.set(VOICE_KEY, JSON.stringify({
+        voiceURI: S.voiceURI, vPitch: S.vPitch, vRate: S.vRate, vPreset: S.vPreset
+      }));
+    } catch(e){}
+  }
+  function loadVoicePrefs(){
+    try {
+      var o = JSON.parse(store.get(VOICE_KEY) || "null");
+      if(!o) return;
+      if(typeof o.voiceURI === "string") S.voiceURI = o.voiceURI;
+      if(typeof o.vPitch === "number") S.vPitch = Math.max(0.6, Math.min(1.6, o.vPitch));
+      if(typeof o.vRate  === "number") S.vRate  = Math.max(0.6, Math.min(1.3, o.vRate));
+      if(typeof o.vPreset === "string") S.vPreset = o.vPreset;
+    } catch(e){}
   }
 
   function clearAll(){
@@ -826,7 +935,51 @@
     $("newScene").addEventListener("click", function(){ S.scene = nextScene(S.scene); renderScene(); });
     $("beginBtn").addEventListener("click", begin);
     $("toggleBtn").addEventListener("click", function(){ S.speakCues = !S.speakCues; if(S.speakCues) ensureAudio(); else stopSpeech(); renderToggle(); });
-    $("testBtn").addEventListener("click", function(){ ensureAudio(); senseTone(0); speak("これは音声ガイドのテストです。聞こえていますか。"); });
+    $("testBtn").addEventListener("click", function(){
+      ensureAudio(); senseTone(0);
+      speak("これは音声ガイドのテストです。聞こえていますか。ゆっくり息をして、目を閉じてみてください。");
+    });
+
+    /* ── 声の調子 ──────────────────────────────────
+       高さを上げるほど若く聞こえるが、上げすぎると不自然になるので
+       既定は控えめ（1.15）にしてある。 */
+    var VPRESET = {
+      calm:   { pitch: 1.00, rate: 0.84 },
+      soft:   { pitch: 1.15, rate: 0.90 },
+      bright: { pitch: 1.28, rate: 0.97 }
+    };
+    function paintVoice(){
+      $("vPitch").value = S.vPitch; $("vPitchN").textContent = Number(S.vPitch).toFixed(2);
+      $("vRate").value  = S.vRate;  $("vRateN").textContent  = Number(S.vRate).toFixed(2);
+      Array.prototype.forEach.call(document.querySelectorAll(".vp"), function(b){
+        b.classList.toggle("on", b.getAttribute("data-vp") === S.vPreset);
+      });
+    }
+    function previewVoice(){
+      speak("この声で案内します。");
+    }
+    Array.prototype.forEach.call(document.querySelectorAll(".vp"), function(b){
+      b.addEventListener("click", function(){
+        var k = b.getAttribute("data-vp"), p = VPRESET[k]; if(!p) return;
+        S.vPreset = k; S.vPitch = p.pitch; S.vRate = p.rate;
+        saveVoicePrefs(); paintVoice(); previewVoice();
+      });
+    });
+    $("vPitch").addEventListener("input", function(e){
+      S.vPitch = parseFloat(e.target.value); S.vPreset = ""; saveVoicePrefs(); paintVoice();
+    });
+    $("vRate").addEventListener("input", function(e){
+      S.vRate = parseFloat(e.target.value); S.vPreset = ""; saveVoicePrefs(); paintVoice();
+    });
+    $("vPitch").addEventListener("change", previewVoice);
+    $("vRate").addEventListener("change", previewVoice);
+    $("voiceSel").addEventListener("change", function(e){
+      S.voiceURI = e.target.value;
+      var vs = jaVoices();
+      for(var i=0;i<vs.length;i++){ if(vs[i].voiceURI === S.voiceURI){ voice = vs[i]; break; } }
+      saveVoicePrefs(); previewVoice();
+    });
+    paintVoice();
     $("playPauseBtn").addEventListener("click", function(){ if(S.phase === "running") pause(); else if(S.phase === "paused") resume(); });
     $("endBtn").addEventListener("click", endNow);
     $("discardBtn").addEventListener("click", discard);
@@ -834,7 +987,11 @@
     $("journalToggle").addEventListener("click", function(){ S.journalOpen = !S.journalOpen; renderJournal(); });
 
     // voices may load async
+    loadVoicePrefs();
+    // 設定を読んだ後にもう一度描き直す（testBtn側の paintVoice はこれより前に走る）
+    try { paintVoice(); } catch(e){}
     if(ttsSupported){ pickVoice(); try { window.speechSynthesis.onvoiceschanged = pickVoice; } catch(e){} }
+    else { var vb = $("voiceBox"); if(vb) vb.style.display = "none"; }
 
     // keyboard: space to start / pause / resume
     document.addEventListener("keydown", function(e){

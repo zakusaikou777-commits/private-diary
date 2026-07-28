@@ -7,8 +7,8 @@
    This worker is kept for: (1) immediate activation, and (2) handling
    clicks on notifications if a supporting browser ever schedules them. */
 
-const CACHE_NAME = "nk-shell-v4";
-const SHELL_ASSETS = ["./", "./index.html", "./kininari.html", "./diary.html", "./image-streaming.html", "./bgm.html", "./sync.js", "./clipper.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png",
+const CACHE_NAME = "nk-shell-v5";
+const SHELL_ASSETS = ["./", "./index.html", "./kininari.html", "./diary.html", "./image-streaming.html", "./bgm.html", "./autogenic.html", "./sync.js", "./clipper.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png",
   // 就寝用の音はオフラインでも鳴らせるようにキャッシュしておく（各625KB）
   "./audio/brown.wav", "./audio/pink.wav", "./audio/rain.wav"];
 
