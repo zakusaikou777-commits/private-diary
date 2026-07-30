@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "気になり帳クリッパー",
+  "version": "1.1.0",
+  "description": "見ているページ（ニュースなど）をワンクリックで気になり帳に保存します。",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "気になり帳に保存",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "optional_host_permissions": [
+    "https://*/*"
+  ]
+}
