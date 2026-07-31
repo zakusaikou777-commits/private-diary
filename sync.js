@@ -1,104 +1,378 @@
-日記帳 & 気になり帳 一式
+/* ============================================================
+   NKSync — 「音」と「暗室」で共用する Google Drive 同期エンジン
 
-【中身】
-- index.html ……………………… 入口（タブで日記帳/気になり帳/暗室/音を切替）
-- diary.html …………………… 日記帳本体
-- kininari.html ……………… 気になり帳本体（クリップ取り込み対応）
-- image-streaming.html …… 暗室（イメージストリーミング）本体
-- bgm.html ……………………… 音（作業用BGMランチャー・就寝用の音）
-- autogenic.html …………… くつろぎ（自律訓練法の音声ガイド）
-- audio/ ………………………… 就寝用の音（brown/pink/rain の各wav。合計約1.8MB）
-- sync.js ……………………… 音・暗室の端末間同期（Googleドライブ経由）
-- sw.js ………………………… オフライン動作・タスク通知用
-- manifest.webmanifest …… PWA設定（ホーム画面に追加・共有メニュー対応）
-- icon-192.png / icon-512.png / icon-512-maskable.png … アプリアイコン
-- clipper.html ……………… Chrome拡張の説明＆ダウンロードページ
-- kininari-clipper/ ……… Chrome拡張のフォルダ（そのまま読み込めます）
+   設計メモ:
+   - 認証は 3アプリで共有済みの shared:gd:token に相乗りする。
+     クライアントIDも気になり帳の kininari:gd:cid を読み、設定を増やさない。
+   - Drive上のファイルは1つ（nikki-apps-data.json）。中で app ごとに
+     区画を分ける。書き戻すときは他アプリの区画を壊さない。
+   - 気になり帳v5で作った同期の教訓をそのまま入れてある:
+       * updatedAt で「新しい方が勝つ」マージ（上書きで編集を消さない）
+       * 墓標(tombstone)で削除を端末間に伝える
+       * 書き込み前に modifiedTime を確認する compare-and-swap
+       * 失敗を握りつぶさず、必ず画面に出す
+   - 端末ごとの設定（音量・夜間モード・表示状態）は同期対象に含めない。
+     各アプリが getLocal() で「同期したいものだけ」を返す。
+   ============================================================ */
+(function (global) {
+  "use strict";
 
-━━━━━━━━━━━━━━━━━━
-【1. サイトに置く（ホスティング）】
-ZIPの中身を「まるごと同じフォルダ」に置き、https で公開してください。
-（一部だけ置くと、暗室タブが開かない・ホーム画面に追加できない等になります）
+  var FILE_NAME = "nikki-apps-data.json";
+  var TOKEN_KEY = "shared:gd:token";   // 3アプリ共有
+  var CID_KEY   = "shared:gd:cid";     // 4アプリ共通の置き場
+  var CID_OLD   = "kininari:gd:cid";   // 旧: 気になり帳だけが持っていた
+  // 気になり帳に埋め込まれている既定ID。旧版はこれを定数で持っていたため
+  // localStorage が空のままでも動いてしまい、他アプリから見つけられなかった。
+  var CID_BUILTIN = "312868081144-nsjo9gfkm94ol1pha2nhq913g9p1m4e0.apps.googleusercontent.com";
+  var DEV_KEY   = "shared:devid";
+  var FILE_KEY  = "shared:nksync:file";
+  var SCOPE     = "https://www.googleapis.com/auth/drive.file";
 
-  必須: index.html / diary.html / kininari.html / image-streaming.html /
-        bgm.html / autogenic.html / audio/（フォルダごと） / sync.js / sw.js / manifest.webmanifest /
-        icon-192.png / icon-512.png / icon-512-maskable.png
-  任意: clipper.html（拡張の配布ページ。使わないなら不要）
+  var URGENT_MS = 3000;    // 追加/削除/★など、意味のある変更
+  var LAZY_MS   = 120000;  // 再生回数など、統計だけの変更
 
-- 開くときは index.html。
-- file:// では動きません（ログイン・カレンダー・通知のため https 必須）。
-- 無料の例: GitHub Pages、Netlify、Cloudflare Pages など。
+  /* ── 保存（プライベートモードでも落ちない）───────────────── */
+  var store = (function () {
+    var ok = false, mem = {};
+    try { var k = "__t" + Math.random(); localStorage.setItem(k, "1"); localStorage.removeItem(k); ok = true; } catch (e) { ok = false; }
+    return {
+      get: function (k) { try { if (ok) return localStorage.getItem(k); } catch (e) {} return (k in mem) ? mem[k] : null; },
+      set: function (k, v) { try { if (ok) { localStorage.setItem(k, v); return; } } catch (e) {} mem[k] = v; },
+      del: function (k) { try { if (ok) { localStorage.removeItem(k); return; } } catch (e) {} delete mem[k]; }
+    };
+  })();
 
-【2. Chrome拡張（ニュースを気になり帳に保存）】
-1) Chromeで chrome://extensions を開く
-2) 右上「デベロッパーモード」をオン
-3)「パッケージ化されていない拡張機能を読み込む」→ kininari-clipper フォルダを選択
-4) ツールバーの「気」アイコン → ⚙ に、自分の kininari.html のURL（https）を入力
-   例: https://yourname.github.io/app/kininari.html
-5) 以降、ページで「気」アイコン → 保存
-※ clipper.html をサイトに置けば、そのページからも拡張をダウンロードできます。
+  /* ── 端末ID（再生回数を端末ごとに数えるため）───────────────── */
+  function devId() {
+    var d = store.get(DEV_KEY);
+    if (!d) {
+      d = "d" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+      store.set(DEV_KEY, d);
+    }
+    return d;
+  }
 
-【3. Google連携（ドライブ/カレンダー）の事前設定】
-アプリ内の ❓ ヘルプ画面に手順をまとめています（API有効化・スコープ・JavaScript生成元の登録など）。
+  function clientId() {
+    var v = (store.get(CID_KEY) || "").trim();
+    if (v) return v;
+    v = (store.get(CID_OLD) || "").trim() || CID_BUILTIN;
+    if (v) store.set(CID_KEY, v);   // 一度だけ共通の置き場へ移す
+    return v;
+  }
+  function setClientId(v) {
+    v = (v || "").trim();
+    if (v) store.set(CID_KEY, v); else store.del(CID_KEY);
+    store.del(TOKEN_KEY);           // IDが変わったら古いトークンは捨てる
+    store.del(FILE_KEY);
+  }
 
-【音（BGM）タブについて】
-- YouTubeのBGMを毎回検索せずに呼び出すためのタブです。ジャンル検索 → 気に入った
-  URLを登録 → 次回はタップだけ。お気に入り★と再生履歴が残ります。
-- 他のタブに切り替えても鳴り続けます（アプリを開いている間）。
-- ★重要: スマホで画面を消すとYouTubeは止まります。ブラウザ側の仕様で回避でき
-  ません（iPhoneのSafariも同じ）。💡ボタンで消灯を防げますが電池を多く使います。
-- 「就寝用の音」（ブラウンノイズ/ピンクノイズ/雨）は端末内の音です。再生は
-  アプリの最上位（index.html）で行うので、他のタブに切り替えても、画面を
-  消しても鳴り続けます。ロック画面からの再生・停止も使えます。
-- Androidでは、YouTubeアプリの「共有」からこのアプリに送ると音タブに登録されます。
+  /* ── 汎用マージ部品（各アプリから使う）───────────────────── */
+  function itemTime(o) { return (o && (o.updatedAt || o.createdAt)) || 0; }
 
-【くつろぎ（自律訓練）タブについて】
-★これは治療ではありません。運転や機械操作の予定があるときは行わないでください。
-  通院中の方、心臓・呼吸器の病気、糖尿病、強い気分の落ち込みや不安がある方は、
-  始める前に主治医にご相談ください。
+  /** id ごとに updatedAt の新しい方を採用し、墓標で削除を反映する。
+   *  pick(local, remote) を渡すと、勝った側をベースに個別調整できる
+   *  （再生回数の合算など）。 */
+  function mergeById(localList, remoteList, lastSync, tombs, key, pick) {
+    key = key || "id";
+    var tombAt = {};
+    (tombs || []).forEach(function (t) {
+      if (t && t.id) tombAt[t.id] = Math.max(tombAt[t.id] || 0, t.at || 0);
+    });
+    var order = [], map = {};
+    function put(o) { var k = o[key]; if (!(k in map)) order.push(k); map[k] = o; }
+    (remoteList || []).forEach(put);
+    (localList || []).forEach(function (o) {
+      var k = o[key], r = map[k];
+      if (r === undefined) {
+        // ローカルにしか無い = 最終同期より後に作られた/直されたものだけ残す
+        if (itemTime(o) > lastSync) put(o);
+        return;
+      }
+      var winner = itemTime(o) > itemTime(r) ? o : r;
+      map[k] = pick ? pick(o, r, winner) : winner;
+    });
+    var out = [];
+    order.forEach(function (k) {
+      var o = map[k];
+      if (!o) return;
+      var t = tombAt[k];
+      if (t && itemTime(o) <= t) return;  // 削除より後の編集は生き残る
+      out.push(o);
+    });
+    return out;
+  }
 
-- 初めは「第1公式 — 重感」だけを2週間ほど続けるのが標準です。既定でそうなっています。
-- 心臓（第3）・お腹（第5）の段階は不快感が出ることがあるため、既定では外して
-  あります。使う場合は設定から有効にしてください。
-- 最後の「消去動作」は省略できません。中断した場合も短縮版を必ず通ります。
-  省くとだるさやぼんやりした感じが残ることがあります。
-- 練習中は自動で画面が消えないようにします（終わると元に戻ります）。途中で
-  画面が消えると読み上げが止まり、消去動作まで進めないためです。
-- 練習中に腕のピクつきや涙などが出ることがあります（自律性発散）。多くは問題
-  ありませんが、強く不快なときは中止してください。
-- 声は「暗室」の設定を共有します。背景音は「音」タブの就寝用の音を使えます。
-- 誘導文は「誘導文の編集」から自分で書き換えられます（文・沈黙の秒数・自分の段階の
-  追加）。編集はこの端末に保存されるため、アプリのファイルを差し替えても消えません。
-  JSONで書き出し／読み込みもでき、PC・スマホ間でも同期されます。
-  ただし消去動作は削除できません（空にすると練習後にぼんやりしたまま終わるため）。
+  /** 墓標のマージ（90日で掃除）*/
+  function mergeTombs(a, b) {
+    var TTL = 90 * 24 * 3600 * 1000, cut = Date.now() - TTL, m = {};
+    [].concat(a || [], b || []).forEach(function (t) {
+      if (!t || !t.id) return;
+      var at = t.at || 0;
+      if (!(t.id in m) || m[t.id] < at) m[t.id] = at;
+    });
+    var out = [];
+    for (var id in m) if (m[id] > cut) out.push({ id: id, at: m[id] });
+    return out;
+  }
 
-【暗室の読み上げの声】
-- 声は「端末に入っているもの」から選びます（ブラウザの仕様で、アプリ側から
-  声を配布することはできません）。
-- 暗室の画面で、声の選択・高さ・速さを調整できます。設定はその端末だけに
-  保存され、同期されません（入っている声が端末ごとに違うため）。
-- もっと自然にしたい場合は、OS側で高品質な音声を追加してください。
-    iPhone/iPad: 設定 → アクセシビリティ → 読み上げコンテンツ → 声 → 日本語
-    Windows: 設定 → 時刻と言語 → 音声認識 で音声を追加（Nanami が滑らか）
-    Android/Chrome: 「Google 日本語」が入っていればそれが最も自然です
-  追加後、暗室の画面を再読み込みすると一覧に出てきます。
+  /* ── Google 認証（気になり帳と同じ流れ）─────────────────── */
+  function cachedToken() {
+    try {
+      var o = JSON.parse(store.get(TOKEN_KEY) || "null");
+      if (o && o.token && o.exp && Date.now() < o.exp - 60000) return o.token;
+    } catch (e) {}
+    return null;
+  }
+  function cacheToken(tok, sec) {
+    try { store.set(TOKEN_KEY, JSON.stringify({ token: tok, exp: Date.now() + (sec || 3600) * 1000 })); } catch (e) {}
+  }
+  function getToken(interactive) {
+    var c = cachedToken();
+    if (c) return Promise.resolve(c);
+    var cid = clientId();
+    if (!cid) return Promise.reject(new Error("NOCID"));
+    return new Promise(function (res, rej) {
+      if (!(global.google && google.accounts && google.accounts.oauth2)) {
+        rej(new Error("Googleの読み込みが未完了です")); return;
+      }
+      var to = setTimeout(function () { rej(new Error("認証がタイムアウトしました")); }, 90000);
+      try {
+        var tc = google.accounts.oauth2.initTokenClient({
+          client_id: cid, scope: SCOPE,
+          callback: function (r) {
+            clearTimeout(to);
+            if (r && r.access_token) { cacheToken(r.access_token, r.expires_in); res(r.access_token); }
+            else rej(new Error("認証に失敗しました"));
+          },
+          error_callback: function () { clearTimeout(to); rej(new Error("認証がキャンセルされました")); }
+        });
+        tc.requestAccessToken({ prompt: interactive ? "consent" : "" });
+      } catch (e) { clearTimeout(to); rej(e); }
+    });
+  }
 
-【データの同期・バックアップ】
-入口は画面上部の ☁ ひとつだけです（❓ヘルプの隣）。各アプリの中にあった
-同期ボタンは、シェル経由で開いたときは表示されません。
+  /* ── Drive ──────────────────────────────────────────────── */
+  function api(url, tok, opt) {
+    opt = opt || {};
+    opt.headers = opt.headers || {};
+    opt.headers.Authorization = "Bearer " + tok;
+    return fetch(url, opt).then(function (r) {
+      if (r.status === 401) { store.del(TOKEN_KEY); throw new Error("401 認証の期限切れ"); }
+      if (!r.ok) throw new Error(r.status + " Driveへの通信に失敗");
+      return r;
+    });
+  }
+  function findFile(tok) {
+    var cached = store.get(FILE_KEY);
+    if (cached) return Promise.resolve(cached);
+    var q = encodeURIComponent("name='" + FILE_NAME + "' and trashed=false");
+    return api("https://www.googleapis.com/drive/v3/files?q=" + q + "&fields=files(id,modifiedTime)&pageSize=10", tok)
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var f = (j.files || [])[0];
+        if (f) { store.set(FILE_KEY, f.id); return f.id; }
+        return null;
+      });
+  }
+  function meta(tok, id) {
+    return api("https://www.googleapis.com/drive/v3/files/" + id + "?fields=id,modifiedTime", tok)
+      .then(function (r) { return r.json(); });
+  }
+  function download(tok, id) {
+    return api("https://www.googleapis.com/drive/v3/files/" + id + "?alt=media", tok)
+      .then(function (r) { return r.text(); });
+  }
+  function upload(tok, id, content) {
+    if (id) {
+      return api("https://www.googleapis.com/upload/drive/v3/files/" + id + "?uploadType=media&fields=id,modifiedTime", tok,
+        { method: "PATCH", headers: { "Content-Type": "application/json" }, body: content })
+        .then(function (r) { return r.json(); });
+    }
+    var boundary = "-------nk" + Date.now();
+    var body = "--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"
+      + JSON.stringify({ name: FILE_NAME, mimeType: "application/json" })
+      + "\r\n--" + boundary + "\r\nContent-Type: application/json\r\n\r\n" + content
+      + "\r\n--" + boundary + "--";
+    return api("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime", tok,
+      { method: "POST", headers: { "Content-Type": "multipart/related; boundary=" + boundary }, body: body })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (j && j.id) store.set(FILE_KEY, j.id); return j; });
+  }
 
-- クライアントIDは4アプリ共通（shared:gd:cid）。設定は一度だけです。
-- ☁ を開くと、日記帳・気になり帳・暗室・音の同期状態が一覧で見られます。
-  「今すぐ全部同期」で4つまとめて実行します。
-- Googleを使わない「まとめて書き出す／取り込む」も同じ画面にあります。
-- 同期されるもの: 音＝登録/ジャンル/★/再生履歴、暗室＝練習の記録、
-  日記帳と気になり帳＝従来どおり。
-- 同期されないもの: 音量・夜間モード・表示の絞り込みなど端末ごとの設定。
-- 再生中の曲が連動することはありません（データだけの同期です）。
+  function errMsg(e) {
+    var m = String((e && e.message) || e);
+    if (/NOCID/.test(m)) return "先に「気になり帳」の同期設定（クライアントID）を済ませてください。";
+    if (/401/.test(m)) return "Googleログインの期限が切れました。もう一度つないでください。";
+    if (/403/.test(m)) return "Driveの権限が不足しています。設定を確認してください。";
+    if (/読み込みが未完了|キャンセル|タイムアウト/.test(m)) return "自動でつなげませんでした。同期ボタンから手動でお試しください。";
+    if (/Failed to fetch|NetworkError/i.test(m)) return "ネットワークに接続できませんでした。";
+    return "同期に失敗しました: " + m.slice(0, 80);
+  }
 
-【データについて】
-すべて自分専用です。データは自分の端末に保存され、Google連携も自分のアカウント/自分のクライアントIDのみを使います。
+  /* ── アプリごとのインスタンス ──────────────────────────── */
+  function create(cfg) {
+    // cfg: {app, label, getLocal, setLocal, merge, syncKey}
+    var SYNC_KEY = "shared:nksync:sync:" + cfg.app;   // 最終同期時刻(ISO)
+    var AUTO_KEY = "shared:nksync:auto";              // 自動同期のON/OFF（共通）
+    var lazyT = null, urgT = null, busy = false;
+    var status = { phase: "idle", msg: "", at: 0 };
+    var listeners = [];
 
-【更新時の注意】
-ファイルを差し替えたら、ブラウザで一度リロードしてください。Service Worker は
-オンライン時つねに最新を取りに行く設定なので、通常はこれだけで新しい版になります。
+    function lastSyncISO() { return store.get(SYNC_KEY) || ""; }
+    function setLastSync(iso) { if (iso) store.set(SYNC_KEY, iso); }
+    function lastSyncMs() { var s = lastSyncISO(); return s ? new Date(s).getTime() : 0; }
+    function autoOn() { return store.get(AUTO_KEY) !== "0"; }
+    function setAuto(v) { store.set(AUTO_KEY, v ? "1" : "0"); emit(); }
+
+    function emit() { listeners.forEach(function (f) { try { f(status, autoOn()); } catch (e) {} }); }
+    function setStatus(p, m) { status = { phase: p, msg: m || "", at: Date.now() }; emit(); }
+
+    function readRemote(tok, id) {
+      return download(tok, id).then(function (txt) {
+        var o = {};
+        try { o = JSON.parse(txt) || {}; } catch (e) { o = {}; }
+        if (!o.apps) o.apps = {};
+        return o;
+      });
+    }
+    function blankDoc() { return { app: "nikki-sync", v: 1, apps: {} }; }
+
+    /** 実際の同期。pull → merge → 必要なら push を1往復でやる */
+    function run(interactive) {
+      if (busy) return Promise.resolve();
+      busy = true;
+      setStatus("syncing");
+      var tok;
+      return getToken(!!interactive)
+        .then(function (t) { tok = t; return findFile(tok); })
+        .then(function (id) {
+          if (!id) {
+            // まだ無い → いまのローカルをそのまま作る
+            var doc = blankDoc();
+            doc.apps[cfg.app] = cfg.getLocal();
+            return upload(tok, null, JSON.stringify(doc)).then(function (m2) {
+              setLastSync(m2.modifiedTime || new Date().toISOString());
+            });
+          }
+          return meta(tok, id).then(function (m1) {
+            return readRemote(tok, id).then(function (doc) {
+              var remote = doc.apps[cfg.app] || null;
+              var merged = cfg.merge(cfg.getLocal(), remote, lastSyncMs());
+              var changed = !remote || JSON.stringify(merged) !== JSON.stringify(remote);
+              // マージ結果をローカルへ（他アプリの区画には触らない）
+              cfg.setLocal(merged);
+              if (!changed) { setLastSync(m1.modifiedTime); return; }
+              // 書く直前にもう一度確認（compare-and-swap）
+              return meta(tok, id).then(function (m2) {
+                if (m2.modifiedTime !== m1.modifiedTime) {
+                  // 間に他端末が書いた → 読み直してマージし直す
+                  return readRemote(tok, id).then(function (d2) {
+                    var again = cfg.merge(cfg.getLocal(), d2.apps[cfg.app] || null, lastSyncMs());
+                    cfg.setLocal(again);
+                    d2.apps[cfg.app] = again;
+                    return upload(tok, id, JSON.stringify(d2)).then(function (m3) {
+                      setLastSync(m3.modifiedTime || new Date().toISOString());
+                    });
+                  });
+                }
+                doc.apps[cfg.app] = merged;
+                return upload(tok, id, JSON.stringify(doc)).then(function (m3) {
+                  setLastSync(m3.modifiedTime || new Date().toISOString());
+                });
+              });
+            });
+          });
+        })
+        .then(function () { busy = false; setStatus("ok"); })
+        .catch(function (e) { busy = false; setStatus("error", errMsg(e)); throw e; });
+    }
+
+    function schedule(urgent) {
+      if (!autoOn()) return;
+      if (!clientId()) return;                 // 未設定なら何もしない（静かに）
+      if (urgent) {
+        if (urgT) clearTimeout(urgT);
+        urgT = setTimeout(function () { urgT = null; run(false).catch(function () {}); }, URGENT_MS);
+      } else {
+        if (lazyT || urgT) return;             // 既に予約済みなら重ねない
+        lazyT = setTimeout(function () { lazyT = null; run(false).catch(function () {}); }, LAZY_MS);
+      }
+    }
+
+    // タブを離れる/閉じるときに、溜まった統計を吐き出す
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "hidden" && lazyT) {
+        clearTimeout(lazyT); lazyT = null;
+        run(false).catch(function () {});
+      }
+    });
+
+    return {
+      devId: devId,
+      status: function () { return status; },
+      autoOn: autoOn,
+      setAuto: setAuto,
+      hasClientId: function () { return !!clientId(); },
+      onChange: function (f) { listeners.push(f); try { f(status, autoOn()); } catch (e) {} },
+      /** 変更を通知する。urgent=true は3秒後、false は2分後にまとめて送る */
+      touch: function (urgent) { schedule(!!urgent); },
+      /** 手動同期（ボタン用）。初回はここでログイン画面が出る */
+      syncNow: function () { return run(true); },
+      /** 起動時の取り込み */
+      start: function () {
+        if (!autoOn() || !clientId()) { setStatus("idle"); return Promise.resolve(); }
+        return run(false).catch(function () {});
+      }
+    };
+  }
+
+  /* ── シェル(index.html)との橋渡し ──────────────────────────
+     iframe の中で開かれているときは、自前の同期UIを隠して
+     シェルの☁パネルに状態を送り、命令を受け取る。
+     単体で開いたときは従来どおり自分のUIで動く。 */
+  function embedded() {
+    try { return window.top !== window.self; } catch (e) { return true; }
+  }
+  function bridge(cfg) {
+    // cfg: {app, label, hideSel[], syncNow(), getStatus()}
+    if (!embedded()) return false;
+    try { document.documentElement.classList.add("nk-embed"); } catch (e) {}
+    (cfg.hideSel || []).forEach(function (sel) {
+      try {
+        var els = document.querySelectorAll(sel);
+        for (var i = 0; i < els.length; i++) els[i].style.display = "none";
+      } catch (e) {}
+    });
+    function report() {
+      var st = {};
+      try { st = cfg.getStatus() || {}; } catch (e) {}
+      try { parent.postMessage({ nkSyncStatus: { app: cfg.app, label: cfg.label, phase: st.phase || "idle", at: st.at || 0, msg: st.msg || "" } }, "*"); } catch (e) {}
+    }
+    window.addEventListener("message", function (e) {
+      var d = e.data;
+      if (!d || !d.nkSync) return;
+      if (d.nkSync === "status") { report(); return; }
+      if (d.nkSync === "now") {
+        Promise.resolve().then(function () { return cfg.syncNow && cfg.syncNow(); })
+          .then(report).catch(report);
+        return;
+      }
+      if (d.nkSync === "cid") { store.del(TOKEN_KEY); store.del(FILE_KEY); report(); return; }
+    });
+    setTimeout(report, 300);
+    return { report: report };
+  }
+
+  global.NKSync = {
+    create: create,
+    bridge: bridge,
+    embedded: embedded,
+    clientId: clientId,
+    setClientId: setClientId,
+    mergeById: mergeById,
+    mergeTombs: mergeTombs,
+    itemTime: itemTime,
+    devId: devId,
+    hasClientId: function () { return !!clientId(); }
+  };
+})(window);
