@@ -14,7 +14,13 @@ html,body{margin:0;height:100%}
 body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;-webkit-font-smoothing:antialiased}
 #tabbar{position:fixed;top:0;left:0;right:0;height:48px;display:flex;gap:6px;align-items:center;justify-content:center;padding:7px 10px;background:#f4ecda;border-bottom:1px solid #e2d6bd;z-index:10}
 .apptab{flex:1;max-width:220px;border:1px solid #e2d6bd;background:#fff;color:#7a6f5e;font-size:14px;font-weight:700;padding:9px 12px;border-radius:10px;cursor:pointer;font-family:inherit;transition:all .15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-@media (max-width:520px){#tabbar{gap:4px;padding:7px 6px}.apptab{font-size:12px;padding:9px 6px}}
+/* タブが6つになり、狭い画面で均等割りすると文字が「…」に潰れてしまう。
+   幅の狭い端末では、縮めずに横スクロールさせる。 */
+@media (max-width:760px){
+  #tabbar{gap:5px;padding:7px 8px;overflow-x:auto;overflow-y:hidden;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;scrollbar-width:none;justify-content:flex-start}
+  #tabbar::-webkit-scrollbar{display:none}
+  .apptab{flex:0 0 auto;max-width:none;font-size:13px;padding:9px 13px;overflow:visible;text-overflow:clip}
+}
 .apptab.active{background:#c0463c;color:#fdf1e6;border-color:#c0463c;box-shadow:0 3px 10px rgba(160,57,47,.25)}
 .iconbtn{flex:none;height:36px;width:40px;border:1px solid #e2d6bd;background:#fff;color:#7a6f5e;border-radius:9px;cursor:pointer;font-size:16px}
 .iconbtn:hover{border-color:#c0463c}
@@ -24,9 +30,13 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
    隠すときも DOM に残したまま visibility で見えなくする。 */
 .appframe{position:absolute;inset:0;width:100%;height:100%;border:0;background:#fff;visibility:hidden;pointer-events:none}
 .appframe.active{visibility:visible;pointer-events:auto}
-.knmodal{position:fixed;inset:0;background:rgba(40,32,24,.45);display:none;align-items:center;justify-content:center;z-index:50;padding:18px}
+/* 旧: align-items:center のため、中身が画面より高いと上端がはみ出して
+   スクロールしても戻れなかった。上寄せ＋オーバーレイ自体をスクロール可にする。 */
+.knmodal{position:fixed;inset:0;background:rgba(40,32,24,.45);display:none;align-items:flex-start;justify-content:center;z-index:50;padding:18px;overflow-y:auto;-webkit-overflow-scrolling:touch}
 .knmodal.open{display:flex}
-.knmodal-card{background:#fdf8ec;border:1px solid #e2d6bd;border-radius:16px;max-width:440px;width:100%;padding:18px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.knmodal-card{background:#fdf8ec;border:1px solid #e2d6bd;border-radius:16px;max-width:440px;width:100%;padding:18px;box-shadow:0 20px 60px rgba(0,0,0,.3);margin:auto 0}
+/* 見出しは常に見えるように上へ固定する（長い設定画面でも迷子にならない） */
+.knmodal-h{position:sticky;top:-18px;background:#fdf8ec;padding-top:4px;margin-top:-4px;z-index:2}
 .knmodal-h{display:flex;align-items:center;justify-content:space-between;font-weight:800;font-size:17px;color:#2c2620;font-family:"Shippori Mincho",serif}
 .knmodal-x{border:none;background:none;font-size:22px;color:#7a6f5e;cursor:pointer;line-height:1}
 .knmodal-note{font-size:12.5px;color:#7a6f5e;line-height:1.7;margin:10px 0 14px}
@@ -253,7 +263,12 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
   }
   function show(app){
     var tabs = document.querySelectorAll('.apptab');
-    for(var i=0;i<tabs.length;i++){ tabs[i].classList.toggle('active', tabs[i].getAttribute('data-app')===app); }
+    for(var i=0;i<tabs.length;i++){
+      var on = tabs[i].getAttribute('data-app')===app;
+      tabs[i].classList.toggle('active', on);
+      // タブバーは狭い画面では横スクロールになるので、選んだタブを見える位置へ寄せる
+      if(on){ try{ tabs[i].scrollIntoView({block:'nearest', inline:'center', behavior:'smooth'}); }catch(e){} }
+    }
     var fr = document.querySelectorAll('.appframe');
     for(var j=0;j<fr.length;j++){ fr[j].classList.toggle('active', fr[j].id===('frame-'+app)); }
     load(app);
