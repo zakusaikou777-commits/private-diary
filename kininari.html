@@ -362,6 +362,9 @@ function tombstonesMerge(remote) {
   return out;
 }
 const itemTime = o => (o && (o.updatedAt || o.createdAt)) || 0;
+// 同期できた項目に印を付ける。次回以降、Driveから消えていれば
+// 他端末での削除だと判断できる（時計に依存しない）
+const markSynced = list => (list || []).map(o => o && o.synced ? o : { ...o, synced: 1 });
 // updatedAt 以外を安定した順序で文字列化して、実際に中身が変わったかを判定する
 function itemSig(o) {
   try {
@@ -388,8 +391,10 @@ function mergeById(localList, remoteList, lastSync, tombs) {
   (localList || []).forEach(o => {
     const r = byId.get(o.id);
     if (!r) {
-      // ローカルにしか無い = 最終同期より後に作られた/直されたものだけ残す
-      if (itemTime(o) > lastSync) byId.set(o.id, o);
+      // ローカルにしか無い場合。旧版は「最終同期より後か」を時刻で見ていたが、
+      // Driveのサーバー時刻と端末の時計を比べる形だったため、端末の時計が
+      // 遅れていると追加直後のメモが消えていた。synced 印で判定する。
+      if (!o.synced) byId.set(o.id, o);
       return;
     }
     if (itemTime(o) > itemTime(r)) byId.set(o.id, o);
@@ -3441,8 +3446,9 @@ function App() {
           const mm = mergeById(memos, (obj.memos || []).map(normalizeMemo), lastSync, tombs);
           const mf = mergeById(folders, (obj.notebooks || []).map(normalizeFolder), lastSync, tombs);
           skipPush.current = true;
-          importData({ memos: mm, notebooks: mf });
-          const merged = JSON.stringify(await buildBackupObject(mm, mf));
+          const mm2 = markSynced(mm), mf2 = markSynced(mf);
+          importData({ memos: mm2, notebooks: mf2 });
+          const merged = JSON.stringify(await buildBackupObject(mm2, mf2));
           const m2 = await gdUpdate(token, id, merged);
           gdSetFile(id);
           gdSetSyncTime(m2.modifiedTime || new Date().toISOString());
@@ -3451,12 +3457,16 @@ function App() {
         }
       }
     }
-    const content = JSON.stringify(await buildBackupObject(memos, folders));
+    const pMemos = markSynced(memos), pFolders = markSynced(folders);
+    const content = JSON.stringify(await buildBackupObject(pMemos, pFolders));
     let meta;
     if (id) meta = await gdUpdate(token, id, content);else {
       meta = await gdCreate(token, content);
       id = meta.id;
     }
+    // 送れたものに印を付けて保存しておく（次回、Driveに無ければ他端末での削除と判断できる）
+    skipPush.current = true;
+    persist(pMemos, pFolders, { stamp: false });
     gdSetFile(id);
     gdSetSyncTime(meta.modifiedTime || new Date().toISOString());
     setGdLinked(true);
@@ -3513,8 +3523,8 @@ function App() {
             const same = itemSig({ m: mergedMemos, f: mergedNbs }) === itemSig({ m: remoteMemos, f: remoteNbs });
             skipPush.current = same;
             importData({
-              memos: mergedMemos,
-              notebooks: mergedNbs
+              memos: markSynced(mergedMemos),
+              notebooks: markSynced(mergedNbs)
             });
             gdSetFile(id);
             gdSetSyncTime(meta.modifiedTime);

@@ -71,7 +71,13 @@
 
   /** id ごとに updatedAt の新しい方を採用し、墓標で削除を反映する。
    *  pick(local, remote) を渡すと、勝った側をベースに個別調整できる
-   *  （再生回数の合算など）。 */
+   *  （再生回数の合算など）。
+   *
+   *  第3引数 lastSync は「Driveに無いローカル項目を残すか」の判定に使っていたが、
+   *  Driveのサーバー時刻と端末の時計を比べる形だったため、端末の時計が少しでも
+   *  遅れていると、追加したばかりの項目が「古いもの」と誤判定されて消えていた。
+   *  いまは各項目の synced 印（一度でも同期に成功したか）で判定する。
+   *  印が無いものは無条件で残すので、時計に依存しない。 */
   function mergeById(localList, remoteList, lastSync, tombs, key, pick) {
     key = key || "id";
     var tombAt = {};
@@ -84,8 +90,10 @@
     (localList || []).forEach(function (o) {
       var k = o[key], r = map[k];
       if (r === undefined) {
-        // ローカルにしか無い = 最終同期より後に作られた/直されたものだけ残す
-        if (itemTime(o) > lastSync) put(o);
+        // ローカルにしか無い場合:
+        //  - まだ一度も同期していない(synced無し) → 新規なので必ず残す
+        //  - 同期済みなのにDriveから消えている → 他端末で削除された → 消す
+        if (!o.synced) put(o);
         return;
       }
       var winner = itemTime(o) > itemTime(r) ? o : r;
@@ -210,6 +218,19 @@
   }
 
   /* ── アプリごとのインスタンス ──────────────────────────── */
+  /** マージ結果に「同期済み」の印を付ける。次回以降、Driveから消えていたら
+   *  それは他端末での削除だと判断できる。 */
+  function markSynced(v) {
+    if (Array.isArray(v)) return v.map(markSynced);
+    if (v && typeof v === "object") {
+      var o = {}, isItem = false;
+      for (var k in v) { o[k] = markSynced(v[k]); if (k === "id") isItem = true; }
+      if (isItem) o.synced = 1;
+      return o;
+    }
+    return v;
+  }
+
   function create(cfg) {
     // cfg: {app, label, getLocal, setLocal, merge, syncKey}
     var SYNC_KEY = "shared:nksync:sync:" + cfg.app;   // 最終同期時刻(ISO)
@@ -249,7 +270,8 @@
           if (!id) {
             // まだ無い → いまのローカルをそのまま作る
             var doc = blankDoc();
-            doc.apps[cfg.app] = cfg.getLocal();
+            doc.apps[cfg.app] = markSynced(cfg.getLocal());
+            cfg.setLocal(doc.apps[cfg.app]);
             return upload(tok, null, JSON.stringify(doc)).then(function (m2) {
               setLastSync(m2.modifiedTime || new Date().toISOString());
             });
@@ -257,7 +279,7 @@
           return meta(tok, id).then(function (m1) {
             return readRemote(tok, id).then(function (doc) {
               var remote = doc.apps[cfg.app] || null;
-              var merged = cfg.merge(cfg.getLocal(), remote, lastSyncMs());
+              var merged = markSynced(cfg.merge(cfg.getLocal(), remote, lastSyncMs()));
               var changed = !remote || JSON.stringify(merged) !== JSON.stringify(remote);
               // マージ結果をローカルへ（他アプリの区画には触らない）
               cfg.setLocal(merged);
@@ -267,7 +289,7 @@
                 if (m2.modifiedTime !== m1.modifiedTime) {
                   // 間に他端末が書いた → 読み直してマージし直す
                   return readRemote(tok, id).then(function (d2) {
-                    var again = cfg.merge(cfg.getLocal(), d2.apps[cfg.app] || null, lastSyncMs());
+                    var again = markSynced(cfg.merge(cfg.getLocal(), d2.apps[cfg.app] || null, lastSyncMs()));
                     cfg.setLocal(again);
                     d2.apps[cfg.app] = again;
                     return upload(tok, id, JSON.stringify(d2)).then(function (m3) {
@@ -372,6 +394,7 @@
     mergeById: mergeById,
     mergeTombs: mergeTombs,
     itemTime: itemTime,
+    markSynced: markSynced,
     devId: devId,
     hasClientId: function () { return !!clientId(); }
   };
