@@ -1067,6 +1067,9 @@ async function calRun(fn) {
     throw e;
   }
 }
+// シェル(index.html)の中で開かれているか。中にいるときだけ
+// 「タスクにする」を出す（単体で開くとタスクタブが無いため）
+const inShell = (() => { try { return window.top !== window.self; } catch (e) { return true; } })();
 const isImg = t => (t || "").startsWith("image/");
 function bytes(n) {
   if (n == null) return "";
@@ -2089,7 +2092,19 @@ function MemoCard({
     rel: "noopener noreferrer"
   }, "\u624B\u52D5\u3067\u8FFD\u52A0"))), React.createElement("div", {
     className: "spacer"
-  }), React.createElement("button", {
+  }), inShell ? React.createElement("button", {
+    className: "mini",
+    title: "タスクタブに送る（このメモは残ります）",
+    onClick: () => {
+      try {
+        parent.postMessage({ nkToTask: {
+          title: memo.title || "(無題)",
+          note: htmlToText(memo.body || "").slice(0, 500),
+          date: memo.date || "", time: memo.time || ""
+        } }, "*");
+      } catch (e) {}
+    }
+  }, "\u30BF\u30B9\u30AF\u306B\u3059\u308B") : null, React.createElement("button", {
     className: "mini",
     onClick: begin
   }, "\u7DE8\u96C6"), React.createElement("button", {
