@@ -3,886 +3,168 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>くつろぎ — 自律訓練</title>
-<meta name="theme-color" content="#0d0f0d" />
+<title>気になり帳クリッパー（Chrome拡張）</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap');
-:root{
-  --bg:#0d0f0d; --card:#151814; --line:#262b25; --ink:#cfd6c9; --dim:#7d8a78;
-  --leaf:#7fa87c; --leaf-d:#5d8259; --warn:#c8956b;
-  --fb:"Zen Kaku Gothic New",-apple-system,BlinkMacSystemFont,sans-serif;
-  --fm:"Shippori Mincho",serif;
-}
-*{box-sizing:border-box}
-html,body{margin:0;min-height:100%}
-body{background:var(--bg);color:var(--ink);font-family:var(--fb);-webkit-font-smoothing:antialiased}
-#wrap{max-width:640px;margin:0 auto;padding:16px 15px 40px;transition:transform 1.2s linear}
-h1{font-family:var(--fm);font-size:23px;margin:0;letter-spacing:.04em}
-.sub{font-size:12px;color:var(--dim);margin:4px 0 0;line-height:1.7}
-header{margin-bottom:16px}
-
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 14px;margin-bottom:11px}
-.ttl{font-size:11px;font-weight:700;letter-spacing:.05em;color:var(--dim);margin:0 0 9px}
-.btn{width:100%;border:1px solid var(--line);background:none;color:var(--ink);border-radius:11px;padding:13px 12px;font-family:inherit;font-size:14.5px;font-weight:700;cursor:pointer}
-.btn:hover{border-color:var(--leaf);color:var(--leaf)}
-.btn.go{background:var(--leaf-d);border-color:var(--leaf-d);color:#0d0f0d}
-.btn.go:hover{background:var(--leaf);border-color:var(--leaf);color:#0d0f0d}
-.btn.warn{border-color:var(--warn);color:var(--warn)}
-.btn+.btn{margin-top:8px}
-.row{display:flex;gap:8px}
-.row .btn{margin-top:0}
-
-/* ── 注意画面 ── */
-#gate{position:fixed;inset:0;background:var(--bg);z-index:60;overflow:auto;padding:22px 16px 40px;display:none}
-#gate .in{max-width:600px;margin:0 auto}
-#gate h2{font-family:var(--fm);font-size:19px;margin:0 0 12px}
-#gate p,#gate li{font-size:13.5px;line-height:1.95;color:var(--ink)}
-#gate ul{padding-left:1.2em;margin:12px 0}
-#gate .lead{color:var(--dim);font-size:13px}
-#gate .must{background:rgba(200,149,107,.10);border:1px solid var(--warn);border-radius:11px;padding:12px 13px;margin:14px 0}
-
-/* ── 練習中 ── */
-#run{display:none;text-align:center;padding:8px 0 4px}
-#stage{font-size:11.5px;color:var(--dim);letter-spacing:.06em}
-#line{font-family:var(--fm);font-size:26px;line-height:1.6;margin:20px 10px;min-height:2.6em;display:flex;align-items:center;justify-content:center}
-#glyph{font-size:44px;margin:6px 0 2px;min-height:52px}
-#bar{height:3px;background:var(--line);border-radius:2px;overflow:hidden;margin:16px 0 8px}
-#barIn{height:100%;width:0;background:var(--leaf-d);transition:width .4s linear}
-#left{font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums}
-#wakeNote{font-size:11.5px;color:var(--leaf);margin-top:9px;display:none}
-
-/* ── 設定 ── */
-.opt{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);cursor:pointer}
-.opt:last-child{border-bottom:0}
-.opt input{margin-top:3px;accent-color:var(--leaf);flex:none;width:17px;height:17px}
-.opt .t{flex:1;min-width:0}
-.opt .n{font-size:14px}
-.opt .d{font-size:11.5px;color:var(--dim);margin-top:2px;line-height:1.65}
-.seg{display:flex;gap:5px}
-.seg button{flex:1;border:1px solid var(--line);background:none;color:var(--dim);border-radius:9px;padding:8px 4px;font-family:inherit;font-size:12px;cursor:pointer}
-.seg button.on{border-color:var(--leaf);color:var(--leaf)}
-.srow{display:flex;align-items:center;gap:9px;margin-top:9px;font-size:11.5px;color:var(--dim)}
-.srow input[type=range]{flex:1;min-width:0;accent-color:var(--leaf)}
-.note{font-size:11.5px;color:var(--dim);line-height:1.8;margin:9px 0 0}
-.warnbox{background:rgba(200,149,107,.10);border:1px solid var(--warn);border-radius:10px;padding:10px 12px;font-size:12px;line-height:1.8;margin-top:9px}
-
-/* ── 記録 ── */
-.rec{display:flex;gap:9px;align-items:center;font-size:12.5px;padding:8px 0;border-bottom:1px solid var(--line)}
-.rec:last-child{border-bottom:0}
-.rec .d{flex:1;min-width:0}
-.rec .m{color:var(--dim);font-size:11px;margin-top:2px}
-.dots{display:flex;flex-wrap:wrap;gap:3px;margin-bottom:10px}
-.dot{width:9px;height:9px;border-radius:50%;background:var(--line)}
-.dot.on{background:var(--leaf-d)}
-.empty{color:var(--dim);font-size:12.5px;text-align:center;padding:14px 0;line-height:1.8}
-
-#editor{position:fixed;inset:0;background:var(--bg);z-index:55;overflow:auto;padding:18px 15px 40px;display:none}
-#editor .in{max-width:640px;margin:0 auto}
-.ehead{display:flex;align-items:center;gap:10px;margin-bottom:10px}
-.ehead h2{font-family:var(--fm);font-size:19px;margin:0;flex:1}
-.estep{border:1px solid var(--line);border-radius:12px;padding:11px 12px;margin-bottom:10px;background:var(--card)}
-.estep .sh{display:flex;align-items:center;gap:8px;margin-bottom:9px}
-.estep .sn{flex:1;font-size:13.5px;font-weight:700}
-.estep .lk{font-size:10.5px;color:var(--warn);border:1px solid var(--warn);border-radius:6px;padding:2px 6px}
-.eline{display:flex;align-items:center;gap:6px;margin-bottom:6px}
-.eline .say{flex:1;min-width:0;border:1px solid var(--line);background:rgba(0,0,0,.25);color:var(--ink);border-radius:8px;padding:8px 9px;font-family:inherit;font-size:13px}
-.eline .hold{width:52px;border:1px solid var(--line);background:rgba(0,0,0,.25);color:var(--ink);border-radius:8px;padding:8px 4px;font-family:inherit;font-size:12px;text-align:center}
-.eline .sw{flex:none;display:flex;align-items:center;gap:3px;font-size:10.5px;color:var(--dim)}
-.eline .sw input{accent-color:var(--leaf);width:15px;height:15px}
-.eline .x{flex:none;width:30px;height:32px;border:1px solid var(--line);background:none;color:var(--dim);border-radius:7px;cursor:pointer;font-family:inherit}
-.eline .x:hover{border-color:var(--warn);color:var(--warn)}
-.erow{display:flex;gap:7px;margin-top:11px}
-.erow .btn{margin-top:0}
-.eadd{font-size:12px;color:var(--dim);border:1px dashed var(--line);background:none;border-radius:8px;padding:7px 10px;font-family:inherit;cursor:pointer;width:100%}
-.eadd:hover{border-color:var(--leaf);color:var(--leaf)}
-#toast{position:fixed;left:14px;right:14px;bottom:18px;background:var(--ink);color:var(--bg);border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.6;z-index:70;display:none}
-#syncWrap{margin-top:14px}
-.tiny{border:1px solid var(--line);background:none;color:var(--dim);border-radius:8px;padding:6px 11px;font-family:inherit;font-size:12px;cursor:pointer}
+  :root{--paper:#f4ecda;--card:#fbf6ea;--ink:#2c2620;--red:#c0463c;--red-d:#a3392f;--line:#e2d6bd;--soft:#9a8c72;--blue:#3E6CA3;}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",system-ui,sans-serif;line-height:1.8;}
+  .wrap{max-width:760px;margin:0 auto;padding:26px 18px 64px;}
+  .head{display:flex;align-items:center;gap:12px;margin-bottom:6px;}
+  .seal{width:46px;height:46px;border-radius:12px;background:var(--red);color:#fff;display:grid;place-items:center;font-weight:800;font-size:24px;flex:none;}
+  h1{font-size:21px;margin:0;font-family:"Shippori Mincho",serif;}
+  .sub{color:var(--soft);font-size:13px;margin:2px 0 0;}
+  .dl{margin:22px 0;padding:18px;background:var(--card);border:1px solid var(--line);border-radius:16px;text-align:center;}
+  .dlbtn{display:inline-block;background:var(--red);color:#fff;text-decoration:none;font-weight:700;font-size:16px;padding:13px 26px;border-radius:12px;}
+  .dlbtn:hover{background:var(--red-d);}
+  .dlnote{font-size:12px;color:var(--soft);margin-top:10px;}
+  h2{font-size:16px;margin:26px 0 8px;color:var(--red-d);font-family:"Shippori Mincho",serif;border-bottom:1px solid var(--line);padding-bottom:5px;}
+  p{font-size:14px;margin:8px 0;}
+  ol,ul{padding-left:1.3em;margin:8px 0;}
+  li{font-size:14px;margin:6px 0;}
+  code{background:#efe6d2;padding:1px 6px;border-radius:5px;font-size:12.5px;word-break:break-all;font-family:ui-monospace,monospace;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:10px 0;}
+  .step{display:flex;gap:10px;align-items:flex-start;margin:10px 0;}
+  .num{flex:none;width:24px;height:24px;border-radius:50%;background:var(--red);color:#fff;display:grid;place-items:center;font-size:12px;font-weight:700;margin-top:1px;}
+  .note{font-size:12.5px;color:var(--soft);background:#f6efdf;border:1px solid #e7dcc4;border-radius:8px;padding:10px 12px;margin:10px 0;}
+  a{color:var(--blue);}
+  .pill{display:inline-block;font-size:12px;color:var(--ink);background:#fff;border:1px solid var(--line);border-radius:999px;padding:2px 9px;margin:1px 2px;}
 </style>
 </head>
 <body>
+<div class="wrap">
+  <div class="head"><div class="seal">気</div><div><h1>気になり帳クリッパー</h1><p class="sub">見ているページをワンクリックで気になり帳に保存（PCはChrome拡張／スマホはブックマークレット・共有メニュー）</p></div></div>
 
-<div id="gate"><div class="in">
-  <h2>はじめる前に</h2>
-  <p class="lead">これは心身をゆるめるための練習で、治療ではありません。</p>
+  <div class="dl">
+    <a class="dlbtn" id="dl" download="kininari-clipper.zip" href="data:application/zip;base64,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">⬇ 拡張機能をダウンロード（.zip）</a>
+    <div class="dlnote">ダウンロード後、解凍してChromeに読み込みます（手順は下記）。</div>
+  </div>
+
+  <h2>これは何？／どう登録される？</h2>
+  <p>ニュースなどのページでツールバーの「気」アイコンを押すと、小さなポップアップが開きます。<span class="pill">タイトル</span><span class="pill">URL</span><span class="pill">メモ</span><span class="pill">分類</span>を確認して「保存」を押すと、あなたの気になり帳に新しいメモとして追加されます。</p>
+  <div class="card">
+    <p style="margin:4px 0;">気になり帳での見え方：</p>
+    <ul style="margin:4px 0;">
+      <li>リストの先頭に新しいメモが追加されます。</li>
+      <li>記事のURLはリンク（🔗）として付き、タップで記事が開きます。</li>
+      <li>ページにサムネイル画像（OGP）があれば本文に記事画像が入ります。</li>
+      <li>選択した文章やページの説明文がメモ本文に入ります（編集可）。</li>
+      <li>分類は選んだもの（初期は「調べる」）。日付は付きません（後から付けてGoogleカレンダー登録も可）。</li>
+    </ul>
+    <p style="margin:4px 0;color:var(--soft);font-size:12.5px;">保存先は結合アプリと同じなので、<code>index.html</code> の気になり帳タブにも同じものが出ます。</p>
+  </div>
+
+  <h2>Chromeへの入れ方</h2>
+  <div class="step"><div class="num">1</div><div>ダウンロードした <code>kininari-clipper.zip</code> を解凍します（<code>kininari-clipper</code> フォルダができます）。</div></div>
+  <div class="step"><div class="num">2</div><div>Chromeのアドレスバーに <code>chrome://extensions</code> と入力して開きます。</div></div>
+  <div class="step"><div class="num">3</div><div>右上の「<b>デベロッパーモード</b>」をオンにします。</div></div>
+  <div class="step"><div class="num">4</div><div>「<b>パッケージ化されていない拡張機能を読み込む</b>」を押します。</div></div>
+  <div class="step"><div class="num">5</div><div>解凍した <b>kininari-clipper フォルダ</b>を選びます（zipやその中の単体ファイルではなく、フォルダごと）。</div></div>
+  <div class="step"><div class="num">6</div><div>ツールバーに「気」アイコンが出ます。パズルのピース型アイコンから<b>ピン留め</b>すると便利です。</div></div>
+
+  <h2>最初の設定（1回だけ）</h2>
+  <p>「気」アイコン → <b>⚙（設定）</b>を開き、あなたの気になり帳（<code>kininari.html</code>）のURL（https）を入力します。</p>
+  <div class="note">例：結合アプリを <code>https://yourname.github.io/app/</code> に置いた場合は<br><code>https://yourname.github.io/app/kininari.html</code><br>※ 先に <code>index.html / kininari.html / diary.html / sw.js</code> を https で公開しておく必要があります。</div>
+
+  <h2>使い方</h2>
   <ul>
-    <li><b>運転や機械の操作をひかえる予定がないときに行ってください。</b>練習後はぼんやりすることがあります。</li>
-    <li><b>練習中に、腕がピクついたり、涙が出たり、落ち着かない感じが出ることがあります。</b>これは緊張がほどけていく過程で起きるもので、多くは問題ありません。ただし<b>強く不快なときは、すぐに消去動作をして中止してください。</b></li>
-    <li><b>最後の「消去動作」は必ず行ってください。</b>途中でやめる場合も同じです。省くと、だるさやぼんやりした感じが残ることがあります。</li>
-    <li><b>心臓の病気、呼吸器の病気、糖尿病、重い気分の落ち込みや不安がある方、通院中の方は、始める前に主治医にご相談ください。</b></li>
-    <li>心臓や、お腹の暗示で気分が悪くなる方もいます。合わないと感じた段階は、設定から外せます。</li>
+    <li>気になるページで「気」アイコンをクリック。</li>
+    <li>必要ならタイトル・メモを編集、分類を選ぶ。</li>
+    <li>「気になり帳に保存」を押す → バックグラウンドで保存され、ポップアップに「保存しました ✓」と出ます。</li>
   </ul>
-  <div class="must">練習のあいだは、画面が消えないようにします。途中で画面が消えると読み上げが止まり、<b>最後の消去動作にたどり着けなくなる</b>ためです。終わると自動で元に戻ります。</div>
-  <button class="btn go" id="gateOk">確認しました</button>
-  <button class="btn" id="gateBack" style="margin-top:8px">戻る</button>
-</div></div>
 
-<div id="wrap">
-  <header>
-    <h1>🌿 くつろぎ</h1>
-    <p class="sub">自律訓練法。力を抜くための、短い練習です。</p>
-  </header>
+  <h2>スマホで使うには（拡張は不要）</h2>
+  <p>スマホのChrome本体は拡張機能に対応していませんが、同じ保存が次の2つの方法でできます。</p>
 
-  <div id="run">
-    <div id="stage">—</div>
-    <div id="glyph"></div>
-    <div id="line"></div>
-    <div id="bar"><div id="barIn"></div></div>
-    <div id="left"></div>
-    <div id="wakeNote">画面を消さないようにしています</div>
-    <div style="margin-top:16px"><button class="btn warn" id="stopBtn">やめる（消去動作をして終わります）</button></div>
-  </div>
-
-  <div id="home">
-    <div class="card">
-      <p class="ttl">きょうの練習</p>
-      <div id="planNote" class="note" style="margin:0 0 10px"></div>
-      <button class="btn go" id="startBtn">はじめる</button>
-      <button class="btn" id="tryBtn">台本を少しだけ試聴する</button>
-    </div>
-
-    <div class="card">
-      <p class="ttl">使う段階</p>
-      <div id="stepOpts"></div>
-      <div id="stepWarn"></div>
-    </div>
-
-    <div class="card">
-      <p class="ttl">利き手</p>
-      <div class="seg" id="handSeg">
-        <button type="button" data-h="R">右利き</button>
-        <button type="button" data-h="L">左利き</button>
-      </div>
-      <p class="note">重さ・温かさは、利き手の側から感じやすいとされます。</p>
-    </div>
-
-    <div class="card">
-      <p class="ttl">間（ま）の長さ</p>
-      <div class="seg" id="paceSeg">
-        <button type="button" data-p="0.7">短め</button>
-        <button type="button" data-p="1">標準</button>
-        <button type="button" data-p="1.4">長め</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <p class="ttl">背景の音</p>
-      <div class="seg" id="bgSeg">
-        <button type="button" data-b="">なし</button>
-        <button type="button" data-b="brown">ブラウン</button>
-        <button type="button" data-b="pink">ピンク</button>
-        <button type="button" data-b="rain">雨</button>
-      </div>
-      <div class="srow"><span>音量</span><input type="range" id="bgVol" min="0" max="60" step="1"><span id="bgVolN">18</span></div>
-      <p class="note" id="bgNote">読み上げが聞き取れるよう、控えめにしてあります。</p>
-    </div>
-
-    <div class="card">
-      <p class="ttl">画面を消さない</p>
-      <label class="opt"><input type="checkbox" id="optWake"><span class="t"><span class="n">練習中は自動でON</span><span class="d">切ると、途中で画面が消えて読み上げが止まり、消去動作まで進めないことがあります。</span></span></label>
-    </div>
-
-    <div class="card">
-      <p class="ttl">声</p>
-      <p class="note" id="voiceNote" style="margin-top:0">読み上げの声は「暗室」の設定を共有します。声の種類・高さ・速さは、暗室の画面で変えられます。</p>
-      <button class="btn" id="voiceTest">この声を聞いてみる</button>
-    </div>
-
-    <div class="card">
-      <p class="ttl">誘導文の編集</p>
-      <p class="note" style="margin-top:0">読み上げる文と、そのあとの沈黙（秒）を変えられます。編集内容はこの端末に保存され、<b>アプリのファイルを新しくしても消えません。</b></p>
-      <button class="btn" id="edOpen">編集する</button>
-    </div>
-
-    <div class="card">
-      <p class="ttl">記録</p>
-      <div class="dots" id="dots"></div>
-      <div id="recs"></div>
-      <div id="syncWrap">
-        <button id="bSync" class="tiny" type="button">☁ 同期</button>
-        <div id="syncPanel" style="display:none;margin-top:9px;font-size:12px;line-height:1.7;color:var(--dim)">
-          <div id="syncMsg">—</div>
-          <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
-            <button id="bSyncNow" class="tiny" type="button">今すぐ同期</button>
-            <button id="bSyncAuto" class="tiny" type="button">自動同期: ON</button>
-          </div>
-        </div>
-      </div>
-      <button class="btn" id="gateShow" style="margin-top:12px">注意事項をもう一度読む</button>
+  <div class="card">
+    <p><b>方法① ブックマークレット</b>（Android・iPhone両対応）</p>
+    <p>あなたのアプリのURLを入れて「生成」を押してください。</p>
+    <p style="display:flex;gap:8px;flex-wrap:wrap;">
+      <input id="bmUrl" type="url" placeholder="https://yourname.github.io/app/kininari.html" style="flex:1;min-width:220px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px;font-family:inherit;background:#fff;" />
+      <button id="bmGen" style="background:var(--red);color:#fff;border:none;border-radius:9px;padding:10px 18px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;">生成</button>
+    </p>
+    <p id="bmErr" style="display:none;color:var(--red-d);font-size:13px;"></p>
+    <div id="bmOut" style="display:none;">
+      <p>✅ できました。<b>PCの場合</b>は下のボタンをそのままブックマークバーへドラッグ：</p>
+      <p><a id="bmLink" class="dlbtn" style="font-size:14px;padding:10px 18px;" href="#">📌 気になり帳に保存</a></p>
+      <p><b>スマホの場合</b>は下のコードをコピーして：</p>
+      <p style="display:flex;gap:8px;align-items:flex-start;">
+        <textarea id="bmCode" readonly rows="4" style="flex:1;font-size:11px;font-family:ui-monospace,monospace;border:1px solid var(--line);border-radius:9px;padding:8px;background:#fff;word-break:break-all;"></textarea>
+        <button id="bmCopy" style="background:#fff;border:1px solid var(--line);border-radius:9px;padding:8px 12px;font-size:13px;cursor:pointer;font-family:inherit;flex:none;">コピー</button>
+      </p>
+      <ol>
+        <li>適当なページをブックマークに追加し、名前を「<b>気になり帳</b>」などにする。</li>
+        <li>ブックマークを<b>編集</b>して、URL欄を上のコードに<b>丸ごと貼り替え</b>る。<br>（Android Chrome：⋮ → ブックマーク → 対象を長押し → 編集／iPhone Safari：ブックマーク → 編集）</li>
+        <li>保存したいページを開いた状態で、<b>アドレスバーにブックマーク名を入力</b>して候補から選ぶと保存されます。<br>（iPhone Safariはブックマーク一覧から直接タップでもOK）</li>
+      </ol>
+      <p class="note">テキストを選択してから呼び出すと、選択部分がメモ欄に入ります。</p>
     </div>
   </div>
+
+  <div class="card">
+    <p><b>方法② Androidの「共有」メニューから保存</b>（おすすめ・Androidのみ）</p>
+    <ol>
+      <li>スマホのChromeでアプリ（<code>index.html</code>）を開く。</li>
+      <li>⋮ メニュー → 「<b>ホーム画面に追加</b>」→「<b>インストール</b>」を選ぶ。</li>
+      <li>以後、どのアプリでも <b>共有 → 「日記・気になり」</b> を選ぶだけで気になり帳に保存されます。</li>
+    </ol>
+    <p class="note">「インストール」ではなく「ショートカットを作成」しか出ない場合は、一度ページを再読み込みしてから試してください。iPhoneはホーム画面追加はできますが、共有メニューには対応していません（ブックマークレットをお使いください）。</p>
+  </div>
+
+  <div class="note"><b>大事な注意：</b>メモのデータは<b>端末・ブラウザごとに別</b>です。PCで保存したものをスマホでも見たい場合は、気になり帳の「データ」→ Google Drive連携で<b>自動同期をON</b>にしてください（PC・スマホ両方で）。</div>
+
+  <h2>注意</h2>
+  <ul>
+    <li>ストア未経由の自作拡張なので「デベロッパーモード」で読み込みます（個人利用では通常のやり方。再起動しても入ったままです）。</li>
+    <li>通常のWebページ（https/http）でのみ動きます。<code>chrome://</code> や新しいタブのページでは保存できません。</li>
+    <li>保存先のURL設定（⚙）が未入力だと保存できません。</li>
+  </ul>
 </div>
-
-<div id="editor"><div class="in">
-  <div class="ehead">
-    <h2>誘導文の編集</h2>
-    <button class="tiny" id="edClose">とじる</button>
-  </div>
-  <p class="note" id="edNote"></p>
-  <div id="edBody"></div>
-  <div class="erow">
-    <button class="btn" id="edAddStep">＋ 自分の段階を追加</button>
-  </div>
-  <div class="erow">
-    <button class="btn" id="edExport">書き出す</button>
-    <button class="btn" id="edImport">読み込む</button>
-    <button class="btn warn" id="edReset">既定に戻す</button>
-  </div>
-  <input type="file" id="edFile" accept="application/json,.json" hidden>
-  <div style="height:30px"></div>
-</div></div>
-<div id="toast"></div>
-<audio id="bgAudio" loop preload="none"></audio>
-<script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="sync.js"></script>
 <script>
 (function(){
-"use strict";
-var $=function(id){return document.getElementById(id);};
-var KEY="autogenic:v1", CFG_KEY="autogenic:cfg", CLR_KEY="autogenic:clearedAt";
-var VOICE_KEY="image-streaming:voice";   // 声の設定は暗室と共有する
+  var $ = function(id){ return document.getElementById(id); };
+  var KEY = 'kn:bm:url';
+  try{ var saved = localStorage.getItem(KEY); if(saved) $('bmUrl').value = saved; }catch(e){}
 
-var store=(function(){
-  var ok=false,mem={};
-  try{var k="__t"+Math.random();localStorage.setItem(k,"1");localStorage.removeItem(k);ok=true;}catch(e){ok=false;}
-  return {
-    get:function(k){try{if(ok)return localStorage.getItem(k);}catch(e){}return (k in mem)?mem[k]:null;},
-    set:function(k,v){try{if(ok){localStorage.setItem(k,v);return;}}catch(e){}mem[k]=v;},
-    del:function(k){try{if(ok){localStorage.removeItem(k);return;}}catch(e){}delete mem[k];}
-  };
-})();
-function esc(t){return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
-function toast(m,ms){var e=$("toast");e.textContent=m;e.style.display="block";clearTimeout(toast._t);toast._t=setTimeout(function(){e.style.display="none";},ms||3800);}
+  function buildBookmarklet(app){
+    // 拡張のpopup.jsと同じペイロード形式 {t,u,n,img,c,f} を #knadd= で渡す
+    return "javascript:(function(){var d=document,s='';try{s=String(window.getSelection()).slice(0,800)}catch(e){}" +
+      "var q=function(sel){var m=d.querySelector(sel);return(m&&m.getAttribute('content'))||''};" +
+      "var p={t:d.title||location.href,u:location.href," +
+      "n:s||q('meta[property=\"og:description\"]')||q('meta[name=\"description\"]')||''," +
+      "img:q('meta[property=\"og:image\"]')||'',c:'メモ',f:''};" +
+      "location.href='" + app + "#knadd='+encodeURIComponent(JSON.stringify(p));})();";
+  }
 
-/* ══════ 台本 ══════
-   say=読み上げ / hold=読み終えたあとの沈黙(秒) / g=画面に出す字
-   繰り返しの暗示は slow:true を付け、回を追うごとに少しずつゆっくりにする。 */
-var BASE_STEPS=[
-  {id:"intro", name:"導入", always:true, lines:[
-    {say:"楽な姿勢をとってください。椅子に浅く腰かけるか、あお向けに寝てもかまいません。",hold:6},
-    {say:"手足は、組まずに、軽くひらいておきます。",hold:5},
-    {say:"目を、そっと閉じてください。",hold:6,g:"🌙"},
-    {say:"何度か、ゆっくり息を吐きます。",hold:10,g:"🌬"},
-    {say:"息は、整えようとしなくて大丈夫です。体にまかせます。",hold:6}
-  ]},
-  {id:"calm", name:"背景公式", always:true, lines:[
-    {say:"気持ちが、落ち着いている。",hold:8,slow:true},
-    {say:"気持ちが、落ち着いている。",hold:8,slow:true},
-    {say:"気持ちが、落ち着いている。",hold:10,slow:true}
-  ]},
-  {id:"heavy", name:"第1公式 — 重感", def:true, hand:true, lines:[
-    {say:"%A%腕が、重たい。",hold:8,slow:true},
-    {say:"%A%腕が、重たい。",hold:8,slow:true},
-    {say:"%B%腕が、重たい。",hold:8,slow:true},
-    {say:"%B%腕が、重たい。",hold:8,slow:true},
-    {say:"両脚が、重たい。",hold:8,slow:true},
-    {say:"両脚が、重たい。",hold:10,slow:true},
-    {say:"気持ちが、落ち着いている。",hold:10}
-  ]},
-  {id:"warm", name:"第2公式 — 温感", hand:true, lines:[
-    {say:"%A%腕が、温かい。",hold:8,slow:true},
-    {say:"%A%腕が、温かい。",hold:8,slow:true},
-    {say:"%B%腕が、温かい。",hold:8,slow:true},
-    {say:"%B%腕が、温かい。",hold:8,slow:true},
-    {say:"両脚が、温かい。",hold:8,slow:true},
-    {say:"両脚が、温かい。",hold:10,slow:true},
-    {say:"気持ちが、落ち着いている。",hold:10}
-  ]},
-  {id:"heart", name:"第3公式 — 心臓", caution:"動悸が気になるときは、この段階は飛ばしてかまいません。", lines:[
-    {say:"心臓が、静かに、規則正しく打っている。",hold:10,slow:true},
-    {say:"心臓が、静かに、規則正しく打っている。",hold:10,slow:true},
-    {say:"気持ちが、落ち着いている。",hold:10}
-  ]},
-  {id:"breath", name:"第4公式 — 呼吸", lines:[
-    {say:"楽に、息をしている。",hold:10,slow:true},
-    {say:"楽に、息をしている。",hold:10,slow:true},
-    {say:"気持ちが、落ち着いている。",hold:10}
-  ]},
-  {id:"belly", name:"第5公式 — 腹部", caution:"空腹時や食後すぐ、胃腸の調子が悪いときは飛ばしてください。", lines:[
-    {say:"お腹が、温かい。",hold:10,slow:true},
-    {say:"お腹が、温かい。",hold:10,slow:true},
-    {say:"気持ちが、落ち着いている。",hold:10}
-  ]},
-  {id:"brow", name:"第6公式 — 額", caution:"頭痛が出やすい方には合わないことがあります。", lines:[
-    {say:"額が、心地よく、涼しい。",hold:10,slow:true},
-    {say:"額が、心地よく、涼しい。",hold:10,slow:true},
-    {say:"気持ちが、落ち着いている。",hold:10}
-  ]}
-];
-/* 消去動作。ここは省略も早送りもできない。 */
-var BASE_CANCEL=[
-  {say:"それでは、体を戻していきます。",hold:3,g:"✊"},
-  {say:"両手を、ぎゅっと握って、ひらきます。何度か繰り返してください。",hold:10,g:"✊🖐"},
-  {say:"両腕を、しっかり曲げて、伸ばします。何度か繰り返してください。",hold:10,g:"💪"},
-  {say:"大きく、伸びをしてください。",hold:8,g:"🙆"},
-  {say:"深く息を吸って、ゆっくり吐きます。",hold:8,g:"🌬"},
-  {say:"ゆっくり、目を開けてください。おつかれさまでした。",hold:2,g:"👁"}
-];
+  function err(msg){ var e=$('bmErr'); e.textContent=msg||''; e.style.display = msg?'block':'none'; }
 
-/* ══════ 誘導文の編集 ══════
-   既定(BASE_*)はコードに持ち、編集ぶんだけを SCRIPT_KEY に保存する。
-   こうしておくと、アプリのファイルを新しくしても編集が消えない。 */
-var SCRIPT_KEY="autogenic:script";
-var STEPS=[], CANCEL=[], CANCEL_SHORT=[];
-var SCRIPT={steps:null,cancel:null,updatedAt:0};
-
-function cloneLines(a){ return (a||[]).map(function(l){
-  var o={say:l.say,hold:l.hold};
-  if(l.slow)o.slow=true; if(l.g)o.g=l.g;
-  return o;
-}); }
-function baseStepsCopy(){
-  return BASE_STEPS.map(function(s){
-    return {id:s.id,name:s.name,always:!!s.always,def:!!s.def,hand:!!s.hand,
-            caution:s.caution||"",lines:cloneLines(s.lines)};
+  $('bmGen').addEventListener('click', function(){
+    var u = ($('bmUrl').value||'').trim();
+    if(!/^https:\/\//i.test(u)){ err('https:// で始まるURLを入力してください。'); $('bmOut').style.display='none'; return; }
+    u = u.split('#')[0];
+    err('');
+    try{ localStorage.setItem(KEY, u); }catch(e){}
+    var code = buildBookmarklet(u);
+    $('bmLink').setAttribute('href', code);
+    $('bmCode').value = code;
+    $('bmOut').style.display = 'block';
   });
-}
-function applyScript(){
-  // 保存されている編集ぶんがあればそれを、無ければ既定を使う
-  STEPS = (SCRIPT.steps && SCRIPT.steps.length) ? SCRIPT.steps.map(function(s){
-    return {id:s.id,name:s.name,always:!!s.always,def:!!s.def,hand:!!s.hand,
-            caution:s.caution||"",lines:cloneLines(s.lines)};
-  }) : baseStepsCopy();
-  CANCEL = (SCRIPT.cancel && SCRIPT.cancel.length) ? cloneLines(SCRIPT.cancel) : cloneLines(BASE_CANCEL);
-  // 中断時の短縮版は、消去動作の先頭から3行ぶんを流用する
-  CANCEL_SHORT = CANCEL.slice(0,3).concat(CANCEL.length>3?[CANCEL[CANCEL.length-1]]:[]);
-  if(!CANCEL_SHORT.length) CANCEL_SHORT = cloneLines(BASE_CANCEL);
-}
-function loadScript(){
-  try{
-    var o=JSON.parse(store.get(SCRIPT_KEY)||"null");
-    if(o&&typeof o==="object"){
-      if(Array.isArray(o.steps))SCRIPT.steps=o.steps;
-      if(Array.isArray(o.cancel))SCRIPT.cancel=o.cancel;
-      SCRIPT.updatedAt=o.updatedAt||0;
+
+  $('bmLink').addEventListener('click', function(e){
+    // この説明ページ上で実行しても意味がないので、クリックは無効化（ドラッグ専用）
+    e.preventDefault();
+    err('このボタンはクリックではなく、ブックマークバーへドラッグして登録してください。');
+  });
+
+  $('bmCopy').addEventListener('click', function(){
+    var ta = $('bmCode');
+    ta.select(); ta.setSelectionRange(0, ta.value.length);
+    var done = function(ok){ $('bmCopy').textContent = ok ? 'コピー済✓' : 'コピー失敗'; setTimeout(function(){ $('bmCopy').textContent='コピー'; }, 1600); };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(ta.value).then(function(){done(true);}, function(){ done(document.execCommand && document.execCommand('copy')); });
+    } else {
+      done(document.execCommand && document.execCommand('copy'));
     }
-  }catch(e){}
-  applyScript();
-}
-function saveScript(){
-  SCRIPT.updatedAt=Date.now();
-  try{ store.set(SCRIPT_KEY,JSON.stringify(SCRIPT)); }catch(e){}
-  applyScript();
-  if(sync)sync.touch(true);
-}
-loadScript();
-
-/* ══════ 設定 ══════ */
-var C={steps:{heavy:true},hand:"R",pace:1,bg:"",bgVol:18,wake:true,gateSeen:false};
-try{
-  var o=JSON.parse(store.get(CFG_KEY)||"null");
-  if(o){
-    if(o.steps&&typeof o.steps==="object")C.steps=o.steps;
-    if(o.hand==="L"||o.hand==="R")C.hand=o.hand;
-    if(typeof o.pace==="number")C.pace=o.pace;
-    if(typeof o.bg==="string")C.bg=o.bg;
-    if(typeof o.bgVol==="number")C.bgVol=o.bgVol;
-    if(typeof o.wake==="boolean")C.wake=o.wake;
-    if(typeof o.gateSeen==="boolean")C.gateSeen=o.gateSeen;
-  }
-}catch(e){}
-function saveCfg(){try{store.set(CFG_KEY,JSON.stringify(C));}catch(e){}}
-
-/* ══════ 記録 ══════ */
-var H=[], clearedAt=0;
-try{ var r=JSON.parse(store.get(KEY)||"[]"); if(Array.isArray(r))H=r; }catch(e){}
-try{ clearedAt=parseInt(store.get(CLR_KEY)||"0",10)||0; }catch(e){}
-function saveHist(){try{store.set(KEY,JSON.stringify(H));}catch(e){} if(sync)sync.touch(true);}
-
-/* ══════ 声（暗室と共有）══════ */
-var ttsOK=("speechSynthesis" in window), voice=null;
-var V={voiceURI:"",vPitch:1.15,vRate:0.90};
-function loadVoice(){
-  try{
-    var o=JSON.parse(store.get(VOICE_KEY)||"null"); if(!o)return;
-    if(typeof o.voiceURI==="string")V.voiceURI=o.voiceURI;
-    if(typeof o.vPitch==="number")V.vPitch=o.vPitch;
-    if(typeof o.vRate==="number")V.vRate=o.vRate;
-  }catch(e){}
-}
-function jaVoices(){
-  try{ return (window.speechSynthesis.getVoices()||[]).filter(function(v){return (v.lang||"").toLowerCase().indexOf("ja")===0;}); }
-  catch(e){ return []; }
-}
-function voiceScore(v){
-  var nm=((v.name||"")+" "+(v.voiceURI||"")).toLowerCase(), sc=0;
-  if(/google/.test(nm))sc+=100;
-  if(/nanami/.test(nm))sc+=92;
-  if(/(enhanced|premium|neural|拡張|高品質)/.test(nm))sc+=85;
-  if(/(siri|o-?ren)/.test(nm))sc+=70;
-  if(/(kyoko|京子|mizuki|ayumi|sayaka|haruka|nanami|o-?ren)/.test(nm))sc+=40;
-  if(/(otoya|hattori|ichiro|daichi|keita|男性|male)/.test(nm))sc-=60;
-  if(v.localService===false)sc+=12;
-  if(/haruka/.test(nm))sc-=20;
-  return sc;
-}
-function pickVoice(){
-  if(!ttsOK)return;
-  var vs=jaVoices(); if(!vs.length){voice=null;return;}
-  if(V.voiceURI){for(var i=0;i<vs.length;i++){if(vs[i].voiceURI===V.voiceURI){voice=vs[i];return;}}}
-  var b=vs[0],bs=voiceScore(vs[0]);
-  for(var j=1;j<vs.length;j++){var t=voiceScore(vs[j]); if(t>bs){bs=t;b=vs[j];}}
-  voice=b;
-}
-function splitJa(t){
-  var a=String(t||"").split(/(?:。|！|？)\s*/).map(function(x){return x.trim();}).filter(Boolean);
-  return a.length?a:[String(t||"")];
-}
-/* rateAdj は「繰り返すほど少しずつゆっくり」の演出ぶん */
-function speak(text,rateAdj){
-  if(!ttsOK)return;
-  try{
-    var ss=window.speechSynthesis;
-    var parts=splitJa(text);
-    var go=function(){
-      parts.forEach(function(t){
-        try{
-          var u=new SpeechSynthesisUtterance(t);
-          if(voice){u.voice=voice;u.lang=voice.lang;}else u.lang="ja-JP";
-          u.rate=Math.max(0.55,V.vRate+(rateAdj||0));
-          u.pitch=V.vPitch; u.volume=1;
-          ss.speak(u);
-        }catch(e){}
-      });
-    };
-    if(ss.speaking||ss.pending){ss.cancel();setTimeout(go,90);}else go();
-  }catch(e){}
-}
-function stopSpeech(){try{if(ttsOK)window.speechSynthesis.cancel();}catch(e){}}
-
-/* ══════ 合図音 ══════ */
-var actx=null;
-function ensureAudio(){try{if(!actx){var A=window.AudioContext||window.webkitAudioContext;if(A)actx=new A();}if(actx&&actx.state==="suspended")actx.resume();}catch(e){}}
-function tone(f,delay,dur,vol){
-  try{
-    if(!actx)return;
-    var t0=actx.currentTime+(delay||0);
-    var o=actx.createOscillator(),g=actx.createGain();
-    o.type="sine";o.frequency.value=f;
-    g.gain.setValueAtTime(0,t0);
-    g.gain.linearRampToValueAtTime(vol||0.12,t0+0.05);
-    g.gain.exponentialRampToValueAtTime(0.0001,t0+(dur||1.2));
-    o.connect(g);g.connect(actx.destination);o.start(t0);o.stop(t0+(dur||1.2)+0.05);
-  }catch(e){}
-}
-function chime(){tone(528,0,1.7,0.13);tone(660,0.16,1.7,0.13);tone(792,0.32,1.7,0.13);}
-function softTone(){tone(396,0,1.4,0.09);}
-
-/* ══════ 背景音（実体はシェル。単体起動時は自前）══════ */
-var SOUND_FILE={brown:"audio/brown.wav",pink:"audio/pink.wav",rain:"audio/rain.wav"};
-var SOUND_NAME={brown:"ブラウンノイズ",pink:"ピンクノイズ",rain:"雨・シャワー"};
-var embedded=(function(){try{return window.top!==window.self;}catch(e){return true;}})();
-var bgA=$("bgAudio");
-function bgPost(m){try{parent.postMessage({nkSound:m},"*");}catch(e){}}
-function bgStart(){
-  if(!C.bg)return;
-  var v=C.bgVol/100;
-  if(embedded){ bgPost({cmd:"play",id:C.bg,file:SOUND_FILE[C.bg],name:SOUND_NAME[C.bg],vol:v}); return; }
-  try{
-    if(bgA.getAttribute("data-id")!==C.bg){bgA.src=SOUND_FILE[C.bg];bgA.setAttribute("data-id",C.bg);}
-    bgA.volume=v; bgA.play().catch(function(){});
-  }catch(e){}
-}
-function bgStop(){ if(embedded){bgPost({cmd:"stop"});return;} try{bgA.pause();}catch(e){} }
-function bgSetVol(v){ if(embedded){bgPost({cmd:"vol",vol:v});return;} try{bgA.volume=v;}catch(e){} }
-
-/* ══════ Wake Lock（練習中だけ自動でON）══════ */
-var wakeLock=null, wakeWant=false;
-function wakeOn(){
-  if(!C.wake||!("wakeLock" in navigator))return;
-  wakeWant=true;
-  navigator.wakeLock.request("screen").then(function(l){
-    wakeLock=l; $("wakeNote").style.display="block";
-    l.addEventListener("release",function(){wakeLock=null;});
-  }).catch(function(){});
-}
-function wakeOff(){
-  wakeWant=false;
-  try{if(wakeLock)wakeLock.release();}catch(e){}
-  wakeLock=null; $("wakeNote").style.display="none";
-}
-document.addEventListener("visibilitychange",function(){
-  if(document.visibilityState==="visible"&&wakeWant&&!wakeLock){
-    try{navigator.wakeLock.request("screen").then(function(l){wakeLock=l;}).catch(function(){});}catch(e){}
-  }
-});
-
-/* ══════ 進行 ══════ */
-var R=null;   // {seq, i, t, startedAt, phase}
-function activeSteps(){
-  return STEPS.filter(function(s){ return s.always || C.steps[s.id]; });
-}
-function expand(line, idx){
-  var t=line.say;
-  var a=(C.hand==="L")?"左":"右", b=(C.hand==="L")?"右":"左";
-  t=t.replace(/%A%/g,a).replace(/%B%/g,b);
-  return t;
-}
-function buildSeq(){
-  var seq=[], slowN=0;
-  activeSteps().forEach(function(s){
-    seq.push({mark:s.name});
-    s.lines.forEach(function(l){
-      // 繰り返しの暗示ほど、ほんの少しずつゆっくりにする
-      var adj=0;
-      if(l.slow){ adj=-0.02*Math.min(slowN,4); slowN++; } else slowN=0;
-      seq.push({say:expand(l), hold:l.hold, g:l.g, rate:adj, step:s.name});
-    });
   });
-  seq.push({mark:"消去動作",cancel:true});
-  CANCEL.forEach(function(l){ seq.push({say:l.say,hold:l.hold,g:l.g,step:"消去動作",cancel:true}); });
-  return seq;
-}
-function totalSec(seq){
-  var t=0;
-  seq.forEach(function(x){ if(x.say) t+=x.hold*C.pace+Math.max(2,x.say.length*0.14); });
-  return Math.round(t);
-}
-function fmt(s){var m=Math.floor(s/60),x=Math.round(s%60);return m+":"+(x<10?"0":"")+x;}
-
-function begin(preview){
-  ensureAudio(); loadVoice(); pickVoice();
-  var seq = preview ? previewSeq() : buildSeq();
-  R={seq:seq,i:-1,total:totalSec(seq),elapsed:0,preview:!!preview,startedAt:Date.now(),steps:activeSteps().map(function(s){return s.name;})};
-  $("home").style.display="none"; $("run").style.display="block";
-  if(!preview){ wakeOn(); bgStart(); }
-  softTone();
-  step();
-}
-function previewSeq(){
-  var s=[{mark:"試聴"}];
-  [{say:"気持ちが、落ち着いている。",hold:5,slow:true},
-   {say:"気持ちが、落ち着いている。",hold:5,slow:true}].forEach(function(l,i){
-    s.push({say:l.say,hold:l.hold,rate:-0.02*i,step:"試聴"});
-  });
-  var a=(C.hand==="L")?"左":"右";
-  s.push({say:a+"腕が、重たい。",hold:5,rate:0,step:"試聴"});
-  s.push({say:a+"腕が、重たい。",hold:3,rate:-0.02,step:"試聴"});
-  return s;
-}
-function step(){
-  if(!R)return;
-  R.i++;
-  if(R.i>=R.seq.length){ finish(); return; }
-  var it=R.seq[R.i];
-  if(it.mark){
-    $("stage").textContent=it.mark;
-    if(it.cancel){ chime(); }
-    return step();
-  }
-  $("stage").textContent=it.step||"";
-  $("line").textContent=it.say;
-  if(it.g)$("glyph").textContent=it.g;
-  speak(it.say, it.rate);
-  var wait=(it.hold*C.pace+Math.max(2,it.say.length*0.14))*1000;
-  R.elapsed+=wait/1000;
-  var pct=Math.min(100,Math.round(R.elapsed/Math.max(1,R.total)*100));
-  $("barIn").style.width=pct+"%";
-  $("left").textContent="のこり およそ "+fmt(Math.max(0,R.total-R.elapsed));
-  R.t=setTimeout(step,wait);
-}
-function finish(){
-  var wasPreview=R&&R.preview, dur=R?Math.round((Date.now()-R.startedAt)/1000):0, steps=R?R.steps:[];
-  clearTimeout(R&&R.t); R=null;
-  bgStop(); wakeOff(); chime();
-  $("run").style.display="none"; $("home").style.display="block";
-  $("barIn").style.width="0"; $("glyph").textContent=""; $("line").textContent="";
-  if(wasPreview)return;
-  askRecord(dur,steps);
-}
-/* 中断でも、必ず消去動作を通す */
-function abort(){
-  if(!R)return;
-  clearTimeout(R.t); stopSpeech();
-  var wasPreview=R.preview, dur=Math.round((Date.now()-R.startedAt)/1000), steps=R.steps;
-  if(wasPreview){ R=null; bgStop(); wakeOff(); $("run").style.display="none"; $("home").style.display="block"; return; }
-  var seq=[{mark:"消去動作",cancel:true}];
-  CANCEL_SHORT.forEach(function(l){ seq.push({say:l.say,hold:l.hold,g:l.g,step:"消去動作",cancel:true}); });
-  R={seq:seq,i:-1,total:totalSec(seq),elapsed:0,preview:false,startedAt:Date.now()-dur*1000,steps:steps};
-  step();
-}
-$("stopBtn").addEventListener("click",abort);
-
-/* ══════ 記録 ══════ */
-function askRecord(dur,steps){
-  var f=window.prompt("感じ方はいかがでしたか。\n0=感じなかった / 1=すこし / 2=はっきり / 3=とてもはっきり\n（空欄で記録だけ残します）","1");
-  if(f===null)f="";
-  var lvl=parseInt(f,10); if(isNaN(lvl)||lvl<0||lvl>3)lvl=null;
-  var odd=window.confirm("気になる反応（ピクつき・涙・落ち着かなさなど）はありましたか？\nOK=あった / キャンセル=なかった");
-  H.push({ts:Date.now(),date:new Date().toISOString().slice(0,10),sec:dur,steps:steps,level:lvl,odd:!!odd});
-  saveHist(); renderRecs();
-  if(odd) toast("気になる反応が続くようなら、段階を減らすか、間を長めにしてみてください。強く不快なときは中止してください。",9000);
-  else toast("おつかれさまでした。記録しました。",4000);
-}
-function renderRecs(){
-  var d="",list=H.slice().sort(function(a,b){return b.ts-a.ts;});
-  for(var i=29;i>=0;i--){
-    var day=new Date(Date.now()-i*86400000).toISOString().slice(0,10);
-    var on=H.some(function(x){return x.date===day;});
-    d+='<span class="dot'+(on?" on":"")+'" title="'+day+'"></span>';
-  }
-  $("dots").innerHTML=d;
-  if(!list.length){ $("recs").innerHTML='<div class="empty">まだ記録がありません。<br>まずは「重感」だけを、2週間ほど続けてみてください。</div>'; return; }
-  var h="";
-  list.slice(0,12).forEach(function(x){
-    var lv=["感じなかった","すこし感じた","はっきり感じた","とてもはっきり"][x.level];
-    h+='<div class="rec"><div class="d">'+esc(x.date)+' · '+fmt(x.sec)
-      +'<div class="m">'+esc((x.steps||[]).join("・"))+(lv?' · '+lv:'')+(x.odd?' · 反応あり':'')+'</div></div></div>';
-  });
-  $("recs").innerHTML=h;
-}
-
-/* ══════ 設定UI ══════ */
-function renderSteps(){
-  var h="";
-  STEPS.forEach(function(s){
-    if(s.always)return;
-    var on=!!C.steps[s.id];
-    h+='<label class="opt"><input type="checkbox" data-s="'+s.id+'"'+(on?" checked":"")+'>'
-      +'<span class="t"><span class="n">'+esc(s.name)+'</span>'
-      +(s.caution?'<span class="d">'+esc(s.caution)+'</span>':'')
-      +'</span></label>';
-  });
-  $("stepOpts").innerHTML=h;
-  var w="";
-  if(C.steps.heart||C.steps.belly)
-    w='<div class="warnbox">心臓・お腹の段階は、人によって落ち着かなさや気分の悪さが出ることがあります。合わないと感じたら外してください。</div>';
-  $("stepWarn").innerHTML=w;
-  renderPlan();
-}
-$("stepOpts").addEventListener("change",function(e){
-  var t=e.target.closest("[data-s]"); if(!t)return;
-  C.steps[t.getAttribute("data-s")]=t.checked; saveCfg(); renderSteps();
-});
-function renderPlan(){
-  var names=activeSteps().filter(function(s){return !s.always;}).map(function(s){return s.name;});
-  var sec=totalSec(buildSeq());
-  $("planNote").innerHTML= names.length
-    ? esc(names.join(" → "))+' ＋ 消去動作<br>およそ '+fmt(sec)
-    : '<span style="color:var(--warn)">段階が選ばれていません。まずは「第1公式 — 重感」だけをおすすめします。</span>';
-  $("startBtn").disabled = !names.length;
-}
-function seg(id,key,attr,cast){
-  var host=$(id);
-  Array.prototype.forEach.call(host.children,function(b){
-    b.addEventListener("click",function(){
-      C[key]=cast?cast(b.getAttribute(attr)):b.getAttribute(attr);
-      saveCfg(); paintSegs(); if(key==="bg"){ bgStop(); } renderPlan();
-    });
-  });
-}
-function paintSegs(){
-  Array.prototype.forEach.call($("handSeg").children,function(b){b.classList.toggle("on",b.getAttribute("data-h")===C.hand);});
-  Array.prototype.forEach.call($("paceSeg").children,function(b){b.classList.toggle("on",parseFloat(b.getAttribute("data-p"))===C.pace);});
-  Array.prototype.forEach.call($("bgSeg").children,function(b){b.classList.toggle("on",b.getAttribute("data-b")===C.bg);});
-  $("bgVol").value=C.bgVol; $("bgVolN").textContent=C.bgVol;
-  $("optWake").checked=C.wake;
-}
-seg("handSeg","hand","data-h");
-seg("paceSeg","pace","data-p",parseFloat);
-seg("bgSeg","bg","data-b");
-$("bgVol").addEventListener("input",function(e){C.bgVol=+e.target.value;saveCfg();paintSegs();bgSetVol(C.bgVol/100);});
-$("optWake").addEventListener("change",function(e){
-  C.wake=e.target.checked; saveCfg();
-  if(!C.wake)toast("練習中に画面が消えると読み上げが止まり、消去動作まで進めないことがあります。",7000);
-});
-$("voiceTest").addEventListener("click",function(){
-  ensureAudio(); loadVoice(); pickVoice();
-  speak("気持ちが、落ち着いている。両腕が、重たい。",0);
-});
-$("tryBtn").addEventListener("click",function(){ begin(true); });
-$("startBtn").addEventListener("click",function(){
-  if(!C.gateSeen){ $("gate").style.display="block"; return; }
-  begin(false);
-});
-$("gateOk").addEventListener("click",function(){ C.gateSeen=true; saveCfg(); $("gate").style.display="none"; begin(false); });
-$("gateBack").addEventListener("click",function(){ $("gate").style.display="none"; });
-$("gateShow").addEventListener("click",function(){ $("gate").style.display="block"; });
-
-/* ══════ 編集画面 ══════ */
-function edRender(){
-  var h="";
-  STEPS.forEach(function(st,si){
-    var locked = !!st.always && st.id==="intro";
-    h+='<div class="estep" data-si="'+si+'"><div class="sh">'
-      +'<span class="sn">'+esc(st.name)+'</span>'
-      +(st.hand?'<span class="lk">%A%=利き手側</span>':'')
-      +(st.custom?'<button class="tiny" data-delstep="'+si+'">段階を削除</button>':'')
-      +'</div>';
-    st.lines.forEach(function(l,li){
-      h+='<div class="eline">'
-        +'<input class="say" data-si="'+si+'" data-li="'+li+'" value="'+esc(l.say).replace(/"/g,"&quot;")+'">'
-        +'<input class="hold" type="number" min="0" max="60" data-si="'+si+'" data-li="'+li+'" value="'+(l.hold||0)+'">'
-        +'<label class="sw"><input type="checkbox" data-slow="1" data-si="'+si+'" data-li="'+li+'"'+(l.slow?" checked":"")+'>ゆっくり</label>'
-        +'<button class="x" data-del="1" data-si="'+si+'" data-li="'+li+'">✕</button>'
-        +'</div>';
-    });
-    h+='<button class="eadd" data-add="'+si+'">＋ 行を追加</button></div>';
-  });
-  // 消去動作は編集できるが、消せない
-  h+='<div class="estep" data-cancel="1"><div class="sh"><span class="sn">消去動作</span>'
-    +'<span class="lk">削除できません</span></div>';
-  CANCEL.forEach(function(l,li){
-    h+='<div class="eline">'
-      +'<input class="say" data-cs="1" data-li="'+li+'" value="'+esc(l.say).replace(/"/g,"&quot;")+'">'
-      +'<input class="hold" type="number" min="0" max="60" data-cs="1" data-li="'+li+'" value="'+(l.hold||0)+'">'
-      +(CANCEL.length>2?'<button class="x" data-cdel="1" data-li="'+li+'">✕</button>':'')
-      +'</div>';
-  });
-  h+='<button class="eadd" data-cadd="1">＋ 行を追加</button></div>';
-  $("edBody").innerHTML=h;
-  $("edNote").innerHTML='左が読み上げる文、右がそのあとの沈黙（秒）です。「ゆっくり」を付けた行は、繰り返すごとに少しずつゆっくりになります。<br>'
-    +'<b>%A%</b> は利き手の側、<b>%B%</b> は反対側に置き換わります。<br>'
-    +'<b>消去動作は消せません。</b>ここを空にすると、練習後にぼんやりした状態のまま終わってしまうためです。';
-}
-function edCommit(){
-  // 空行を捨てる。すべて空になった段階は既定に戻す
-  SCRIPT.steps = STEPS.map(function(st){
-    var lines=st.lines.filter(function(l){ return (l.say||"").trim(); });
-    return {id:st.id,name:st.name,always:!!st.always,def:!!st.def,hand:!!st.hand,
-            caution:st.caution||"",custom:!!st.custom,lines:lines};
-  }).filter(function(st){ return st.lines.length || st.always; });
-  var cl = CANCEL.filter(function(l){ return (l.say||"").trim(); });
-  if(!cl.length){ cl = cloneLines(BASE_CANCEL); toast("消去動作は空にできないため、既定に戻しました。",6000); }
-  SCRIPT.cancel = cl;
-  if(!SCRIPT.steps.some(function(st){ return !st.always && st.lines.length; })){
-    SCRIPT.steps = null;   // 全部空なら既定へ
-    toast("読み上げる段階が無くなったため、既定の台本に戻しました。",6000);
-  }
-  saveScript(); renderSteps(); renderPlan();
-}
-$("edBody").addEventListener("input",function(e){
-  var t=e.target, li=+t.getAttribute("data-li");
-  if(t.getAttribute("data-cs")){
-    if(t.classList.contains("say")) CANCEL[li].say=t.value;
-    else CANCEL[li].hold=Math.max(0,Math.min(60,+t.value||0));
-    return;
-  }
-  var si=+t.getAttribute("data-si");
-  if(isNaN(si)||!STEPS[si])return;
-  if(t.classList.contains("say")) STEPS[si].lines[li].say=t.value;
-  else if(t.classList.contains("hold")) STEPS[si].lines[li].hold=Math.max(0,Math.min(60,+t.value||0));
-  else if(t.getAttribute("data-slow")) STEPS[si].lines[li].slow=t.checked;
-});
-$("edBody").addEventListener("click",function(e){
-  var b=e.target.closest("button"); if(!b)return;
-  var si=+b.getAttribute("data-si"), li=+b.getAttribute("data-li");
-  if(b.getAttribute("data-add")!==null&&b.getAttribute("data-add")!==""){
-    var k=+b.getAttribute("data-add");
-    STEPS[k].lines.push({say:"",hold:8}); edCommit(); edRender(); return;
-  }
-  if(b.getAttribute("data-cadd")){ CANCEL.push({say:"",hold:8}); edCommit(); edRender(); return; }
-  if(b.getAttribute("data-cdel")){
-    if(CANCEL.length<=2){ toast("消去動作はこれ以上減らせません。",4000); return; }
-    CANCEL.splice(li,1); edCommit(); edRender(); return;
-  }
-  if(b.getAttribute("data-del")){ STEPS[si].lines.splice(li,1); edCommit(); edRender(); return; }
-  if(b.getAttribute("data-delstep")!==null&&b.getAttribute("data-delstep")!==""){
-    var d=+b.getAttribute("data-delstep");
-    if(!window.confirm("「"+STEPS[d].name+"」を削除しますか？"))return;
-    delete C.steps[STEPS[d].id]; saveCfg();
-    STEPS.splice(d,1); edCommit(); edRender(); return;
-  }
-});
-$("edAddStep").addEventListener("click",function(){
-  var nm=window.prompt("段階の名前（例: 肩の力）"); if(!nm)return;
-  nm=nm.trim(); if(!nm)return;
-  var id="c"+Date.now().toString(36);
-  STEPS.push({id:id,name:nm,always:false,def:false,hand:false,caution:"",custom:true,
-              lines:[{say:"",hold:8,slow:true},{say:"",hold:8,slow:true}]});
-  C.steps[id]=true; saveCfg();
-  edCommit(); edRender();
-});
-$("edOpen").addEventListener("click",function(){ edRender(); $("editor").style.display="block"; });
-$("edClose").addEventListener("click",function(){ edCommit(); $("editor").style.display="none"; });
-$("edReset").addEventListener("click",function(){
-  if(!window.confirm("編集をすべて捨てて、既定の台本に戻しますか？"))return;
-  SCRIPT.steps=null; SCRIPT.cancel=null; saveScript();
-  edRender(); renderSteps(); renderPlan(); toast("既定の台本に戻しました。",3500);
-});
-$("edExport").addEventListener("click",function(){
-  edCommit();
-  try{
-    var blob=new Blob([JSON.stringify({app:"autogenic-script",v:1,steps:SCRIPT.steps,cancel:SCRIPT.cancel},null,2)],{type:"application/json"});
-    var a=document.createElement("a");
-    a.href=URL.createObjectURL(blob);
-    a.download="autogenic-script-"+new Date().toISOString().slice(0,10)+".json";
-    a.click();
-    setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
-    toast("書き出しました。",3000);
-  }catch(e){ toast("書き出せませんでした。",4000); }
-});
-$("edImport").addEventListener("click",function(){ $("edFile").click(); });
-$("edFile").addEventListener("change",function(e){
-  var f=e.target.files&&e.target.files[0]; if(!f)return;
-  f.text().then(function(t){
-    var o=JSON.parse(t);
-    if(o.app!=="autogenic-script"||!Array.isArray(o.steps)) throw new Error("形式が違います");
-    SCRIPT.steps=o.steps; SCRIPT.cancel=Array.isArray(o.cancel)&&o.cancel.length?o.cancel:cloneLines(BASE_CANCEL);
-    saveScript(); edRender(); renderSteps(); renderPlan();
-    toast("読み込みました。",3500);
-  }).catch(function(){ toast("読み込めませんでした。書き出したファイルを選んでください。",5000); });
-  e.target.value="";
-});
-
-/* ══════ 同期（sync.js に相乗り）══════ */
-var sync=null;
-function syncGetLocal(){ return {history:H, clearedAt:clearedAt, script:SCRIPT}; }
-function syncSetLocal(d){
-  H=d.history||[]; clearedAt=d.clearedAt||0;
-  try{store.set(KEY,JSON.stringify(H));}catch(e){}
-  try{store.set(CLR_KEY,String(clearedAt));}catch(e){}
-  if(d.script){
-    SCRIPT=d.script;
-    try{ store.set(SCRIPT_KEY,JSON.stringify(SCRIPT)); }catch(e){}
-    applyScript(); renderSteps(); renderPlan();
-  }
-  renderRecs();
-}
-function syncMerge(local,remote){
-  if(!remote)return local;
-  var cl=Math.max(local.clearedAt||0,remote.clearedAt||0);
-  var seen={},out=[];
-  [].concat(local.history||[],remote.history||[]).forEach(function(x){
-    if(!x||!x.ts)return;
-    if(cl&&x.ts<=cl)return;            // 全消去より前の記録は復活させない
-    if(seen[x.ts])return; seen[x.ts]=1; out.push(x);
-  });
-  out.sort(function(a,b){return a.ts-b.ts;});
-  // 誘導文は端末間で揃える。あとに編集した方を採る
-  var ls=(local.script&&local.script.updatedAt)||0, rs=(remote.script&&remote.script.updatedAt)||0;
-  var sc = rs>ls ? remote.script : (local.script||null);
-  return {history:out, clearedAt:cl, script:sc};
-}
-function paintSync(st,auto){
-  var b=$("bSync"); if(!b)return;
-  b.textContent=st.phase==="error"?"⚠ 同期":"☁ 同期";
-  b.style.opacity=st.phase==="syncing"?".4":".8";
-  var a=$("bSyncAuto"); if(a)a.textContent="自動同期: "+(auto?"ON":"OFF");
-  var m=$("syncMsg"); if(!m)return;
-  if(!sync||!sync.hasClientId())m.textContent="まだつながっていません。☁ の設定でGoogleドライブのクライアントIDを入れると使えます。";
-  else if(st.phase==="error")m.textContent="⚠️ "+(st.msg||"同期に失敗しました");
-  else if(st.phase==="syncing")m.textContent="同期しています…";
-  else if(st.phase==="ok")m.textContent="同期しました（"+new Date(st.at).toLocaleTimeString()+"）。";
-  else m.textContent="練習の記録をPCとスマホで揃えます。設定は端末ごとのままです。";
-}
-if(window.NKSync){
-  sync=NKSync.create({app:"autogenic",getLocal:syncGetLocal,setLocal:syncSetLocal,merge:syncMerge});
-  sync.onChange(paintSync);
-  var br=NKSync.bridge({app:"autogenic",label:"🌿 くつろぎ",hideSel:["#syncWrap"],
-    syncNow:function(){return sync.syncNow();},getStatus:function(){return sync.status();}});
-  if(br) sync.onChange(function(){br.report();});
-  $("bSync").addEventListener("click",function(){var p=$("syncPanel");p.style.display=(p.style.display==="none"?"block":"none");});
-  $("bSyncNow").addEventListener("click",function(){sync.syncNow().catch(function(){});});
-  $("bSyncAuto").addEventListener("click",function(){sync.setAuto(!sync.autoOn());});
-  setTimeout(function(){sync.start();},900);
-} else { $("syncWrap").style.display="none"; }
-
-/* ══════ 起動 ══════ */
-loadVoice();
-if(ttsOK){ pickVoice(); try{window.speechSynthesis.onvoiceschanged=pickVoice;}catch(e){} }
-else { $("voiceNote").textContent="この端末では読み上げが使えないため、画面の文字と合図音だけで進みます。"; }
-renderSteps(); paintSegs(); renderRecs(); renderPlan();
 })();
 </script>
 </body>

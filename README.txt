@@ -1,87 +1,132 @@
-const $ = (id) => document.getElementById(id);
-const CATS = ["メモ", "アイデア", "調べる", "やること", "行きたい"];
-let pageInfo = { title: "", url: "", img: "" };
+日記帳 & 気になり帳 一式
 
-function fillCats(sel) {
-  $("cat").innerHTML = "";
-  CATS.forEach((c) => {
-    const o = document.createElement("option");
-    o.value = c; o.textContent = c;
-    if (c === sel) o.selected = true;
-    $("cat").appendChild(o);
-  });
-}
+【中身】
+- index.html ……………………… 入口（タブで日記帳/気になり帳/暗室/音を切替）
+- diary.html …………………… 日記帳本体
+- kininari.html ……………… 気になり帳本体（クリップ取り込み対応）
+- tasks.html …………………… タスク（期限・繰り返し・Googleカレンダー連携）
+- image-streaming.html …… 暗室（イメージストリーミング）本体
+- bgm.html ……………………… 音（作業用BGMランチャー・就寝用の音）
+- autogenic.html …………… くつろぎ（自律訓練法の音声ガイド）
+- audio/ ………………………… 就寝用の音（brown/pink/rain の各wav。合計約1.8MB）
+- sync.js ……………………… 音・暗室の端末間同期（Googleドライブ経由）
+- sw.js ………………………… オフライン動作・タスク通知用
+- manifest.webmanifest …… PWA設定（ホーム画面に追加・共有メニュー対応）
+- icon-192.png / icon-512.png / icon-512-maskable.png … アプリアイコン
+- clipper.html ……………… Chrome拡張の説明＆ダウンロードページ
+- kininari-clipper/ ……… Chrome拡張のフォルダ（そのまま読み込めます）
 
-async function readActiveTab() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  let info = { title: tab ? (tab.title || "") : "", url: tab ? (tab.url || "") : "", selection: "", img: "", desc: "" };
-  if (tab && tab.id != null && /^https?:/i.test(info.url)) {
-    try {
-      const [res] = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: () => {
-          const meta = (k) => { const e = document.querySelector(`meta[property="${k}"]`) || document.querySelector(`meta[name="${k}"]`); return e ? (e.getAttribute("content") || "") : ""; };
-          return { title: document.title, url: location.href, selection: String(window.getSelection ? window.getSelection() : ""), img: meta("og:image"), desc: meta("og:description") || meta("description") };
-        }
-      });
-      if (res && res.result) info = Object.assign(info, res.result);
-    } catch (e) { /* some pages block scripting; fall back to tab.title/url */ }
-  }
-  return info;
-}
+━━━━━━━━━━━━━━━━━━
+【1. サイトに置く（ホスティング）】
+ZIPの中身を「まるごと同じフォルダ」に置き、https で公開してください。
+（一部だけ置くと、暗室タブが開かない・ホーム画面に追加できない等になります）
 
-async function init() {
-  const cfg = await chrome.storage.sync.get(["kininariUrl", "defcat", "deffolder"]);
-  fillCats(cfg.defcat || "調べる");
-  if (cfg.deffolder) $("folder").value = cfg.deffolder;
-  if (cfg.kininariUrl) $("kurl").value = cfg.kininariUrl;
-  if (!cfg.kininariUrl) { $("settings").classList.add("open"); $("status").textContent = "初回: 下の設定で保存先URLを入れてください。"; }
+  必須: index.html / diary.html / kininari.html / image-streaming.html /
+        bgm.html / autogenic.html / tasks.html / audio/（フォルダごと） / sync.js / sw.js / manifest.webmanifest /
+        icon-192.png / icon-512.png / icon-512-maskable.png
+  任意: clipper.html（拡張の配布ページ。使わないなら不要）
 
-  const info = await readActiveTab();
-  pageInfo = info;
-  $("title").value = info.title || info.url || "";
-  $("url").textContent = info.url || "(取得できませんでした)";
-  $("note").value = (info.selection || "").trim() || (info.desc || "").trim();
-  if (!/^https?:/i.test(info.url || "")) {
-    $("status").classList.add("err");
-    $("status").textContent = "このページは保存できません（通常のWebページで使ってください）。";
-    $("save").disabled = true;
-  }
-}
+- 開くときは index.html。
+- file:// では動きません（ログイン・カレンダー・通知のため https 必須）。
+- 無料の例: GitHub Pages、Netlify、Cloudflare Pages など。
 
-$("gear").addEventListener("click", () => $("settings").classList.toggle("open"));
+【2. Chrome拡張（ニュースを気になり帳に保存）】
+1) Chromeで chrome://extensions を開く
+2) 右上「デベロッパーモード」をオン
+3)「パッケージ化されていない拡張機能を読み込む」→ kininari-clipper フォルダを選択
+4) ツールバーの「気」アイコン → ⚙ に、自分の kininari.html のURL（https）を入力
+   例: https://yourname.github.io/app/kininari.html
+5) 以降、ページで「気」アイコン → 保存
+※ clipper.html をサイトに置けば、そのページからも拡張をダウンロードできます。
 
-$("save").addEventListener("click", async () => {
-  const base = ($("kurl").value || "").trim();
-  if (!base) { $("settings").classList.add("open"); $("status").classList.add("err"); $("status").textContent = "保存先のURLを入れてください。"; return; }
-  if (!/^https?:\/\//i.test(base)) { $("status").classList.add("err"); $("status").textContent = "URLは https:// で始めてください。"; return; }
-  await chrome.storage.sync.set({ kininariUrl: base, defcat: $("cat").value, deffolder: ($("folder").value || "").trim() });
+【3. Google連携（ドライブ/カレンダー）の事前設定】
+アプリ内の ❓ ヘルプ画面に手順をまとめています（API有効化・スコープ・JavaScript生成元の登録など）。
 
-  // 保存先のオリジンにアクセスできると、「保存が終わったか」を確認してから
-  // タブを閉じられる（固定時間で閉じてクリップを失う事故を防げる）。
-  // 断られても従来どおり時間待ちで動くので、そのまま続行する。
-  try {
-    const origin = new URL(base).origin + "/*";
-    if (!(await chrome.permissions.contains({ origins: [origin] }))) {
-      await chrome.permissions.request({ origins: [origin] });
-    }
-  } catch (e) { /* 権限なしでも保存自体は動く */ }
+【音（BGM）タブについて】
+- YouTubeのBGMを毎回検索せずに呼び出すためのタブです。ジャンル検索 → 気に入った
+  URLを登録 → 次回はタップだけ。お気に入り★と再生履歴が残ります。
+- 他のタブに切り替えても鳴り続けます（アプリを開いている間）。
+- ★重要: スマホで画面を消すとYouTubeは止まります。ブラウザ側の仕様で回避でき
+  ません（iPhoneのSafariも同じ）。💡ボタンで消灯を防げますが電池を多く使います。
+- 「就寝用の音」（ブラウンノイズ/ピンクノイズ/雨）は端末内の音です。再生は
+  アプリの最上位（index.html）で行うので、他のタブに切り替えても、画面を
+  消しても鳴り続けます。ロック画面からの再生・停止も使えます。
+- Androidでは、YouTubeアプリの「共有」からこのアプリに送ると音タブに登録されます。
 
-  const payload = { t: ($("title").value || "").trim(), u: pageInfo.url, n: ($("note").value || "").trim(), img: pageInfo.img || "", c: $("cat").value, f: ($("folder").value || "").trim() };
-  const url = base.split("#")[0] + "#knadd=" + encodeURIComponent(JSON.stringify(payload));
+【タスクタブについて】
+- 気になり帳が「書き留める場所」、タスクは「終わらせるもの」の置き場です。
+- 「今日」「明日」「来週」で期限をすぐ決められます。期限切れは赤で強調され、
+  一覧の先頭にまとまります。
+- 繰り返し（毎日／平日／毎週／毎月）に対応。完了すると次回ぶんが自動で作られます。
+  毎月は月末（31日など）を指定しても、短い月は末日に丸めたうえで、翌月は元の
+  日付に戻ります。
+- 📅 ボタンでGoogleカレンダーに登録できます。気になり帳と同じ設定を使うので、
+  追加の設定は不要です。
+- Googleタスクと双方向で同期できます（完了チェックも両方向で揃います）。
+  事前にCloud Consoleで以下が必要です:
+    1) Tasks API を有効化
+       console.cloud.google.com/apis/library/tasks.googleapis.com
+    2) OAuth同意画面のスコープに https://www.googleapis.com/auth/tasks を追加
+    3) アプリの ☁ でクライアントIDの「保存」を押し直す（再ログインのため）
+  ※ 時刻と繰り返しはこのアプリだけの情報です（Googleタスクの期限は日付のみ）。
+  ※ 1週間以上前に完了したタスクは、Google側へ新規送信しません。
+- 気になり帳のメモの「タスクにする」を押すと、こちらに送られます。元のメモは
+  残るので、記録は気になり帳、実行はタスク、と使い分けられます。
 
-  $("save").disabled = true;
-  chrome.runtime.sendMessage({ type: "clip", url }, (resp) => {
-    if (chrome.runtime.lastError || !resp || !resp.ok) {
-      $("status").classList.add("err");
-      $("status").textContent = "保存に失敗しました。URL設定を確認してください。";
-      $("save").disabled = false;
-      return;
-    }
-    $("status").classList.remove("err");
-    $("status").textContent = "気になり帳に保存しました ✓";
-    setTimeout(() => window.close(), 800);
-  });
-});
+【くつろぎ（自律訓練）タブについて】
+★これは治療ではありません。運転や機械操作の予定があるときは行わないでください。
+  通院中の方、心臓・呼吸器の病気、糖尿病、強い気分の落ち込みや不安がある方は、
+  始める前に主治医にご相談ください。
 
-init();
+- 初めは「第1公式 — 重感」だけを2週間ほど続けるのが標準です。既定でそうなっています。
+- 心臓（第3）・お腹（第5）の段階は不快感が出ることがあるため、既定では外して
+  あります。使う場合は設定から有効にしてください。
+- 最後の「消去動作」は省略できません。中断した場合も短縮版を必ず通ります。
+  省くとだるさやぼんやりした感じが残ることがあります。
+- 練習中は自動で画面が消えないようにします（終わると元に戻ります）。途中で
+  画面が消えると読み上げが止まり、消去動作まで進めないためです。
+- 練習中に腕のピクつきや涙などが出ることがあります（自律性発散）。多くは問題
+  ありませんが、強く不快なときは中止してください。
+- 声は「暗室」の設定を共有します。背景音は「音」タブの就寝用の音を使えます。
+- 誘導文は「誘導文の編集」から自分で書き換えられます（文・沈黙の秒数・自分の段階の
+  追加）。編集はこの端末に保存されるため、アプリのファイルを差し替えても消えません。
+  JSONで書き出し／読み込みもでき、PC・スマホ間でも同期されます。
+  ただし消去動作は削除できません（空にすると練習後にぼんやりしたまま終わるため）。
+
+【暗室の読み上げの声】
+- 声は「端末に入っているもの」から選びます（ブラウザの仕様で、アプリ側から
+  声を配布することはできません）。
+- 暗室の画面で、声の選択・高さ・速さを調整できます。設定はその端末だけに
+  保存され、同期されません（入っている声が端末ごとに違うため）。
+- もっと自然にしたい場合は、OS側で高品質な音声を追加してください。
+    iPhone/iPad: 設定 → アクセシビリティ → 読み上げコンテンツ → 声 → 日本語
+    Windows: 設定 → 時刻と言語 → 音声認識 で音声を追加（Nanami が滑らか）
+    Android/Chrome: 「Google 日本語」が入っていればそれが最も自然です
+  追加後、暗室の画面を再読み込みすると一覧に出てきます。
+
+【同期の仕組みについて（v19で修正）】
+- 以前は「最終同期の時刻より後に作られたか」で新規項目を判定していました。
+  この時刻はGoogleドライブのサーバー時刻で、比較相手は端末の時計だったため、
+  端末の時計が遅れていると、追加したばかりの項目が消えることがありました。
+- 現在は各項目に「同期済み」の印を付けて判定します。印が無いものは必ず残るので、
+  時計のずれに影響されません。
+
+【データの同期・バックアップ】
+入口は画面上部の ☁ ひとつだけです（❓ヘルプの隣）。各アプリの中にあった
+同期ボタンは、シェル経由で開いたときは表示されません。
+
+- クライアントIDは4アプリ共通（shared:gd:cid）。設定は一度だけです。
+- ☁ を開くと、日記帳・気になり帳・暗室・音の同期状態が一覧で見られます。
+  「今すぐ全部同期」で4つまとめて実行します。
+- Googleを使わない「まとめて書き出す／取り込む」も同じ画面にあります。
+- 同期されるもの: 音＝登録/ジャンル/★/再生履歴、暗室＝練習の記録、
+  日記帳と気になり帳＝従来どおり。
+- 同期されないもの: 音量・夜間モード・表示の絞り込みなど端末ごとの設定。
+- 再生中の曲が連動することはありません（データだけの同期です）。
+
+【データについて】
+すべて自分専用です。データは自分の端末に保存され、Google連携も自分のアカウント/自分のクライアントIDのみを使います。
+
+【更新時の注意】
+ファイルを差し替えたら、ブラウザで一度リロードしてください。Service Worker は
+オンライン時つねに最新を取りに行く設定なので、通常はこれだけで新しい版になります。
