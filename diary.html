@@ -454,8 +454,10 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
                         <div class="form-group">
                             <button class="btn btn-secondary" onclick="driveConnect()" style="width: 100%; margin-bottom: var(--space-8);">Google認証（Drive）</button>
                             <button class="btn btn-primary" onclick="drivePullAndMerge()" style="width: 100%; margin-bottom: var(--space-8);">Driveから読み込み（マージ）</button>
-                            <button class="btn btn-secondary" onclick="drivePushAll()" style="width: 100%;">Driveへ保存（上書き）</button>
+                            <button class="btn btn-secondary" onclick="drivePushAll()" style="width: 100%; margin-bottom: var(--space-8);">Driveへ保存（上書き）</button>
+                            <button class="btn btn-secondary" onclick="driveRebuildRemote()" style="width: 100%;">Driveを作り直す（復旧用）</button>
                         </div>
+                        <div style="font-size: 12px; color: var(--color-text-secondary); line-height: 1.5; margin-bottom: var(--space-8);">「作り直す」は、Drive上の日記が壊れて読めないときや、暗号化を解除したあとに Drive 側が暗号文のまま残ってしまったときの復旧用です。この端末の内容で置き換えます。</div>
                         <div style="font-size: 12px; color: var(--color-text-secondary); line-height: 1.5;">⚠️ 注意：このページは https で配信する必要があります（file:// 直開きではOAuthが動かないことがあります）。</div>
                     </div>
                 </div>
@@ -543,6 +545,10 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
         let currentYear = new Date().getFullYear();
         let currentMonth = new Date().getMonth();
         let selectedDate = null;
+        // 新規作成の既定日。カレンダーのセルを選んだときだけ入る。
+        // selectedDate は一覧から日記を開いただけでも変わるので、そのまま既定値に
+        // 使うと「過去の日記を読み返しただけで今日の日記が作れない」ことになる（B-6）
+        let newEntryDefaultDate = null;
 
 // ---- Phase1: autosave + dirty indicator + navigation guard ----
 let isDirty = false;
@@ -556,6 +562,9 @@ let encMeta = null;          // { salt: base64, iter } used to (re)derive the ke
 let appLocked = false;       // encEnabled && key not yet provided this session
 let pendingUnlockBlob = null;// the encrypted blob awaiting passphrase at startup
 let backupReminderDismissed = false; // session-only dismiss for the backup reminder
+// 読み込みに失敗したまま起動した印。このとき entries=[] は「日記0件」ではなく
+// 「まだ読めていない」なので、外（Drive/同期フォルダ）へ書き出してはいけない。
+let storageLoadFailed = false;
 const PBKDF2_ITER = 250000;
 
 const ENC = {
@@ -596,16 +605,26 @@ const ENC = {
 
 function isEncBlob(o) { return o && typeof o === 'object' && o.__enc__ === 1 && o.ct && o.iv && o.salt; }
 
+// 手動の取り込みで「効いた鍵」を覚えておく置き場。暗号化を解除しても Drive 上は
+// 暗号文のまま残るため、これが無いと以後の書き戻しが毎回 REMOTE_LOCKED で止まり、
+// 自動同期が静かに死ぬ（B-3）。localStorage には出さない（セッション限り）。
+let driveRemoteKey = null;
+
 // Try the in-session key first; if that fails (or none), prompt for a passphrase
 // and derive a key from the blob's own salt/iter (enables cross-device import).
 async function decryptIncomingBlob(blob) {
   if (cryptoKey) {
     try { return await ENC.decryptToString(blob, cryptoKey); } catch (_) {}
   }
+  if (driveRemoteKey) {
+    try { return await ENC.decryptToString(blob, driveRemoteKey); } catch (_) {}
+  }
   const pass = prompt('このデータは暗号化されています。パスフレーズを入力してください');
   if (!pass) throw new Error('cancelled');
   const key = await ENC.deriveKey(pass, ENC.unb64(blob.salt), blob.iter || PBKDF2_ITER);
-  return await ENC.decryptToString(blob, key); // throws on wrong passphrase
+  const text = await ENC.decryptToString(blob, key); // throws on wrong passphrase
+  driveRemoteKey = key; // 通った鍵は覚えて、この後の書き戻しでも使う
+  return text;
 }
 
 function updateSaveStatus() {
@@ -648,6 +667,57 @@ async function ensureSavedOrConfirmLoseChanges(actionLabel = '移動') {
   return confirm(`未保存の変更を保存できませんでした。このまま${actionLabel}すると変更が失われます。続行しますか？`);
 }
 
+// 外へ書き出してはいけない状態か（理由の文言、問題なければ null）。
+// ロック中や読み込み失敗時の entries=[] をそのまま同期すると、
+// Drive/同期フォルダ側の日記を空で潰してしまう。
+function syncBlockedReason() {
+  if (appLocked || (encEnabled && !cryptoKey)) return 'ロックを解除してから同期してください';
+  if (storageLoadFailed) return '保存データを読み込めていないため同期を中止しました';
+  return null;
+}
+
+// 同期の前に編集中の内容を確定させる。マージの勝敗は updatedAt だけで決まるので、
+// 未保存のまま取り込むと、いま打った文章が「古い」と判定されて消える。
+// saveEntry ではなく直接保存するのは、ここから同期を再帰的に呼ばないため。
+async function flushPendingEditsForSync() {
+  if (!currentEntry || !isDirty) return true;
+  if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null; }
+  const target = currentEntry;
+  const prevUpdatedAt = target.updatedAt;
+  const stamp = new Date().toISOString();
+  target.updatedAt = stamp;
+  const ok = await saveEntriesToStorage();
+  if (!ok) {
+    // 保存できていないのに updatedAt だけ進めると、この端末が「新しい」と
+    // 判定され、マージで他端末の正しい内容を押しのけてしまう（B-7）
+    target.updatedAt = prevUpdatedAt;
+    return false;
+  }
+  isDirty = false;
+  lastSavedAt = new Date(stamp).toLocaleTimeString('ja-JP');
+  updateSaveStatus();
+  return true;
+}
+
+// マージで entries が入れ替わったあと、編集中エントリを引き直す。
+// 見つからない＝他端末で削除された場合に currentEntry=null のまま古いエディタDOMを
+// 残すと、入力のたびに currentEntry.content で例外が出て、打った文章が
+// どこにも保存されないまま黙って消える（B-2）。その場で閉じて必ず知らせる。
+// 戻り値: 開いていた日記が消えたら true。
+function rebindCurrentEntryAfterMerge() {
+  if (!currentEntry) return false;
+  const next = entries.find(x => x.id === currentEntry.id)
+            || entries.find(x => x.date === currentEntry.date)
+            || null;
+  if (next) { currentEntry = next; return false; }
+  currentEntry = null;
+  if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null; }
+  isDirty = false;
+  renderEditor();
+  showToast('開いていた日記は他の端末で削除されました', 'warning');
+  return true;
+}
+
 window.addEventListener('beforeunload', (e) => {
   if (!isDirty) return;
   e.preventDefault();
@@ -655,24 +725,47 @@ window.addEventListener('beforeunload', (e) => {
 });
 
 
+        // 起動処理は「壊れやすい所」と「必ず動かしたい所」を分ける。
+        // 以前は IndexedDB（プライベートモードで開けない）で例外が出ると
+        // ここで止まり、描画もロック解除も走らず画面が真っ白になっていた。
         async function init() {
-            const status = await loadEntriesFromStorage();
-            autoSyncAEnabled = localStorage.getItem('autoSyncA') === 'true';
-            if (document.getElementById('autoSyncA')) {
-                document.getElementById('autoSyncA').checked = autoSyncAEnabled;
+            let status = 'empty';
+            try {
+                status = await loadEntriesFromStorage();
+            } catch (err) {
+                console.error('保存データの読み込みに失敗:', err);
+                entries = [];
+                storageLoadFailed = true;
+                status = 'corrupt';
+                showToast('保存データを読み込めませんでした。空の状態で起動しました', 'error');
             }
-            autoSyncDriveEnabled = localStorage.getItem('autoSyncDrive') === 'true';
-            if (document.getElementById('autoSyncDrive')) {
-                document.getElementById('autoSyncDrive').checked = autoSyncDriveEnabled;
+            try {
+                autoSyncAEnabled = localStorage.getItem('autoSyncA') === 'true';
+                if (document.getElementById('autoSyncA')) {
+                    document.getElementById('autoSyncA').checked = autoSyncAEnabled;
+                }
+                autoSyncDriveEnabled = localStorage.getItem('autoSyncDrive') === 'true';
+                if (document.getElementById('autoSyncDrive')) {
+                    document.getElementById('autoSyncDrive').checked = autoSyncDriveEnabled;
+                }
+                await checkSyncHandleA();
+            } catch (err) {
+                console.error('同期設定の復元に失敗:', err);
             }
-            await checkSyncHandleA();
-            updateEncUI();
-            updateStats();
-            renderCalendar();
-            renderEntriesList();
-            renderEditor();
-            updateBackupReminder();
+            try {
+                updateEncUI();
+                updateStats();
+                renderCalendar();
+                renderEntriesList();
+                renderEditor();
+                updateBackupReminder();
+            } catch (err) {
+                console.error('初期描画に失敗:', err);
+            }
             if (status === 'locked') openUnlockModal();
+            // 先に他端末の分を取り込む。取り込まないまま保存すると、こちらの
+            // 全件書き出しで相手の日記を消してしまう（#2）
+            if (autoSyncDriveEnabled) drivePullAndMerge(true).catch(() => {});
         }
 
         function looksLikeHtml(s) {
@@ -693,6 +786,7 @@ window.addEventListener('beforeunload', (e) => {
 
         // 戻り値: 'ok' | 'locked' | 'empty' | 'corrupt'
         async function loadEntriesFromStorage() {
+            storageLoadFailed = false;
             const stored = localStorage.getItem('diaryEntries');
             if (!stored) { entries = []; return 'empty'; }
             let parsed;
@@ -702,6 +796,7 @@ window.addEventListener('beforeunload', (e) => {
                 console.error('保存データの読み込みに失敗:', err);
                 try { localStorage.setItem('diaryEntries_corrupt_backup', stored); } catch (_) {}
                 entries = [];
+                storageLoadFailed = true;
                 setTimeout(() => showToast('保存データを読み込めませんでした。空の状態で起動しました', 'error'), 0);
                 return 'corrupt';
             }
@@ -795,8 +890,7 @@ window.addEventListener('beforeunload', (e) => {
             const firstDayOfWeek = firstDay.getDay();
             const daysInMonth = lastDay.getDate();
             const prevDaysInMonth = prevLastDay.getDate();
-            const today = new Date();
-            const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+            const todayStr = localDateStr();
             const entriesMap = {};
             entries.forEach(entry => { entriesMap[entry.date] = entry; });
             let html = '';
@@ -844,6 +938,9 @@ window.addEventListener('beforeunload', (e) => {
                 renderEditor();
                 showToast(`${dateStr} の日記はありません`, 'warning');
             }
+            // カレンダーで明示的に日を選んだときだけ、新規作成の既定日にする。
+            // loadEntry の中で消しているので、必ずその後で付け直す（B-6）
+            newEntryDefaultDate = dateStr;
         }
 
         function renderEntriesList() {
@@ -856,17 +953,48 @@ window.addEventListener('beforeunload', (e) => {
                 const li = document.createElement('li');
                 li.className = 'entry-item' + (currentEntry?.id === entry.id ? ' active' : '');
                 li.innerHTML = `<div class="entry-date">${formatDate(entry.date)}</div><div class="entry-title">${escapeHtml(entry.title)}</div>`;
-                li.onclick = () => loadEntry(entry);
+                // 一覧からの切り替えも selectDate と同じ扱いにする。素通りさせると
+                // renderEditor が isDirty を落とし、予約中の自動保存が空振りして
+                // 打ちかけの文章が消える（#3）
+                li.onclick = async () => {
+                    if (!(await ensureSavedOrConfirmLoseChanges('切り替え'))) return;
+                    loadEntry(entry);
+                };
                 list.appendChild(li);
             });
             if (sorted.length === 0) { list.innerHTML = '<li style="padding: var(--space-12); color: var(--color-text-secondary); text-align: center; font-size: 12px;">該当する日記なし</li>'; }
             renderTagFilter();
         }
 
+        // 検索用の平文。content は innerHTML なので、そのまま照合すると
+        // 「今日は<strong>楽</strong>しかった」が「楽しかった」に当たらず、
+        // 逆に href や noopener といったタグの中身が誤ヒットする。
+        // 打つたびに毎回はがすと重いので、本文が変わるまで使い回す。
+        const entryTextCache = new Map();
+        function entryPlainText(entry) {
+            const src = entry.content || '';
+            const hit = entryTextCache.get(entry.id);
+            if (hit && hit.src === src) return hit.text;
+            let text;
+            if (entry.contentFormat === 'plain') {
+                text = src;
+            } else {
+                // <template> はパース時にスクリプト実行・リソース読込をしない
+                const tpl = document.createElement('template');
+                tpl.innerHTML = src;
+                text = tpl.content.textContent || '';
+            }
+            text = text.replace(/\u200B/g, '');
+            // 削除やマージで消えた日記の分がたまり続けないよう、実データより増えたら作り直す
+            if (entryTextCache.size > entries.length + 32) entryTextCache.clear();
+            entryTextCache.set(entry.id, { src, text });
+            return text;
+        }
+
         function getFilteredEntries() {
             return entries.filter(entry => {
                 const q = currentFilters.searchText.toLowerCase();
-                const matchesSearch = q === '' || (entry.title || '').toLowerCase().includes(q) || (entry.content || '').toLowerCase().includes(q);
+                const matchesSearch = q === '' || (entry.title || '').toLowerCase().includes(q) || entryPlainText(entry).toLowerCase().includes(q);
                 const matchesTags = currentFilters.tags.length === 0 || currentFilters.tags.some(tag => (entry.tags || []).includes(tag));
                 return matchesSearch && matchesTags;
             });
@@ -901,6 +1029,9 @@ window.addEventListener('beforeunload', (e) => {
         function loadEntry(entry) {
             currentEntry = entry;
             selectedDate = entry.date;
+            // 一覧から過去の日記を開いただけで新規作成の既定日が過去へ動かないようにする。
+            // カレンダー経由のときは selectDate がこの直後に付け直す（B-6）
+            newEntryDefaultDate = null;
             renderEditor();
             if (currentView === 'calendar') renderCalendar();
             if (currentView === 'list') renderEntriesList();
@@ -917,6 +1048,16 @@ window.addEventListener('beforeunload', (e) => {
                 }
             } catch (e) {}
         }
+
+// クリップボードに画像が入っているか（スクリーンショットの貼り付け判定）
+function clipboardHasImage(cd) {
+  const isImg = o => !!(o && /^image\//i.test(o.type || ''));
+  try {
+    if (cd.items && Array.prototype.some.call(cd.items, it => it && it.kind === 'file' && isImg(it))) return true;
+    if (cd.files && Array.prototype.some.call(cd.files, isImg)) return true;
+  } catch (e) {}
+  return false;
+}
 
 function renderEditor() {
   const section = document.getElementById('editorSection');
@@ -1030,9 +1171,28 @@ function renderEditor() {
     const cd = e.clipboardData;
     if (!cd) return;
     const html = cd.getData('text/html');
-    if (!html) return; // プレーンテキストはブラウザ既定のままでよい
-    e.preventDefault();
-    insertHtmlAtCursor(sanitizeHtml(html));
+    const plain = cd.getData('text/plain');
+    // 画像は sanitize が img を落とすため、貼れても次の描画で消える。
+    // ここでブラウザ既定に任せると、text/html が無く text/plain だけある形
+    // （スクショ貼り付けでよくある）で <img src="data:…"> がすり抜け、容量だけ
+    // 食って次の描画で黙って消える。画像が混じっていたら必ず自前で処理する（#7）
+    const hasImage = clipboardHasImage(cd);
+    if (hasImage) {
+      e.preventDefault();
+      const pasted = html ? sanitizeHtml(html)
+                   : (plain ? escapeHtml(plain).replace(/\n/g, '<br>') : '');
+      if (pasted) insertHtmlAtCursor(pasted);
+      // HTML側に img が無いなら、その画像は元アプリが付けた見た目の複製（Excel等）で
+      // 何も失っていない。毎回警告すると誤報になるので黙って捨てる
+      if (!html || /<img\b/i.test(html)) {
+        showToast(pasted ? '画像は貼り付けできないため、文字だけ取り込みました' : '画像は日記に貼り付けできません', 'warning');
+      }
+      if (!pasted) return;
+    } else {
+      if (!html) return; // プレーンテキストはブラウザ既定のままでよい
+      e.preventDefault();
+      insertHtmlAtCursor(sanitizeHtml(html));
+    }
     currentEntry.content = editor.innerHTML.replace(/\u200B/g, '');
     currentEntry.contentFormat = 'html';
     updateCharCount();
@@ -1091,7 +1251,11 @@ function renderEditor() {
                 updatedAt: new Date().toISOString()
             };
             entries.push(newEntry);
-            await saveEntriesToStorage();
+            // 保存できていないのに「作成しました」と出すと、消えたことに気づけない
+            if (!(await saveEntriesToStorage())) {
+                entries = entries.filter(e => e !== newEntry);
+                return;
+            }
             closeModal('newEntryModal');
             loadEntry(newEntry);
             renderCalendar();
@@ -1130,14 +1294,26 @@ function renderEditor() {
         async function deleteEntry() {
             if (!currentEntry) return;
             if (!confirm('この日記を削除しますか？')) return;
-            entries = entries.filter(e => e.id !== currentEntry.id);
+            const removed = currentEntry;
+            entries = entries.filter(e => e.id !== removed.id);
             currentEntry = null;
             selectedDate = null;
-            await saveEntriesToStorage();
+            newEntryDefaultDate = null;
+            // 予約中の自動保存と未保存フラグを片付けないと、削除後もタブを閉じるたびに
+            // 離脱警告が出続ける
+            if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null; }
+            isDirty = false;
+            // 墓標を残す。残さないと、他端末に残っている同じ日記が次の同期で復活する（#2）
+            addTombstone(removed.id);
+            const ok = await saveEntriesToStorage();
             renderCalendar();
             renderEntriesList();
             renderEditor();
+            if (!ok) return; // saveEntriesToStorage がエラーを表示済み
             showToast('削除しました', 'success');
+            // 削除も保存と同じ経路で同期する。しないと削除が他端末へ伝わらない
+            if (autoSyncAEnabled && syncFolderHandleA) exportToSyncFolderA('json', true);
+            if (autoSyncDriveEnabled) drivePushAll(true);
         }
 
         function renderTags() {
@@ -1676,6 +1852,10 @@ function insertTablePrompt() {
         }
 
         async function exportToSyncFolderA(format, quiet = false) {
+            // ロック中／読み込み失敗中の entries=[] を書き出すと、同期フォルダ側の
+            // 日記が空の平文で潰れる（#1）
+            const blocked = syncBlockedReason();
+            if (blocked) { if (!quiet) showToast(blocked, 'error'); return; }
             if (!syncFolderHandleA) { if(!quiet) showToast('フォルダを選択してください', 'error'); return; }
             if ((await syncFolderHandleA.queryPermission({mode: 'readwrite'})) !== 'granted') {
                 if (!quiet) showToast('再接続ボタンを押してください', 'warning');
@@ -1711,7 +1891,7 @@ function insertTablePrompt() {
         }
 
         function buildExportPayload(format) {
-            const dateStr = new Date().toISOString().slice(0,19).replace(/[:T]/g, '-');
+            const dateStr = localStampStr();
             const entriesData = JSON.parse(JSON.stringify(entries));
             if (format === 'json') {
                 return {
@@ -1733,9 +1913,11 @@ function insertTablePrompt() {
         }
 
         // 同期/アップロード用のオブジェクト。暗号化が有効なら暗号化ブロブを返す。
-        async function buildSyncObject() {
+        // deleted（墓標）も一緒に運ぶ。これが無いと、他端末に残った日記が
+        // 同期のたびに復活する。
+        async function buildSyncObject(tombs) {
             const entriesData = JSON.parse(JSON.stringify(entries));
-            const plainObj = { exportDate: new Date().toISOString(), entries: entriesData };
+            const plainObj = { exportDate: new Date().toISOString(), entries: entriesData, deleted: tombs || loadTombstones() };
             if (encEnabled && cryptoKey && encMeta) {
                 return await ENC.encryptString(JSON.stringify(plainObj), cryptoKey, ENC.unb64(encMeta.salt), encMeta.iter);
             }
@@ -1768,7 +1950,7 @@ function insertTablePrompt() {
             try {
                 const obj = await buildSyncObject(); // 暗号化が有効なら暗号化ブロブ
                 text = JSON.stringify(obj, null, 2);
-                filename = `diary_backup_${new Date().toISOString().slice(0, 10)}.json`;
+                filename = `diary_backup_${localDateStr()}.json`;
             } catch (err) {
                 console.error(err);
                 showToast('バックアップの作成に失敗しました', 'error');
@@ -1808,7 +1990,16 @@ function insertTablePrompt() {
         function updateBackupReminder() {
             const banner = document.getElementById('backupReminder');
             if (!banner) return;
-            if (backupReminderDismissed || appLocked || entries.length === 0) { banner.style.display = 'none'; return; }
+            if (backupReminderDismissed || appLocked) { banner.style.display = 'none'; return; }
+            // 同期が止まっている理由は、日記が0件でも件数に関係なく出す。
+            // 設定パネルを開かない限り気づけない状態にしない（B-3/B-4）
+            if (driveSyncProblem) {
+                const t0 = document.getElementById('backupReminderText');
+                if (t0) t0.textContent = driveSyncProblem;
+                banner.style.display = 'flex';
+                return;
+            }
+            if (entries.length === 0) { banner.style.display = 'none'; return; }
             const last = localStorage.getItem('diaryLastBackup');
             const DAYS = 7;
             let msg = null;
@@ -1838,23 +2029,37 @@ function insertTablePrompt() {
                     if (!data || !data.entries || !Array.isArray(data.entries)) { showToast('不正なJSON形式です（entriesがありません）', 'error'); return; }
                     const existingIds = new Set(entries.map(e => e.id));
                     let imported = 0;
+                    const fileIds = new Set();
                     data.entries.forEach(entry => {
                         if (!entry || typeof entry !== 'object' || !entry.id) return;
+                        fileIds.add(String(entry.id));
                         if (!existingIds.has(entry.id)) {
                             entries.push(normalizeImportedEntry(entry));
                             existingIds.add(entry.id);
                             imported++;
                         }
                     });
+                    // 墓標の始末（B-1）。ここを何もしないと、削除→バックアップから復元、
+                    // の直後に走る同期のマージで、復元したばかりの日記が黙って消える。
+                    //  1) ファイルに入っていた墓標は取り込む（他端末での削除を失わないため）
+                    //  2) ただし、いま復元した日記の墓標は取り消す。利用者が明示的に
+                    //     「このファイルを戻す」と言った以上、そちらを優先する
+                    const tombsAfterImport = mergeTombs(
+                        loadTombstones(),
+                        Array.isArray(data.deleted) ? data.deleted : []
+                    ).filter(t => !fileIds.has(String(t.id)));
+                    saveTombstones(tombsAfterImport);
                     const d = dedupeEntriesByDate(entries);
                     entries = d.entries;
                     if (currentEntry) {
                         currentEntry = entries.find(x => x.id === currentEntry.id) || entries.find(x => x.date === currentEntry.date) || null;
                     }
-                    await saveEntriesToStorage();
+                    const ok = await saveEntriesToStorage();
                     renderCalendar();
                     renderEntriesList();
                     renderEditor();
+                    // 保存できていなければ「完了」と言わない（再読込で消えるため）
+                    if (!ok) return;
                     showToast(`インポート完了: ${imported}件` + (d.merged ? `（同じ日付${d.merged}件を統合）` : ''), 'success');
                     if (closeModalId) closeModal(closeModalId);
                 } catch (err) {
@@ -1868,6 +2073,18 @@ function insertTablePrompt() {
         function formatDate(dateStr) {
             const date = new Date(dateStr + 'T00:00:00');
             return date.toLocaleDateString('ja-JP', { year: 'numeric', month: 'short', day: 'numeric' });
+        }
+
+        // 日付は必ず端末のローカル時刻で作る。toISOString はUTCなので、JSTの
+        // 0〜9時だと「前日」になり、新規作成が昨日の日記を開いてしまう（#4）
+        function localDateStr(d = new Date()) {
+            const p = n => String(n).padStart(2, '0');
+            return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+        }
+        // ファイル名用のローカル時刻スタンプ（y-m-d-h-m-s）
+        function localStampStr(d = new Date()) {
+            const p = n => String(n).padStart(2, '0');
+            return `${localDateStr(d)}-${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
         }
 
         function escapeHtml(text) {
@@ -1923,8 +2140,9 @@ function insertTablePrompt() {
         }
 
         function openNewEntryModal() {
-            const today = new Date().toISOString().split('T')[0];
-            document.getElementById('entryDate').value = today;
+            // カレンダーのセルを選んだ直後だけ、その日を既定にする（選んだ日に書きたいはず）。
+            // 一覧から日記を開いた場合は今日に戻す（B-6）
+            document.getElementById('entryDate').value = newEntryDefaultDate || localDateStr();
             document.getElementById('entryTitle').value = '';
             openModal('newEntryModal');
         }
@@ -2013,7 +2231,11 @@ function insertTablePrompt() {
                 renderCalendar();
                 renderEntriesList();
                 renderEditor();
+                updateBackupReminder(); // ロック中は隠していたので、解除時に出し直す
                 showToast('ロックを解除しました', 'success');
+                // 起動時の自動取り込みはロック中でスキップされている。鍵が揃った
+                // いまが最初の取り込み機会（トークンが無ければ静かに諦める）
+                if (autoSyncDriveEnabled) drivePullAndMerge(true).catch(() => {});
             } catch (err) {
                 console.error(err);
                 showToast('パスフレーズが違います', 'error');
@@ -2055,8 +2277,16 @@ function insertTablePrompt() {
             encEnabled = false; cryptoKey = null; encMeta = null;
             const ok = await saveEntriesToStorage();
             if (!ok) { encEnabled = true; cryptoKey = prevKey; encMeta = prevMeta; showToast('解除に失敗しました', 'error'); return; }
+            // Drive上は暗号文のまま残るので、そのままだと以後の自動同期が毎回
+            // 復号できずに止まる。解除した鍵を覚えておき、Drive側も平文で作り直す（B-3）
+            driveRemoteKey = prevKey;
             updateEncUI();
             showToast('暗号化を解除しました（平文保存）', 'success');
+            if (autoSyncDriveEnabled) {
+                driveRebuildRemote(true).then(okDrive => {
+                    if (!okDrive) setDriveSyncProblem('Driveの日記が暗号化されたままです。設定の「Driveを作り直す」で揃えてください。');
+                }).catch(() => {});
+            }
         }
 
         function showToast(message, type = 'success') {
@@ -2190,29 +2420,80 @@ async function driveFindDiaryFileId() {
   return (data.files && data.files[0]) ? data.files[0].id : null;
 }
 
+async function driveDownloadDiaryById(fileId) {
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+  const txt = await res.text();
+  try {
+    return JSON.parse(txt);
+  } catch (e) {
+    // 通信は成功したのに中身がJSONでない＝ファイルが壊れている。
+    // 「読めないから中止」を続けるとバックアップが二度と更新されないので、
+    // 呼び出し側が上書きで直せるよう、通信失敗とは別のエラーにする（B-4）。
+    // ここを一緒くたにすると、単なるオフラインでもDriveを潰してしまう。
+    throw new Error('REMOTE_CORRUPT');
+  }
+}
+
 async function driveDownloadDiary() {
   const fileId = await driveFindDiaryFileId();
   if (!fileId) return null;
-  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
-  const txt = await res.text();
-  return JSON.parse(txt);
+  return await driveDownloadDiaryById(fileId);
 }
 
-function mergeEntriesByUpdatedAt(localEntries, incomingEntries) {
+/* ── 墓標（tombstone）───────────────────────────────────────
+   削除は「消えたこと」を運ばないと相手には伝わらず、相手に残っている
+   日記が次のマージで復活し続ける。規則は sync.js の mergeById /
+   mergeTombs に合わせてある（90日で掃除、削除より後の編集は生き残る）。 */
+const TOMB_KEY = 'diaryDeleted';
+const TOMB_TTL_MS = 90 * 24 * 3600 * 1000;
+
+function loadTombstones() {
+  try {
+    const a = JSON.parse(localStorage.getItem(TOMB_KEY) || '[]');
+    return Array.isArray(a) ? a.filter(t => t && t.id) : [];
+  } catch (e) { return []; }
+}
+function saveTombstones(list) {
+  try { localStorage.setItem(TOMB_KEY, JSON.stringify(list || [])); } catch (e) {}
+}
+function mergeTombs(a, b) {
+  const cut = Date.now() - TOMB_TTL_MS, m = {};
+  [].concat(a || [], b || []).forEach(t => {
+    if (!t || !t.id) return;
+    const at = t.at || 0;
+    if (!(t.id in m) || m[t.id] < at) m[t.id] = at;
+  });
+  const out = [];
+  for (const id in m) if (m[id] > cut) out.push({ id, at: m[id] });
+  return out;
+}
+function addTombstone(id) {
+  if (!id) return;
+  saveTombstones(mergeTombs(loadTombstones(), [{ id, at: Date.now() }]));
+}
+
+function entryTime(e) {
+  return (e && new Date(e.updatedAt || e.createdAt || 0).getTime()) || 0;
+}
+
+function mergeEntriesByUpdatedAt(localEntries, incomingEntries, tombs) {
+  const tombAt = {};
+  (tombs || []).forEach(t => { if (t && t.id) tombAt[t.id] = Math.max(tombAt[t.id] || 0, t.at || 0); });
+  // 墓標より後に編集されたものだけ生き残す（sync.js の mergeById と同じ規則）
+  const alive = e => { const at = tombAt[e && e.id]; return !(at && entryTime(e) <= at); };
+
   const map = new Map();
-  localEntries.forEach(e => map.set(e.id, e));
+  (localEntries || []).filter(alive).forEach(e => map.set(e.id, e));
   let added = 0, updated = 0;
 
-  incomingEntries.forEach(e => {
+  (incomingEntries || []).filter(alive).forEach(e => {
     const cur = map.get(e.id);
     if (!cur) {
       map.set(e.id, e);
       added++;
       return;
     }
-    const t1 = new Date(cur.updatedAt || cur.createdAt || 0).getTime();
-    const t2 = new Date(e.updatedAt || e.createdAt || 0).getTime();
-    if (t2 > t1) {
+    if (entryTime(e) > entryTime(cur)) {
       map.set(e.id, e);
       updated++;
     }
@@ -2261,45 +2542,129 @@ function dedupeEntriesByDate(list) {
   return { entries: out, merged: mergedCount };
 }
 
-async function drivePullAndMerge() {
+// Drive上の中身を読み解く。暗号化されていて今の鍵で開けないときは例外にする。
+// 開けないものを平文で上書きしたら、他端末の日記がまとめて消えるため。
+// （パスフレーズは聞かない。自動同期の途中で入力を求めても答えられない）
+async function decodeRemoteSyncPayload(raw) {
+  if (!raw) return null;
+  if (!isEncBlob(raw)) return raw;
+  // 手元の鍵に加えて、手動取り込みで通った鍵も試す。暗号化を解除したあとは
+  // cryptoKey が null になるが、Drive上は暗号文のまま残っているため（B-3）
+  for (const k of [cryptoKey, driveRemoteKey]) {
+    if (!k) continue;
+    try { return JSON.parse(await ENC.decryptToString(raw, k)); } catch (e) {}
+  }
+  throw new Error('REMOTE_LOCKED');
+}
+
+// 静かな自動同期でも、データを失いかねない失敗は知らせる（黙って壊れない）。
+// ただし打つたびに出ると邪魔なので、同じ理由は30分に1回まで。
+// 「1回だけ」にすると、何日も同期が止まっているのに気づけない（B-3）
+const driveWarnedAt = {};
+const DRIVE_WARN_INTERVAL_MS = 30 * 60 * 1000;
+function driveWarn(key, msg, quiet) {
+  if (quiet) {
+    const last = driveWarnedAt[key] || 0;
+    if (Date.now() - last < DRIVE_WARN_INTERVAL_MS) return;
+    driveWarnedAt[key] = Date.now();
+  }
+  showToast(msg, 'error');
+}
+
+// 自動同期が止まっている理由。設定パネルを開かなくても気づけるよう、
+// バックアップ督促バナーに出す（黙って止まったままにしない）
+let driveSyncProblem = null;
+function setDriveSyncProblem(msg) {
+  if (driveSyncProblem === msg) return;
+  driveSyncProblem = msg;
+  try { updateBackupReminder(); } catch (e) {}
+}
+
+async function drivePullAndMerge(quiet = false) {
   try {
-    await driveEnsureToken(true);
+    if (quiet && !driveAccessToken && !sharedTokenGet()) return; // 静かな取り込みは認証を求めない
+    const blocked = syncBlockedReason();
+    if (blocked) { if (!quiet) showToast(blocked, 'error'); return; }
+    await driveEnsureToken(!quiet);
+    // 取り込みは currentEntry ごと差し替えるので、先に編集中の内容を確定させる（#3）
+    if (!(await flushPendingEditsForSync())) {
+      if (quiet) return;
+      if (!confirm('未保存の変更を保存できませんでした。このまま読み込むと変更が失われます。続行しますか？')) return;
+    }
     const raw = await driveDownloadDiary();
     if (!raw) {
-      showToast('Driveに diary.json がありません', 'warning');
+      if (!quiet) showToast('Driveに diary.json がありません', 'warning');
       return;
     }
-    let data = raw;
-    if (isEncBlob(raw)) {
-      const json = await decryptIncomingBlob(raw); // 必要ならパスフレーズを要求
-      data = JSON.parse(json);
+    let data;
+    if (!quiet && isEncBlob(raw)) {
+      data = JSON.parse(await decryptIncomingBlob(raw)); // 手動時のみパスフレーズを要求
+    } else {
+      data = await decodeRemoteSyncPayload(raw);
     }
     if (!data || !Array.isArray(data.entries)) {
-      showToast('Driveのデータ形式が不正です', 'warning');
+      if (!quiet) showToast('Driveのデータ形式が不正です', 'warning');
       return;
     }
     // Drive由来データも信頼せずサニタイズ・正規化してからマージ（#5）
     const incoming = data.entries.map(normalizeImportedEntry);
-    const r = mergeEntriesByUpdatedAt(entries, incoming);
+    const tombs = mergeTombs(loadTombstones(), Array.isArray(data.deleted) ? data.deleted : []);
+    saveTombstones(tombs);
+    const r = mergeEntriesByUpdatedAt(entries, incoming, tombs);
     const d = dedupeEntriesByDate(r.merged);
     entries = d.entries;
-    // マージでオブジェクトが差し替わっている可能性があるため、編集中エントリを引き直す
-    if (currentEntry) {
-      currentEntry = entries.find(x => x.id === currentEntry.id) || entries.find(x => x.date === currentEntry.date) || null;
-    }
+    // マージでオブジェクトが差し替わっている可能性があるため、編集中エントリを引き直す。
+    // 消えていたらここでエディタを閉じて知らせる（黙って入力を捨てない）
+    const lostCurrent = rebindCurrentEntryAfterMerge();
     await saveEntriesToStorage();
     renderCalendar();
     renderEntriesList();
-    renderEditor();
-    showToast(`Drive: 追加${r.added} 更新${r.updated}` + (d.merged ? ` 同日統合${d.merged}` : ''), 'success');
+    // 通信の往復中に打ち始めていたら本文は描き直さない（打った文字が消えるため）。
+    // ただし開いていた日記自体が消えた場合は rebind 側で描き直し済み
+    if (!lostCurrent && !isDirty) renderEditor();
+    setDriveSyncProblem(null);
+    if (!quiet || r.added || r.updated) {
+      showToast(`Drive: 追加${r.added} 更新${r.updated}` + (d.merged ? ` 同日統合${d.merged}` : ''), 'success');
+    }
   } catch (err) {
     console.error(err);
+    const m = String((err && err.message) || err);
+    if (/REMOTE_CORRUPT/.test(m)) {
+      driveWarn('remoteCorrupt', 'Drive上の日記が壊れています。「Driveを作り直す」で復旧できます', quiet);
+      setDriveSyncProblem('Drive上の日記が壊れています。設定の「Driveを作り直す」で復旧できます。');
+      return;
+    }
+    if (/REMOTE_LOCKED/.test(m)) {
+      driveWarn('remoteLocked', 'Drive上の日記を復号できませんでした', quiet);
+      setDriveSyncProblem('Drive上の日記を復号できないため同期が止まっています。設定から手動で読み込むか、Driveを作り直してください。');
+      return;
+    }
+    if (quiet) return;
     showToast(err && err.message === 'cancelled' ? 'ロック解除をキャンセルしました' : 'Drive 読み込み失敗', err && err.message === 'cancelled' ? 'warning' : 'error');
   }
 }
 
-async function driveUploadDiaryObject(obj) {
-  const fileId = await driveFindDiaryFileId();
+// Drive側に中身があるのに0件を書きに来たら、黙って潰さず失敗させる。
+// バックアップは「静かに空になる」のが一番こわい。
+function remoteHasContent(remote) {
+  if (!remote) return false;
+  if (isEncBlob(remote)) return true; // 中身を確認できない＝残っているものとして扱う
+  return Array.isArray(remote.entries) && remote.entries.length > 0;
+}
+
+// hint: { count, fileId, remote, allowEmpty } いずれも省略可（呼び出し側が既に知っていれば渡す）
+// allowEmpty: 0件になった理由が説明できている（墓標で全部消した／利用者が明示的に作り直した）
+async function driveUploadDiaryObject(obj, hint) {
+  hint = hint || {};
+  const fileId = (hint.fileId !== undefined) ? hint.fileId : await driveFindDiaryFileId();
+  const count = (typeof hint.count === 'number')
+    ? hint.count
+    : (obj && Array.isArray(obj.entries) ? obj.entries.length : -1);
+  if (fileId && count === 0 && !hint.allowEmpty) {
+    let remote = hint.remote;
+    if (remote === undefined) { try { remote = await driveDownloadDiaryById(fileId); } catch (e) { remote = null; } }
+    if (remoteHasContent(remote)) throw new Error('EMPTY_OVERWRITE');
+  }
 
   const metadata = fileId
     ? { name: DRIVEDIARYFILENAME }
@@ -2326,21 +2691,158 @@ async function driveUploadDiaryObject(obj) {
   return await res.json();
 }
 
+/* Drive同期は「読んで→混ぜて→書く」。全件上書きだと、他端末で書いた日記が
+   こちらの1文字目の自動保存で消える（#2）。
+   同時に走らせないのは、driveFindDiaryFileId が両方とも null を返して
+   appDataFolder に diary.json が2つできてしまうため。 */
+let drivePushBusy = false;
+let drivePushPending = false;
+
 async function drivePushAll(quiet = false) {
+  if (drivePushBusy) {
+    // 走行中の要求は捨てず、終わってからもう一度だけ流す
+    drivePushPending = true;
+    if (!quiet) showToast('同期中です。完了後に反映します', 'warning');
+    return;
+  }
+  drivePushBusy = true;
+  try {
+    await drivePushAllOnce(quiet);
+  } finally {
+    drivePushBusy = false;
+    if (drivePushPending) { drivePushPending = false; drivePushAll(true); }
+  }
+}
+
+async function drivePushAllOnce(quiet) {
   try {
     if (quiet && !driveAccessToken && !sharedTokenGet()) {
       // 自動同期はユーザー操作なしで認証ポップアップを開けない（ブロックされる）ため、
       // 有効なトークンが無いときは静かにスキップする。次回の手動操作で再認証される。
       return;
     }
+    // ロック中／読み込み失敗中の entries=[] を書くと、Drive上の日記が
+    // 空の平文で消えたうえに markBackupDone で督促まで隠れる（#1）
+    const blocked = syncBlockedReason();
+    if (blocked) { if (!quiet) showToast(blocked, 'error'); return; }
     await driveEnsureToken(!quiet);
-    const obj = await buildSyncObject(); // 暗号化が有効なら暗号化ブロブ
-    await driveUploadDiaryObject(obj);
+
+    // マージの勝敗は updatedAt だけで決まるので、送る前に編集中の分を確定させる。
+    // 保存できないまま送ると、ローカルとDriveが食い違ったままになる（B-7）
+    if (!(await flushPendingEditsForSync())) {
+      if (!quiet) showToast('未保存の変更を保存できないため、Driveへの保存を中止しました', 'error');
+      return;
+    }
+
+    // 1) いまDriveにあるものを読む
+    const fileId = await driveFindDiaryFileId();
+    let remote = null, remoteEntries = [], remoteTombs = [], remoteBroken = false;
+    if (fileId) {
+      let rawRemote = null;
+      try {
+        rawRemote = await driveDownloadDiaryById(fileId);
+      } catch (e) {
+        // 中身が壊れて読めないだけなら、こちらの内容で作り直す。読めないものに
+        // 合わせて中止し続けると、バックアップが二度と更新されない（B-4）。
+        // 通信失敗はここへ来ない（別のエラー）ので、オフラインでDriveを潰すことはない
+        if (!/REMOTE_CORRUPT/.test(String((e && e.message) || e))) throw e;
+        console.error('Drive上の diary.json を読めませんでした:', e);
+        remoteBroken = true;
+      }
+      if (rawRemote) {
+        remote = await decodeRemoteSyncPayload(rawRemote); // 開けなければ例外
+        if (remote && Array.isArray(remote.entries)) remoteEntries = remote.entries.map(normalizeImportedEntry);
+        if (remote && Array.isArray(remote.deleted)) remoteTombs = remote.deleted;
+      }
+    }
+    // 通信の往復中に打った分も確定させてからマージする
+    if (!(await flushPendingEditsForSync())) {
+      if (!quiet) showToast('未保存の変更を保存できないため、Driveへの保存を中止しました', 'error');
+      return;
+    }
+
+    // 2) マージ（新しい方が勝つ＋墓標で削除を反映）
+    const tombs = mergeTombs(loadTombstones(), remoteTombs);
+    saveTombstones(tombs);
+    const before = JSON.stringify(entries);
+    const r = mergeEntriesByUpdatedAt(entries, remoteEntries, tombs);
+    const d = dedupeEntriesByDate(r.merged);
+    entries = d.entries;
+    // 開いていた日記がマージで消えたら、その場でエディタを閉じて知らせる（B-2）
+    const lostCurrent = rebindCurrentEntryAfterMerge();
+    const changed = JSON.stringify(entries) !== before;
+    // 3) マージ結果をまずローカルへ。ここで保存できないならDriveも触らない
+    if (changed && !(await saveEntriesToStorage())) return;
+
+    // 0件になったのが「墓標で全部消した」結果なら、それは正当な削除なので通す。
+    // ここを止めると、全部消したときに削除がDriveへ永久に伝わらない（B-5）
+    const tombIds = new Set(tombs.map(t => String(t.id)));
+    const emptyByTombstone = entries.length === 0
+      && remoteEntries.every(e => tombIds.has(String(e.id)));
+
+    // 4) 同じものをDriveへ書き戻す
+    const obj = await buildSyncObject(tombs); // 暗号化が有効なら暗号化ブロブ
+    await driveUploadDiaryObject(obj, {
+      count: entries.length, fileId, remote,
+      allowEmpty: emptyByTombstone || remoteBroken
+    });
     markBackupDone();
+    setDriveSyncProblem(null);
+    if (remoteBroken) {
+      driveWarn('remoteCorrupt', 'Drive上の日記が壊れていたため、この端末の内容で作り直しました', quiet);
+    }
+    if (changed) {
+      renderCalendar();
+      renderEntriesList();
+      if (!lostCurrent && !isDirty) renderEditor(); // 打っている最中は本文を描き直さない
+    }
     if (!quiet) showToast('Driveへ保存しました', 'success');
   } catch (err) {
     console.error(err);
-    if (!quiet) showToast('Drive 保存失敗', 'error');
+    const m = String((err && err.message) || err);
+    if (/REMOTE_LOCKED/.test(m)) {
+      driveWarn('remoteLocked', 'Drive上の日記を復号できませんでした。上書きを中止しました', quiet);
+      setDriveSyncProblem('Drive上の日記を復号できないため同期が止まっています。設定から手動で読み込むか、Driveを作り直してください。');
+    } else if (/EMPTY_OVERWRITE/.test(m)) {
+      driveWarn('emptyOverwrite', 'Driveの日記を空で上書きしそうになったため中止しました', quiet);
+      setDriveSyncProblem('Driveへの保存が中止されています（空で上書きしそうになりました）。');
+    } else if (!quiet) {
+      showToast('Drive 保存失敗', 'error');
+    }
+  }
+}
+
+/* Drive上のファイルが「今の設定では開けない／壊れている」ときの逃げ道。
+   読めないものに合わせて止まり続けるより、いま手元にある内容で作り直せるようにする。
+   暗号化を解除したあと（Drive側は暗号文のまま）もここで復旧できる（B-3）。 */
+async function driveRebuildRemote(quiet = false) {
+  const blocked = syncBlockedReason();
+  if (blocked) { if (!quiet) showToast(blocked, 'error'); return false; }
+  if (!quiet) {
+    const warn = entries.length === 0
+      ? 'いまこの端末の日記は0件です。Drive上の日記も0件で作り直します。よろしいですか？'
+      : `Drive上の日記を、この端末の内容（${entries.length}件）で作り直します。他の端末にしか無い日記は失われます。よろしいですか？`;
+    if (!confirm(warn)) return false;
+  }
+  try {
+    await driveEnsureToken(!quiet);
+    if (!(await flushPendingEditsForSync())) {
+      if (!quiet) showToast('未保存の変更を保存できないため中止しました', 'error');
+      return false;
+    }
+    const fileId = await driveFindDiaryFileId();
+    const tombs = loadTombstones();
+    const obj = await buildSyncObject(tombs);
+    // 利用者が明示的に「作り直す」と言っているので、空でも止めない
+    await driveUploadDiaryObject(obj, { count: entries.length, fileId, allowEmpty: true });
+    markBackupDone();
+    setDriveSyncProblem(null);
+    if (!quiet) showToast('Driveを作り直しました', 'success');
+    return true;
+  } catch (err) {
+    console.error(err);
+    if (!quiet) showToast('Driveの作り直しに失敗しました', 'error');
+    return false;
   }
 }
 
@@ -2504,6 +3006,8 @@ function toggleAutoSyncDrive() {
     try{ parent.postMessage({nkDiaryInfo:{enc:encOn()}},'*'); }catch(e){}
   }
   window.addEventListener('message',function(e){
+    // 命令を受け付けるのはシェル（同一オリジン）からだけにする
+    if(e.origin !== location.origin) return;
     var d=e.data; if(!d||!d.nkSync) return;
     if(d.nkSync==='status'){ report(); reportEnc(); return; }
     if(d.nkSync==='now'){ syncNow().then(function(){setTimeout(report,300);}).catch(report); return; }

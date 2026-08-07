@@ -361,6 +361,13 @@ function tombstonesMerge(remote) {
   tombstonesSet(out);
   return out;
 }
+// リンクは sanitizeMemoHtml を通らないので、ここで自前に検証する。
+// javascript: が入ると、リンクを押した時点でこのオリジンで任意のJSが動き、
+// localStorage の Google トークンやAPIキーまで読めてしまう。
+function safeLink(u) {
+  if (typeof u !== "string") return false;
+  return /^https?:\/\//i.test(u.trim());
+}
 const itemTime = o => (o && (o.updatedAt || o.createdAt)) || 0;
 // 同期できた項目に印を付ける。次回以降、Driveから消えていれば
 // 他端末での削除だと判断できる（時計に依存しない）
@@ -764,9 +771,14 @@ async function hydrateBodyImages(rootEl) {
   }
   return made;
 }
+// まだメモに保存されていない添付（ファイルを選んだ直後〜保存ボタンを押すまで）。
+// この間に自動同期のマージが走ると gcAttachments が「どのメモからも参照されて
+// いない」と判断して実体ごと消してしまい、保存しても画像が出なくなる。
+// このタブが開いている間は消さない（本当に不要なら次回起動時に掃除される）。
+const pendingFileIds = new Set();
 async function gcAttachments(memos) {
   try {
-    const used = new Set();
+    const used = new Set(pendingFileIds);
     memos.forEach(m => memoFileIds(m).forEach(id => used.add(id)));
     const keys = await idbKeys();
     for (const k of keys) if (!used.has(k)) await idbDelete(k);
@@ -885,33 +897,72 @@ function gdGetToken(clientId, interactive) {
       });
       _gdCid = clientId;
     }
+    // ポップアップを閉じられた／ブロックされたとき、GIS は callback ではなく
+    // error_callback を呼ぶ。両方を用意しておかないと Promise が永久に未解決になり、
+    // 「同期中…」の表示のままリロードするまで固まる。時間切れの保険も置く。
+    let settled = false;
+    const to = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("認証がタイムアウトしました"));
+    }, 90000);
+    const seal = fn => arg => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(to);
+      fn(arg);
+    };
+    const ok = seal(resolve),
+      ng = seal(reject);
     _gdClient.callback = resp => {
       if (resp && resp.access_token) {
         _gdToken = resp.access_token;
         _gdExp = Date.now() + (resp.expires_in || 3600) * 1000;
         sharedTokenSet(resp.access_token, resp.expires_in);
-        resolve(_gdToken);
-      } else reject(new Error("認証に失敗しました"));
+        ok(_gdToken);
+      } else ng(new Error("認証に失敗しました"));
     };
+    _gdClient.error_callback = () => ng(new Error("認証がキャンセルされました"));
     try {
       _gdClient.requestAccessToken({
         prompt: interactive ? "consent" : ""
       });
     } catch (e) {
-      reject(e);
+      ng(e);
     }
   });
 }
+/** Drive への通信をまとめて包む。401（期限切れ・権限取り消し）のときは
+ *  共有トークンを捨てる。捨てないと、時計上は期限内なので次も同じ死んだ
+ *  トークンを返し続け、最大1時間「期限が切れました」が出たままになる。
+ *  （カレンダー側と sync.js には同じ回復処理が入っている） */
+async function gdFetch(url, opt) {
+  const r = await fetch(url, opt);
+  if (r.status === 401) {
+    sharedTokenClear();
+    _gdToken = null;
+    _gdExp = 0;
+    throw new Error("401 Googleログインの期限が切れました");
+  }
+  return r;
+}
 async function gdFindFile(token) {
   const q = encodeURIComponent(`name='${GD_FILE_NAME}' and trashed=false`);
-  const r = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,modifiedTime)&pageSize=10`, {
+  // 並び順を指定しないと、同名ファイルが複数あったときにどれが返るか不定になる。
+  // 2台が同時に初回セットアップすると kininari-data.json が2つでき、
+  // 端末ごとに別のファイルへ固定されて「同期成功」と出しながら永久にすれ違う。
+  // 作成が古いものを正とし、複数あるときは呼び出し側へ知らせる。
+  const r = await gdFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,modifiedTime,createdTime)&orderBy=createdTime&pageSize=10`, {
     headers: {
       Authorization: "Bearer " + token
     }
   });
   if (!r.ok) throw new Error("Drive 検索に失敗 (" + r.status + ")");
   const j = await r.json();
-  return j.files && j.files[0] ? j.files[0] : null;
+  const files = j.files || [];
+  if (!files[0]) return null;
+  if (files.length > 1) files[0].duplicates = files.length;
+  return files[0];
 }
 async function gdCreate(token, content) {
   const boundary = "kininari" + Date.now();
@@ -920,7 +971,7 @@ async function gdCreate(token, content) {
     mimeType: "application/json"
   };
   const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
-  const r = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime", {
+  const r = await gdFetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime", {
     method: "POST",
     headers: {
       Authorization: "Bearer " + token,
@@ -932,7 +983,7 @@ async function gdCreate(token, content) {
   return r.json();
 }
 async function gdUpdate(token, id, content) {
-  const r = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media&fields=id,modifiedTime`, {
+  const r = await gdFetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media&fields=id,modifiedTime`, {
     method: "PATCH",
     headers: {
       Authorization: "Bearer " + token,
@@ -944,7 +995,7 @@ async function gdUpdate(token, id, content) {
   return r.json();
 }
 async function gdDownload(token, id) {
-  const r = await fetch(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`, {
+  const r = await gdFetch(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`, {
     headers: {
       Authorization: "Bearer " + token
     }
@@ -953,7 +1004,7 @@ async function gdDownload(token, id) {
   return r.text();
 }
 async function gdGetMeta(token, id) {
-  const r = await fetch(`https://www.googleapis.com/drive/v3/files/${id}?fields=id,modifiedTime`, {
+  const r = await gdFetch(`https://www.googleapis.com/drive/v3/files/${id}?fields=id,modifiedTime`, {
     headers: {
       Authorization: "Bearer " + token
     }
@@ -1193,13 +1244,18 @@ async function ingestFiles(fileList) {
         type: file.type || "",
         size: file.size
       });
+      pendingFileIds.add(id);
       out.push({
         id,
         name,
         type: file.type || "",
         size: file.size
       });
-    } catch (err) {}
+    } catch (err) {
+      // 容量超過やプライベートモードで書き込めないことがある。黙って
+      // 「何も増えない」だけだと原因が分からないので、記録して呼び出し側に返す。
+      out.failed = (out.failed || 0) + 1;
+    }
   }
   return out;
 }
@@ -2040,7 +2096,7 @@ function MemoCard({
     onClick: () => onTagClick(tg)
   }, "#", tg))), memo.links && memo.links.length > 0 && React.createElement("div", {
     className: "link-list"
-  }, memo.links.map((u, i) => React.createElement("a", {
+  }, memo.links.filter(safeLink).map((u, i) => React.createElement("a", {
     className: "linkchip",
     key: i,
     href: u,
@@ -2106,7 +2162,7 @@ function MemoCard({
           title: memo.title || "(無題)",
           note: htmlToText(memo.body || "").slice(0, 500),
           date: memo.date || "", time: memo.time || ""
-        } }, "*");
+        } }, window.location.origin);
       } catch (e) {}
     }
   }, "\u30BF\u30B9\u30AF\u306B\u3059\u308B") : null, React.createElement("button", {
@@ -3159,6 +3215,8 @@ function App() {
     } catch (e) {}
   };
   const skipPush = useRef(false);
+  // 古いレンダーの関数から呼ばれても最新の gdPush が走るようにしておく
+  const gdPushRef = useRef(null);
   const pushTimer = useRef(null);
   const [notifyOn, setNotifyOn] = useState(() => {
     try {
@@ -3209,9 +3267,17 @@ function App() {
     // 旧版が本文に埋めた data: URL の画像を IndexedDB へ逃がす（初回だけ）
     migrateBodyImages(m).then(res => {
       if (res && res.changed) {
+        // この then が解決するころには、クリップ取り込みでメモが増えていることが
+        // ある。読み込み時のスナップショット（res.memos）でそのまま保存すると、
+        // 保存したばかりのクリップを消してしまう。いまの内容に本文だけ移す。
+        const live = readLive();
+        const bodyById = new Map(res.memos.map(x => [x.id, x.body]));
+        const base = live.ok ? live.memos : res.memos;
+        const nextM = base.map(x => bodyById.has(x.id) ? { ...x, body: bodyById.get(x.id) } : x);
+        const nextF = live.ok ? live.folders : f;
         skipPush.current = false;
-        persist(res.memos, f);
-        gcAttachments(res.memos);
+        persist(nextM, nextF);
+        gcAttachments(nextM);
         setToast({
           title: "本文の画像を整理しました",
           body: `${res.moved}件の画像を端末内データベースへ移動し、保存容量に余裕を作りました。`
@@ -3234,14 +3300,47 @@ function App() {
         memos: nextMemos,
         notebooks: nextFolders
       }));
+      return true;
     } catch (e) {
       setToast({
         title: "保存できませんでした",
         body: "保存容量の上限に達した可能性があります。本文の画像を減らすか小さくしてください。"
       });
+      return false;
     }
   };
   const saveMemos = next => persist(next, folders);
+  /** いま保存されている内容を読む。
+   *  Driveへ送る中身は React の state ではなく必ずここから取る。state は
+   *  レンダーごとのスナップショットなので、古いレンダーの関数（シェルからの
+   *  命令を受けるリスナーは依存配列の都合で古いものを掴み続ける）から呼ばれると
+   *  「まだ空だったころの配列」を送ってDriveを空で上書きしてしまう。 */
+  const readLive = () => {
+    try {
+      const v = localStorage.getItem(STORAGE_KEY);
+      const p = v ? JSON.parse(v) : null;
+      if (p && Array.isArray(p.memos)) return {
+        ok: true,
+        memos: p.memos.map(normalizeMemo),
+        folders: (p.notebooks || []).map(normalizeFolder)
+      };
+    } catch (e) {}
+    return { ok: false, memos: [], folders: [] };
+  };
+  /** アップロードが成功したあとに呼ぶ。送信できた項目にだけ「同期済み」の印を付ける。
+   *  印は「Driveに載った」という意味なので、送信前に付けてはいけない。送信前に
+   *  付けると、送信に失敗したときに「同期済みなのにDriveに無い＝他端末で削除された」
+   *  と誤判定して、まだ一度も送っていないメモを次の同期で消してしまう。
+   *  付ける相手はその時点の最新の内容なので、送信中に書いたメモも失われない。 */
+  const commitSynced = (upMemos, upFolders, keepPush) => {
+    const mIds = new Set((upMemos || []).map(o => o && o.id));
+    const fIds = new Set((upFolders || []).map(o => o && o.id));
+    const live = readLive();
+    if (!live.ok) return;
+    const mark = (list, ids) => (list || []).map(o => o && ids.has(o.id) && !o.synced ? { ...o, synced: 1 } : o);
+    if (!keepPush) skipPush.current = true;
+    persist(mark(live.memos, mIds), mark(live.folders, fIds), { stamp: false });
+  };
   useEffect(() => {
     const h = window.location.hash || "";
     const m = h.match(/(?:#|&)knadd=([^&]+)/);
@@ -3291,7 +3390,7 @@ function App() {
           body,
           category: cats.includes(clip.c) ? clip.c : "調べる",
           tags: [],
-          links: clip.u ? [clip.u] : [],
+          links: safeLink(clip.u) ? [clip.u] : [],
           notebookId: nbId,
           date: null,
           time: null,
@@ -3301,14 +3400,31 @@ function App() {
           pinned: false,
           createdAt: Date.now()
         };
-        persist([normalizeMemo(memo), ...curMemos], curFolders);
-        // 保存が終わったことを Chrome拡張に知らせる。旧版は拡張が「5秒待って閉じる」
-        // 固定タイマーだったため、回線が遅いとクリップを取りこぼすことがあった。
-        try {
-          window.__kininariClipSaved = true;
-        } catch (e) {}
-        // クリップ追加は自動同期の対象にする（直前のロードでskipPushが立っていても解除）
-        skipPush.current = false;
+        const saved = persist([normalizeMemo(memo), ...curMemos], curFolders);
+        // 保存が終わったことを Chrome拡張に知らせる。拡張はこの印を見て裏タブを
+        // 閉じるので、印を立てるのは「Driveへ送り終えてから」にする。3秒デバウンス
+        // 任せにすると、タブが先に閉じてタイマーごとキャンセルされ、クリップが
+        // この端末にしか残らない（しかも印だけ付いて次の同期で消えることがある）。
+        const tellSaved = () => {
+          try {
+            window.__kininariClipSaved = true;
+          } catch (e) {}
+        };
+        // 保存自体に失敗したときは知らせない（拡張側で取りこぼしが分かるように）
+        if (!saved) {
+          setToast({
+            title: "クリップを保存できませんでした",
+            body: "保存容量の上限に達した可能性があります。"
+          });
+        } else if (gdAuto && gdCid && gdLinked && gdPushRef.current) {
+          skipPush.current = true;   // デバウンスは使わず、ここで直接送る
+          const done = () => tellSaved();
+          gdPushRef.current().then(done).catch(done);
+          setTimeout(tellSaved, 12000);   // 通信が返ってこないときの保険
+        } else {
+          tellSaved();
+          skipPush.current = false;
+        }
         setFreshId(memo.id);
         setTimeout(() => setFreshId(f => f === memo.id ? null : f), 1600);
         setToast({
@@ -3339,24 +3455,31 @@ function App() {
       localStorage.setItem(API_KEY_KEY, k);
     } catch (e) {}
   };
-  const importData = ({
-    memos: im,
-    notebooks: inb
-  }) => {
-    const m = im.map(normalizeMemo);
+  /** データだけを差し替える。画面の状態（開いているフォルダ・検索文字列）は触らない。 */
+  const applyMerged = (im, inb) => {
+    const m = (im || []).map(normalizeMemo);
     // 取り込んだメモの墓標は消す（せっかく戻したものが次の同期で再削除されないように）
     try {
       const ids = new Set(m.map(x => x.id));
       tombstonesSet(tombstonesGet().filter(t => !ids.has(t.id)));
     } catch (e) {}
     persist(m, (inb || []).map(normalizeFolder), { stamp: false });
+    gcAttachments(m);
+  };
+  /** バックアップの復元など、利用者が明示的に取り込んだときだけ使う。
+   *  画面のリセットを含むので、裏で走る自動マージから呼んではいけない
+   *  （フォルダを開いて検索している最中に「すべて」に戻ってしまう）。 */
+  const importData = ({
+    memos: im,
+    notebooks: inb
+  }) => {
+    applyMerged(im, inb);
     setActiveFolder(null);
     setIncludeSub(false);
     setExpanded(new Set());
     setTagFilter(null);
     setCatFilter("all");
     setQ("");
-    gcAttachments(m);
   };
   const gdSetFile = id => {
     setGdFileId(id);
@@ -3409,16 +3532,18 @@ function App() {
           phase: gdLinked ? syncState.phase : "off",
           at: gdSync ? new Date(gdSync).getTime() : (syncState.at || 0),
           msg: syncState.msg || ""
-        } }, "*");
+        } }, window.location.origin);
       } catch (e) {}
     };
     const onMsg = e => {
+      // 命令を受け付けるのはシェル（同一オリジン）からだけにする
+      if (e.origin !== window.location.origin) return;
       const d = e.data;
       if (!d || !d.nkSync) return;
       if (d.nkSync === "status") return report();
       if (d.nkSync === "now") {
         setSyncState({ phase: "syncing" });
-        gdPush().then(() => setSyncState({ phase: "ok", at: Date.now() }))
+        (gdPushRef.current || gdPush)().then(() => setSyncState({ phase: "ok", at: Date.now() }))
                 .catch(er => setSyncState({ phase: "error", at: Date.now(), msg: syncErrMsg(er) }))
                 .then(() => setTimeout(report, 80));
         return;
@@ -3431,8 +3556,21 @@ function App() {
   }, [embedded, syncState, gdSync, gdLinked]);
 
   const gdPush = async () => {
+    // 送る中身は必ず「いま保存されている内容」から取る（readLive のコメント参照）。
+    // 読めなかったときは、空のデータでDriveを上書きしてしまうより中止する。
+    const live = readLive();
+    if (!live.ok) throw new Error("保存データを読めなかったため中止しました");
+    const curMemos = live.memos,
+      curFolders = live.folders;
     const token = await gdGetToken(gdCid, false);
-    let id = gdFileId || ((await gdFindFile(token)) || {}).id;
+    const found = gdFileId ? null : await gdFindFile(token);
+    let id = gdFileId || (found || {}).id;
+    if (found && found.duplicates) {
+      setToast({
+        title: "Driveに同じ名前のファイルが複数あります",
+        body: "いちばん古いものを使います。心当たりが無ければ、Driveで余分な kininari-data.json を削除してください。"
+      });
+    }
     // 書き込む前に、最終同期より後に他端末が更新していないか確認する。
     // 更新されていれば、先にマージしてから書く（相手の変更を潰さない）
     if (id && gdSync) {
@@ -3443,13 +3581,14 @@ function App() {
           await restoreBackupFiles(obj.files);
           const tombs = tombstonesMerge(obj.deleted);
           const lastSync = new Date(gdSync).getTime();
-          const mm = mergeById(memos, (obj.memos || []).map(normalizeMemo), lastSync, tombs);
-          const mf = mergeById(folders, (obj.notebooks || []).map(normalizeFolder), lastSync, tombs);
+          const mm = mergeById(curMemos, (obj.memos || []).map(normalizeMemo), lastSync, tombs);
+          const mf = mergeById(curFolders, (obj.notebooks || []).map(normalizeFolder), lastSync, tombs);
           skipPush.current = true;
-          const mm2 = markSynced(mm), mf2 = markSynced(mf);
-          importData({ memos: mm2, notebooks: mf2 });
-          const merged = JSON.stringify(await buildBackupObject(mm2, mf2));
+          // ローカルへはまだ印を付けずに反映する。印を付けるのは送信できたあと。
+          applyMerged(mm, mf);
+          const merged = JSON.stringify(await buildBackupObject(markSynced(mm), markSynced(mf)));
           const m2 = await gdUpdate(token, id, merged);
+          commitSynced(mm, mf);
           gdSetFile(id);
           gdSetSyncTime(m2.modifiedTime || new Date().toISOString());
           setGdLinked(true);
@@ -3457,20 +3596,20 @@ function App() {
         }
       }
     }
-    const pMemos = markSynced(memos), pFolders = markSynced(folders);
-    const content = JSON.stringify(await buildBackupObject(pMemos, pFolders));
+    const content = JSON.stringify(await buildBackupObject(markSynced(curMemos), markSynced(curFolders)));
     let meta;
     if (id) meta = await gdUpdate(token, id, content);else {
       meta = await gdCreate(token, content);
       id = meta.id;
     }
-    // 送れたものに印を付けて保存しておく（次回、Driveに無ければ他端末での削除と判断できる）
-    skipPush.current = true;
-    persist(pMemos, pFolders, { stamp: false });
+    // 送れたものに印を付けて保存しておく（次回、Driveに無ければ他端末での削除と判断できる）。
+    // 送信中に増えたメモには印を付けないので、それが次の同期で消えることもない。
+    commitSynced(curMemos, curFolders);
     gdSetFile(id);
     gdSetSyncTime(meta.modifiedTime || new Date().toISOString());
     setGdLinked(true);
   };
+  gdPushRef.current = gdPush;
   const gdPull = async () => {
     const token = await gdGetToken(gdCid, false);
     let id = gdFileId || ((await gdFindFile(token)) || {}).id;
@@ -3522,10 +3661,13 @@ function App() {
             // マージ結果がDrive側と一致するなら書き戻す必要はない
             const same = itemSig({ m: mergedMemos, f: mergedNbs }) === itemSig({ m: remoteMemos, f: remoteNbs });
             skipPush.current = same;
-            importData({
-              memos: markSynced(mergedMemos),
-              notebooks: markSynced(mergedNbs)
-            });
+            // 画面のリセットを伴わない applyMerged を使う（裏で走る同期なので、
+            // 検索中やフォルダを開いている最中に表示が「すべて」に戻ってはいけない）
+            applyMerged(mergedMemos, mergedNbs);
+            // 印を付けてよいのは「Driveに載っていた分」だけ。マージ結果全体に
+            // 付けると、まだ一度も送っていないローカルのメモにまで印が付き、
+            // 送信前にタブを閉じた／通信に失敗したときに次の同期で消えてしまう。
+            commitSynced(remoteMemos, remoteNbs, !same);
             gdSetFile(id);
             gdSetSyncTime(meta.modifiedTime);
           }
@@ -3549,7 +3691,7 @@ function App() {
     if (pushTimer.current) clearTimeout(pushTimer.current);
     pushTimer.current = setTimeout(() => {
       setSyncState({ phase: "syncing" });
-      gdPush().then(() => setSyncState({ phase: "ok", at: Date.now() })).catch(e => setSyncState({
+      (gdPushRef.current || gdPush)().then(() => setSyncState({ phase: "ok", at: Date.now() })).catch(e => setSyncState({
         phase: "error",
         at: Date.now(),
         msg: syncErrMsg(e)
@@ -3899,6 +4041,9 @@ function App() {
       ...m,
       notebookId: np
     } : m);
+    // 墓標を残す。残さないと、次の同期で「リモートにあってローカルに無いもの」＝
+    // 新規、と判断されて削除したフォルダが何度でも復活する（メモ側は既に残している）
+    tombstonesAdd(id);
     persist(nextMemos, nextFolders);
     if (activeFolder === id) setActiveFolder(np);
   };

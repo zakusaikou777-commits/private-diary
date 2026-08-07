@@ -114,6 +114,7 @@ html.night .dimnote{display:block}
 .tb.plus{border-color:color-mix(in srgb,var(--red) 40%,var(--line));color:var(--red-d)}
 #tleft{font-size:12.5px;font-weight:700;color:var(--red-d);margin-left:auto;font-variant-numeric:tabular-nums}
 #toast{position:fixed;left:14px;right:14px;bottom:70px;background:var(--ink);color:var(--paper);border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.6;z-index:40;display:none}
+#storeWarn{display:none;font-size:12px;line-height:1.75;color:var(--red-d);background:color-mix(in srgb,var(--red) 8%,var(--card));border:1px solid var(--red);border-radius:10px;padding:10px 12px;margin:0 0 12px}
 </style>
 </head>
 <body>
@@ -139,6 +140,8 @@ html.night .dimnote{display:block}
       </div>
     </div>
   </div>
+
+  <p id="storeWarn"></p>
 
   <div class="modes">
     <button class="mode on" id="mYt">YouTube</button>
@@ -229,8 +232,18 @@ var store=(function(){
   var ok=false,mem={};
   try{var k="__t"+Math.random();localStorage.setItem(k,"1");localStorage.removeItem(k);ok=true;}catch(e){ok=false;}
   return {
-    get:function(k){try{if(ok)return localStorage.getItem(k);}catch(e){}return (k in mem)?mem[k]:null;},
-    set:function(k,v){try{if(ok){localStorage.setItem(k,v);return;}}catch(e){}mem[k]=v;}
+    persistent:function(){return ok;},
+    /* 一度でも mem に落ちた鍵は、以後 mem を正とする。
+       書けなかったのに localStorage の古い値を読み続けると、
+       「保存できたように見えて、翌日に開くと全部消えている」状態になる。 */
+    get:function(k){if(k in mem)return mem[k];try{if(ok)return localStorage.getItem(k);}catch(e){}return null;},
+    /* 一度こけても、次は必ずもう一度試す。
+       ここで諦めてしまうと「空き容量を作ってください」の案内が何の役にも立たず、
+       整理したあとも一切書き戻さないまま、閉じたときに全部消える。 */
+    set:function(k,v){
+      try{ localStorage.setItem(k,v); delete mem[k]; ok=true; return true; }catch(e){}
+      mem[k]=v; return false;    // 書けなかったぶんは mem を正とする
+    }
   };
 })();
 
@@ -270,14 +283,31 @@ try{
 }catch(e){}
 
 var DEV=(window.NKSync?NKSync.devId():"local");
-/* 同じ動画は端末をまたいで同じIDになるようにする（別々に登録しても重複しない）*/
-function itemKey(vid,list){return "y"+(vid||"")+(list?("|"+list):"");}
+/* 同じ動画は端末をまたいで同じIDになるようにする（別々に登録しても重複しない）。
+   list は鍵に入れない。YouTubeアプリの共有は watch?v=XXX&list=RDXXX の形なので、
+   list を混ぜると同じ動画が「list付き」「list無し」の2件に割れてしまう。 */
+function itemKey(vid,list){return vid?("y"+vid):("y|"+(list||""));}
 /* 再生回数は端末ごとに数え、表示は合計。単純上書きだと回数が消えるため。 */
 function playCount(it){var p=it&&it.plays,t=0;if(typeof p==="number")return p;for(var d in (p||{}))t+=p[d]||0;return t;}
+
+/* vid/list はサムネイルのURLやHTML属性にそのまま入るので、
+   localStorage や他端末から来た値でも、登録時と同じ形だけを通す。 */
+var VID_RE=/^[A-Za-z0-9_-]{11}$/, LIST_RE=/^[A-Za-z0-9_-]{1,64}$/;
+
+/* 墓標（削除の記録）は放っておくと増え続け、保存領域と同期の荷物になる。
+   sync.js の mergeTombs と同じ90日で捨てる。 */
+var TOMB_TTL=90*24*3600*1000;
+function pruneTombs(){
+  var cut=Date.now()-TOMB_TTL;
+  function keep(t){return t&&t.id&&(t.at||0)>cut;}
+  S.delItems=(S.delItems||[]).filter(keep);
+  S.delGenres=(S.delGenres||[]).filter(keep);
+}
 
 /* ── 移行: 旧cat→cats、ID採番、端末別の再生回数、updatedAt ── */
 function normalize(){
   var now=Date.now();
+  pruneTombs();
   // ジャンル: IDは名前を初期値にする（端末間で同じ名前が同じIDになる）
   if(!S.genres.length) S.genres = DEFAULT_GENRES.map(function(g){return {id:g.name,name:g.name,q:g.q,updatedAt:0};});
   S.genres = S.genres.filter(function(g){return g&&g.name;}).map(function(g){
@@ -285,6 +315,23 @@ function normalize(){
             updatedAt:(typeof g.updatedAt==="number"?g.updatedAt:0)};
   });
   var seenG={}; S.genres=S.genres.filter(function(g){if(seenG[g.id])return false;seenG[g.id]=1;return true;});
+
+  // 形の壊れた登録はここで落とす（vid/list を信用するのはこの関門を通ったものだけ）
+  // 黙って消すと気づけないので、落とした数は必ず知らせる（墓標は積まない＝ほかの端末からは消さない）
+  var dropped=0;
+  S.items=(S.items||[]).filter(function(it){
+    if(!it||typeof it!=="object"){ dropped++; return false; }
+    it.vid =VID_RE.test(String(it.vid||"")) ?String(it.vid) :"";
+    it.list=LIST_RE.test(String(it.list||""))?String(it.list):"";
+    if(it.vid==="videoseries") it.vid="";   // 再生リストの埋め込みURLを動画idと取り違えていたぶんを直す
+    if(!it.vid&&!it.list){ dropped++; return false; }
+    it.kind=it.vid?"video":"playlist";   // v が取れるものは必ず「動画」として鳴らす
+    if(it.title!=null) it.title=String(it.title);
+    return true;
+  });
+  if(dropped) setTimeout(function(){
+    toast("読み取れない登録が"+dropped+"件あったため、一覧から外しました（ほかの端末からは消していません）。",9000);
+  },1800);
 
   var byKey={}, out=[];
   S.items.forEach(function(it){
@@ -313,10 +360,35 @@ function normalize(){
   });});
 }
 normalize();
-function save(){try{store.set(KEY,JSON.stringify({items:S.items,hist:S.hist.slice(0,300),genres:S.genres,delItems:S.delItems,delGenres:S.delGenres,vol:S.vol,scVol:S.scVol,shuffle:S.shuffle,night:S.night,mode:S.mode,filter:S.filter,gfilter:S.gfilter,lastCats:S.lastCats}));}catch(e){}}
+var saveFailed=false;
+function save(){
+  var body=null;
+  try{body=JSON.stringify({items:S.items,hist:S.hist.slice(0,300),genres:S.genres,delItems:S.delItems,delGenres:S.delGenres,vol:S.vol,scVol:S.scVol,shuffle:S.shuffle,night:S.night,mode:S.mode,filter:S.filter,gfilter:S.gfilter,lastCats:S.lastCats});}catch(e){return;}
+  var okNow=store.set(KEY,body);
+  /* 保存できなかったことを黙っていると、翌日に開いて全部消えてから気づくことになる。
+     データが失われる話なので、必ず目に見える形で伝える。 */
+  if(!okNow){ if(!saveFailed){ saveFailed=true; showStoreWarn(); } }
+  else if(saveFailed){ saveFailed=false; hideStoreWarn(); }   // 空きができたら黙って直す
+}
+function showStoreWarn(){
+  var el=$("storeWarn"); if(!el) return;
+  if(el.style.display==="block") return;
+  el.textContent="⚠️ この端末に保存できません（保存領域がいっぱいか、ブラウザが保存を許していません）。いまの追加・★・削除は、この画面を閉じると消えます。不要なサイトのデータを整理してください。整理できれば、次の操作から自動で保存し直します。同期を使っていれば、ほかの端末にも残せます。";
+  el.style.display="block";
+  toast("⚠️ 保存できませんでした。このまま閉じると、いまの変更は消えます。",12000);
+}
+function hideStoreWarn(){
+  var el=$("storeWarn"); if(!el) return;
+  if(el.style.display!=="block") return;
+  el.style.display="none";
+  toast("保存できるようになりました。いまの内容はこの端末に残しています。",5000);
+}
 
 var curId=null, ytReady=false, yt=null, scId=null, wakeLock=null, wakeWanted=false;
 var tEnd=0, tTick=null, fadeTick=null, driftTick=null, driftN=0, gEdit=false, editId=null, addCats=[];
+var tExtended=false;   // 「+10分」で延ばした状態（プリセットのボタンとは一致しない）
+/* プレーヤーの準備前に押された再生要求。捨てずに覚えておいて onReady で果たす。 */
+var pendingPlay=null;
 
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
 function esc(t){return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
@@ -331,6 +403,12 @@ function parseYt(u){
       || (u.match(/youtu\.be\/([A-Za-z0-9_-]{11})/)||[])[1]
       || (u.match(/\/(?:embed|shorts|live)\/([A-Za-z0-9_-]{11})/)||[])[1];
   if(!v && /^[A-Za-z0-9_-]{11}$/.test(u)) v=u;
+  /* /embed/videoseries?list=… は再生リストの埋め込み。videoseries はちょうど11文字なので
+     動画idとして通ってしまい、再生リストが「動画が見つかりませんでした」になる。 */
+  if(v==="videoseries") v="";
+  /* YouTubeアプリの共有は watch?v=XXX&list=RDXXX が普通で、鳴らすべきは v の動画。
+     list が付いていても動画として扱い、/playlist?list= と明示されたときだけ再生リストにする。 */
+  if(list && /\/playlist\b/.test(u)) return {kind:"playlist",vid:"",list:list};
   if(v) return {kind:"video",vid:v,list:list||""};
   if(list) return {kind:"playlist",vid:"",list:list};
   return null;
@@ -372,11 +450,20 @@ function cueForTitle(it){
   if(st===1||st===3||st===2) return;   // PLAYING / BUFFERING / PAUSED
   try{yt.cueVideoById(it.vid);}catch(e){return;}
   var tries=0;
+  /* 借りたプレーヤーは、まだ何も選ばれていないときだけ元に戻す。
+     選んでいない動画のポスターが残ると「いま鳴っているもの」の表示と食い違うため。
+     ただし途中で再生が始まっていたら、何もせず手を引く。
+     cueVideoById も stopVideo も、鳴りはじめた音をその場で止めてしまう。 */
+  var restore=function(iv2){
+    clearInterval(iv2);
+    if(curId) return;                 // もうこちらのものではない
+    try{ yt.stopVideo(); }catch(e){}
+  };
   var iv=setInterval(function(){
     tries++;
     var d=null; try{d=yt.getVideoData();}catch(e){}
-    if(d&&d.title&&d.video_id===it.vid){ setTitleIfBlank(it,d.title); clearInterval(iv); }
-    else if(tries>14) clearInterval(iv);
+    if(d&&d.title&&d.video_id===it.vid){ setTitleIfBlank(it,d.title); restore(iv); }
+    else if(tries>14||curId) restore(iv);   // 途中で何か選ばれたらすぐ返す
   },400);
 }
 function resolveTitle(it){
@@ -394,7 +481,16 @@ window.onYouTubeIframeAPIReady=function(){
       host:"https://www.youtube-nocookie.com",
       playerVars:{playsinline:1,rel:0,modestbranding:1,origin:location.origin},
       events:{
-        onReady:function(){ytReady=true;applyVol();if(curId)cue(byId(curId),false);},
+        onReady:function(){
+          ytReady=true;applyVol();
+          /* 準備前に押されたぶんをここで果たす。黙って捨てると、
+             共有直後のタップ（下の bgmadd）はまず届かない。 */
+          var p=pendingPlay; pendingPlay=null;
+          var pit=p?byId(p.id):null;
+          if(pit&&p.play){ playItem(pit.id); return; }
+          if(pit){ cue(pit,false); return; }
+          if(curId)cue(byId(curId),false);
+        },
         onStateChange:function(e){
           if(e.data===1){$("bPlay").textContent="⏸ 一時停止";grabTitle();}
           else $("bPlay").textContent="▶ 再生";
@@ -412,39 +508,67 @@ window.onYouTubeIframeAPIReady=function(){
     });
   }catch(e){}
 };
+/* 鳴らし始められたら true。準備前なら要求を覚えて false を返す（黙って捨てない）。*/
 function cue(it,play){
-  if(!it||!ytReady||!yt) return;
+  if(!it) return false;
+  if(!ytReady||!yt){ pendingPlay={id:it.id,play:!!play}; return false; }
   $("pnote").textContent="";
   try{
-    if(it.kind==="playlist"||it.list){
-      yt.loadPlaylist({list:it.list,listType:"playlist"});
-      if(!play){try{yt.stopVideo();}catch(e){}}
+    if(it.kind==="playlist"){
+      /* load系は自動再生する。まだ鳴らしたくないときは cue系でないと、
+         起動直後に一瞬音が出てしまう（就寝用アプリでは許されない）。 */
+      if(play) yt.loadPlaylist({list:it.list,listType:"playlist"});
+      else yt.cuePlaylist({list:it.list,listType:"playlist"});
     } else if(play){ yt.loadVideoById(it.vid); }
     else { yt.cueVideoById(it.vid); }
-  }catch(e){}
+  }catch(e){ return false; }
+  return true;
 }
 function grabTitle(){
   var it=byId(curId); if(!it||!yt||!yt.getVideoData) return;
   try{var d=yt.getVideoData(); if(d&&d.title)setTitleIfBlank(it,d.title);}catch(e){}
 }
-function playItem(id){
-  var it=byId(id); if(!it) return;
-  curId=id;
+/* 回数と履歴は「実際に鳴りはじめたとき」だけ数える。
+   捨てられた要求まで数えると、聞いていない曲が「よく聞く」に並んでしまう。 */
+function countPlay(it){
   it.plays=it.plays||{}; it.plays[DEV]=(it.plays[DEV]||0)+1; it.lastAt=Date.now();
   S.hist.unshift({at:it.lastAt,id:it.id,title:it.title||it.vid}); S.hist=S.hist.slice(0,300);
   save(); touch(false);
-  if(it.noEmbed){ window.open(watchUrl(it),"_blank","noopener"); updateNow(); render(); return; }
-  cue(it,true); updateNow(); render();
+}
+function playItem(id){
+  var it=byId(id); if(!it) return;
+  curId=id;
+  if(it.noEmbed){ countPlay(it); window.open(watchUrl(it),"_blank","noopener"); updateNow(); render(); return; }
+  if(cue(it,true)) countPlay(it);
+  else if(!ytReady||!yt) $("pnote").textContent="プレーヤーを準備しています。用意ができ次第、この曲を再生します。";
+  updateNow(); render();
 }
 function idxOf(l,id){for(var k=0;k<l.length;k++)if(l[k].id===id)return k;return -1;}
 function next(auto){
   var l=visible(); if(!l.length) return;
   var i=idxOf(l,curId);
-  if(auto&&l.length===1&&!S.shuffle){ playItem(l[0].id); return; }  // 1件なら繰り返す
-  var n;
-  if(S.shuffle){ if(l.length===1)n=0; else{ do{n=Math.floor(Math.random()*l.length);}while(n===i);} }
-  else n=(i+1)%l.length;
-  playItem(l[n].id);
+  /* 自動送りは利用者の操作の外なので、埋め込み不可の曲を window.open で開こうとしても
+     ポップアップが止められ、就寝中に無音で終わってしまう。自動のときは飛ばす。
+     （手で「次」を押したときは、これまでどおり YouTube を開く）*/
+  var ok=auto?l.filter(function(x){return !x.noEmbed;}):l;
+  if(!ok.length){
+    $("pnote").textContent="続けて流せるものがありません。残っているのは、埋め込み再生が許可されていない曲だけです。";
+    toast("埋め込み再生が許可されていない曲しか残っていないため、ここで止めます。",6000);
+    return;
+  }
+  var n=0;
+  if(auto&&ok.length===1&&!S.shuffle){ n=0; }                        // 1件なら繰り返す
+  else if(S.shuffle){
+    var j=idxOf(ok,curId);
+    if(ok.length===1)n=0; else{ do{n=Math.floor(Math.random()*ok.length);}while(n===j); }
+  } else {
+    for(var k=1;k<=l.length;k++){       // 元の並び順のまま、鳴らせる次の曲を探す
+      var m=idxOf(ok,l[(i+k)%l.length].id);
+      if(m>=0){n=m;break;}
+    }
+  }
+  playItem(ok[n].id);
+  if(ok.length<l.length) $("pnote").textContent="埋め込み再生が許可されていない曲は、自動送りでは飛ばしています。";
 }
 function prev(){
   var l=visible(); if(!l.length) return;
@@ -608,38 +732,57 @@ function ago(ms){
   return new Date(ms).toLocaleDateString();
 }
 function render(){
+  /* 一覧はまるごと作り直すので、編集中の入力は明け渡す前に取っておく。
+     起動直後のタイトル自動取得が裏で render() を呼ぶため、
+     取っておかないと打ちかけの名前が消える。
+     ただし ✎ の切り替えは editId を先に書き換えてから render() を呼ぶので、
+     「いま画面にある編集欄が、どの曲のものか」は入力欄自身に持たせて確かめる。
+     確かめないと、打ちかけの名前が次に開いた別の曲の欄に移ってしまう。 */
+  var edOld=$("edName"), keep=null;
+  if(edOld){
+    keep={id:edOld.getAttribute("data-eid"),
+          v:edOld.value,s:edOld.selectionStart,e:edOld.selectionEnd,focus:(document.activeElement===edOld)};
+  }
   var l=visible(),h="";
   if(!l.length){
     h='<div class="empty">'+(S.items.length?"この条件に合う登録がありません。":"まだ登録がありません。<br>上のジャンルから探して、気に入ったURLを登録してください。")+'</div>';
   } else {
     l.forEach(function(it){
-      var t=thumb(it);
+      // 属性の中身も必ず esc() を通す（vid や id は同期・localStorage 経由でも入ってくる）
+      var t=esc(thumb(it)), eid=esc(it.id);
       h+='<div class="item'+(it.id===curId?" playing":"")+'"><div class="irow">'
-       + (t?'<img class="ithumb" src="'+t+'" alt="" loading="lazy" data-play="'+it.id+'" onerror="this.style.visibility=\'hidden\'">'
-           :'<button class="mini" data-play="'+it.id+'" title="再生">▶</button>')
+       + (t?'<img class="ithumb" src="'+t+'" alt="" loading="lazy" data-play="'+eid+'" onerror="this.style.visibility=\'hidden\'">'
+           :'<button class="mini" data-play="'+eid+'" title="再生">▶</button>')
        +   '<div class="body"><div class="t">'+esc(it.title||it.vid)+'</div><div class="m">'
        +     ((it.cats&&it.cats.length)?esc(it.cats.join("・")):"未分類")+' · '+ago(it.lastAt)+' · '+playCount(it)+'回'
        +     (it.noEmbed?' · <span style="color:var(--red-d)">埋め込み不可</span>':'')
        +   '</div></div>'
        +   '<div class="acts">'
-       +     '<button class="mini'+(it.fav?" fav":"")+'" data-fav="'+it.id+'" title="お気に入り">'+(it.fav?"★":"☆")+'</button>'
-       +     '<button class="mini" data-open="'+it.id+'" title="YouTubeで開く">↗</button>'
-       +     '<button class="mini" data-ed="'+it.id+'" title="名前とジャンルを直す">✎</button>'
-       +     '<button class="mini" data-del="'+it.id+'" title="削除">🗑</button>'
+       +     '<button class="mini'+(it.fav?" fav":"")+'" data-fav="'+eid+'" title="お気に入り">'+(it.fav?"★":"☆")+'</button>'
+       +     '<button class="mini" data-open="'+eid+'" title="YouTubeで開く">↗</button>'
+       +     '<button class="mini" data-ed="'+eid+'" title="名前とジャンルを直す">✎</button>'
+       +     '<button class="mini" data-del="'+eid+'" title="削除">🗑</button>'
        +   '</div></div>';
       if(editId===it.id){
-        h+='<div class="edit"><input id="edName" value="'+esc(it.title||"")+'" placeholder="名前">'
+        h+='<div class="edit"><input id="edName" data-eid="'+eid+'" value="'+esc(it.title||"")+'" placeholder="名前">'
           +'<div class="addlbl" style="margin-top:9px">ジャンル（いくつでも）</div><div class="chips">';
         S.genres.forEach(function(g){
           h+='<button class="chip'+((it.cats||[]).indexOf(g.name)>=0?" sel":"")+'" data-ec="'+esc(g.name)+'">'+esc(g.name)+'</button>';
         });
         h+='<button class="chip add" data-ecnew="1">＋ 新しいジャンル</button></div>'
-          +'<div class="row"><button class="cbtn" data-ecancel="1">取消</button><button class="cbtn solid" data-esave="'+it.id+'">保存</button></div></div>';
+          +'<div class="row"><button class="cbtn" data-ecancel="1">取消</button><button class="cbtn solid" data-esave="'+eid+'">保存</button></div></div>';
       }
       h+='</div>';
     });
   }
   $("list").innerHTML=h;
+  if(keep&&keep.id===editId){   // 同じ曲のときだけ、打ちかけの名前とカーソル位置を戻す
+    var edNew=$("edName");
+    if(edNew){
+      edNew.value=keep.v;
+      if(keep.focus){try{edNew.focus();edNew.setSelectionRange(keep.s,keep.e);}catch(e){}}
+    }
+  }
   $("bShuffle").classList.toggle("on",S.shuffle);
 }
 $("list").addEventListener("click",function(e){
@@ -649,7 +792,7 @@ $("list").addEventListener("click",function(e){
   if((id=b.getAttribute("data-fav"))){var a=byId(id);if(a){a.fav=!a.fav;a.updatedAt=Date.now();save();touch(true);render();}return;}
   if((id=b.getAttribute("data-open"))){
     var o=byId(id);
-    if(o){o.lastAt=Date.now();o.plays=o.plays||{};o.plays[DEV]=(o.plays[DEV]||0)+1;S.hist.unshift({at:o.lastAt,id:o.id,title:o.title||o.vid});save();touch(false);render();window.open(watchUrl(o),"_blank","noopener");}
+    if(o){countPlay(o);render();window.open(watchUrl(o),"_blank","noopener");}   // 履歴の上限もここで揃える
     return;
   }
   if((id=b.getAttribute("data-ed"))){editId=(editId===id?null:id);render();return;}
@@ -688,22 +831,25 @@ $("list").addEventListener("click",function(e){
 function addItem(url,name,cats){
   var p=parseYt(url);
   if(!p){toast("YouTubeのURLとして読み取れませんでした。",5000);return null;}
-  var dup=null;
-  for(var i=0;i<S.items.length;i++){var x=S.items[i];if(x.vid===p.vid&&(x.list||"")===(p.list||"")){dup=x;break;}}
+  var key=itemKey(p.vid,p.list), dup=null;
+  for(var i=0;i<S.items.length;i++){if(S.items[i].id===key){dup=S.items[i];break;}}   // list違いも同じ動画として扱う
   if(dup){
     var added=0;
     (cats||[]).forEach(function(c){if(dup.cats.indexOf(c)<0){dup.cats.push(c);added++;}});
     if(added)dup.updatedAt=Date.now();
     save();touch(true);render();renderGFilters();
-    toast(added?"すでに登録済みだったので、ジャンルだけ追加しました。":"すでに登録されています。",3600);
+    // 保存できていない警告の方が大事なので、追加の案内で上書きしない
+    if(!saveFailed) toast(added?"すでに登録済みだったので、ジャンルだけ追加しました。":"すでに登録されています。",3600);
     return dup;
   }
-  var it={id:itemKey(p.vid,p.list),kind:p.kind,vid:p.vid,list:p.list||"",title:(name||"").trim()||"(タイトル未取得)",
+  var it={id:key,kind:p.kind,vid:p.vid,list:p.list||"",title:(name||"").trim()||"(タイトル未取得)",
           cats:(cats||[]).slice(),fav:false,plays:{},lastAt:0,updatedAt:Date.now()};
   S.delItems=S.delItems.filter(function(t){return t.id!==it.id;});  // 消した動画を入れ直したら墓標を外す
   S.items.unshift(it); save(); touch(true); render(); renderGFilters();
-  if(isBlank(it.title)){ toast("追加しました。タイトルを取得しています…",3000); resolveTitle(it); }
-  else toast("追加しました。",2600);
+  var blank=isBlank(it.title);
+  // 保存できていない警告（12秒）を、追加の案内で即座に消してしまわない
+  if(!saveFailed) toast(blank?"追加しました。タイトルを取得しています…":"追加しました。",blank?3000:2600);
+  if(blank) resolveTitle(it);
   return it;
 }
 $("bAdd").addEventListener("click",function(){
@@ -770,7 +916,7 @@ function applyScVol(){
 }
 function playSound(id){
   var s=null; SOUNDS.forEach(function(x){if(x.id===id)s=x;}); if(!s) return;
-  if(SND.current()===id&&SND.playing()){ SND.stop(); scId=null; renderSc(); return; }
+  if(SND.current()===id&&SND.playing()){ SND.stop(); scId=null; scStopLocal(); renderSc(); return; }
   scId=id;
   SND.play(s, S.scVol/100);
   S.hist.unshift({at:Date.now(),id:"sc:"+id,title:s.n});S.hist=S.hist.slice(0,300);
@@ -786,6 +932,24 @@ function renderSc(){
 }
 $("scList").addEventListener("click",function(e){var b=e.target.closest("[data-sc]");if(b)playSound(b.getAttribute("data-sc"));});
 if(!SND.embedded){ scA.addEventListener("pause",renderSc); scA.addEventListener("play",renderSc); }
+/* ロック画面の後始末。index.html（シェル）の nkSndStop と同じ振る舞いにする。
+   これをしないと、止めたあともロック画面に操作パネルが残り続ける。 */
+function mediaClear(){
+  try{
+    if(!("mediaSession" in navigator)) return;
+    ["play","pause","stop"].forEach(function(a){
+      try{ navigator.mediaSession.setActionHandler(a,null); }catch(e){}
+    });
+    navigator.mediaSession.metadata=null;
+    if("playbackState" in navigator.mediaSession) navigator.mediaSession.playbackState="none";
+  }catch(e){}
+}
+function scStopLocal(){
+  if(SND.embedded) return;            // シェルの中では index.html が持つ
+  try{ scA.pause(); }catch(e){}
+  try{ scA.removeAttribute("src"); scA.load(); }catch(e){}
+  mediaClear();
+}
 function mediaMeta(title){
   try{
     // シェルの中にいるときは、ロック画面の操作はシェル側が持つ
@@ -793,8 +957,12 @@ function mediaMeta(title){
     if(!("mediaSession" in navigator)) return;
     navigator.mediaSession.metadata=new MediaMetadata({title:title,artist:"就寝用の音",album:"音 — BGM"});
     navigator.mediaSession.setActionHandler("pause",function(){scA.pause();});
-    navigator.mediaSession.setActionHandler("play",function(){scA.play().catch(function(){});});
-    navigator.mediaSession.setActionHandler("stop",function(){scA.pause();scId=null;renderSc();});
+    // 止めたあとに再生を押されても、中身の無い<audio>を鳴らそうとしない
+    navigator.mediaSession.setActionHandler("play",function(){
+      if(!scId||!scA.src) return;
+      scA.play().catch(function(){});
+    });
+    navigator.mediaSession.setActionHandler("stop",function(){ scId=null; scStopLocal(); renderSc(); });
   }catch(e){}
 }
 
@@ -803,7 +971,12 @@ $("vol").addEventListener("input",function(e){S.vol=+e.target.value;save();apply
 $("scVol").addEventListener("input",function(e){S.scVol=+e.target.value;save();applyScVol();});
 $("bPlay").addEventListener("click",function(){
   if(!curId){var l=visible();if(l.length)return playItem(l[0].id);toast("先に一覧に登録してください。",3500);return;}
-  if(!ytReady||!yt) return;
+  if(!ytReady||!yt){
+    /* 黙って何も起きないのが一番わるい。押した意図を覚えて、用意ができ次第鳴らす */
+    cue(byId(curId),true);
+    toast("プレーヤーを準備しています。用意ができ次第、再生します。",4000);
+    return;
+  }
   try{var st=yt.getPlayerState(); if(st===1)yt.pauseVideo(); else yt.playVideo();}catch(e){}
 });
 $("bNext").addEventListener("click",function(){next(false);});
@@ -881,23 +1054,29 @@ document.addEventListener("visibilitychange",function(){
 
 /* ── スリープタイマー ─────────────────────────────── */
 function paintTb(){
+  var hit=false;
   Array.prototype.forEach.call(document.querySelectorAll("#tbar .tb[data-t]"),function(b){
-    b.classList.toggle("on",+b.getAttribute("data-t")===S.timer);
+    var on=!tExtended&&(+b.getAttribute("data-t")===S.timer); if(on)hit=true;
+    b.classList.toggle("on",on);
   });
+  /* 「+10分」や10分指定は、どのボタンの値とも一致しない。全部消灯させると
+     タイマーが動いているのに切れているように見えるので、延長ボタンを点けておく。 */
+  $("bPlus10").classList.toggle("on",!hit&&!!tTick);
 }
 function setTimer(min){
-  S.timer=min; paintTb();
+  S.timer=min; tExtended=false;
   if(fadeTick){clearInterval(fadeTick);fadeTick=null;}
   if(tTick){clearInterval(tTick);tTick=null;}
-  if(!min){tEnd=0;$("tleft").textContent="";return;}
+  if(!min){tEnd=0;$("tleft").textContent="";paintTb();return;}
   tEnd=Date.now()+min*60000;
   tTick=setInterval(tickTimer,1000);tickTimer();
+  paintTb();   // tTick を立ててから塗る（延長表示の判定に使うため）
 }
 function tickTimer(){
   var left=Math.max(0,Math.round((tEnd-Date.now())/1000));
   var m=Math.floor(left/60),s=left%60;
   $("tleft").textContent="残り "+m+":"+(s<10?"0":"")+s;
-  if(left<=0){clearInterval(tTick);tTick=null;beginFade();}
+  if(left<=0){clearInterval(tTick);tTick=null;paintTb();beginFade();}
 }
 function beginFade(){
   var SECS=20,t=0;
@@ -938,7 +1117,7 @@ $("bPlus10").addEventListener("click",function(){
     if(scId){ var sd=null; SOUNDS.forEach(function(x){if(x.id===scId)sd=x;}); if(sd) SND.play(sd,S.scVol/100); }
   }
   if(tTick&&tEnd>Date.now()){
-    tEnd+=10*60000; S.timer+=10; paintTb(); tickTimer();
+    tEnd+=10*60000; S.timer+=10; tExtended=true; paintTb(); tickTimer();
     toast("10分延長しました。",3000);
   } else {
     setTimer(10);
@@ -947,15 +1126,17 @@ $("bPlus10").addEventListener("click",function(){
 });
 
 /* ── 端末間の同期（sync.js の共通エンジンを使う）───────
-   同期するのは 登録リスト・ジャンル・履歴 と削除の墓標だけ。
-   音量/夜間モード/表示状態は端末ごとに違って当然なので含めない。 */
+   同期するのは 登録リスト・ジャンル と削除の墓標だけ。
+   音量/夜間モード/表示状態は端末ごとに違って当然なので含めない。
+   履歴（S.hist）はどこにも表示していないので、300件をドライブに往復させるのはやめた。
+   この端末の中だけに残す（表示するようになったら、また積めばよい）。 */
 var sync=null;
 function touch(urgent){ if(sync) sync.touch(!!urgent); }
 function syncGetLocal(){
-  return {items:S.items,genres:S.genres,hist:S.hist.slice(0,300),delItems:S.delItems,delGenres:S.delGenres};
+  return {items:S.items,genres:S.genres,delItems:S.delItems,delGenres:S.delGenres};
 }
 function syncSetLocal(d){
-  S.items=d.items||[]; S.genres=d.genres||[]; S.hist=d.hist||[];
+  S.items=d.items||[]; S.genres=d.genres||[];
   S.delItems=d.delItems||[]; S.delGenres=d.delGenres||[];
   normalize(); save();
   if(curId&&!byId(curId))curId=null;
@@ -964,11 +1145,56 @@ function syncSetLocal(d){
   addCats=addCats.filter(function(c){return !!genreByName(c);});
   renderGenreSearch(); renderAddCats(); renderGFilters(); render(); updateNow();
 }
+/* 旧版は id に list を含めていた。突き合わせる前に両側を今の付け方へ揃える。
+   揃えないと、同じ動画が「list付きの旧id」と「新id」の2件でドライブに残り続ける。
+   さらに、再キーで同じidになった項目は1件にまとめる。まとめずに渡すと、
+   ★や再生回数を持っている方が、配列の後ろ勝ちでまるごと消えてしまう
+   （sync.js の put() は updatedAt を見ずに上書きするため）。 */
+function foldItems(l){
+  var idx={}, out=[];
+  (l||[]).forEach(function(x){
+    if(!x||typeof x!=="object") return;
+    var o={}; for(var k in x) o[k]=x[k];
+    o.cats=Array.isArray(x.cats)?x.cats.slice():[];
+    if(typeof x.plays==="number"){ o.plays={}; if(x.plays)o.plays[DEV]=x.plays; }
+    else { o.plays={}; for(var d in (x.plays||{})) o.plays[d]=x.plays[d]; }
+    if(!o.vid&&!o.list){ out.push(o); return; }   // 鍵を作れないものは触らない
+    o.id=itemKey(o.vid,o.list);
+    var at=idx[o.id];
+    if(at===undefined){ idx[o.id]=out.length; out.push(o); return; }
+    var p=out[at];
+    var win=(NKSync.itemTime(o)>NKSync.itemTime(p))?o:p, lose=(win===o)?p:o;
+    lose.cats.forEach(function(c){ if(win.cats.indexOf(c)<0) win.cats.push(c); });
+    for(var d2 in lose.plays) win.plays[d2]=Math.max(win.plays[d2]||0,lose.plays[d2]||0);
+    win.fav=!!(win.fav||lose.fav);
+    win.lastAt=Math.max(win.lastAt||0,lose.lastAt||0);
+    win.updatedAt=Math.max(win.updatedAt||0,lose.updatedAt||0);
+    if(!win.title||isBlank(win.title)){ if(lose.title&&!isBlank(lose.title)) win.title=lose.title; }
+    out[at]=win;
+  });
+  return out;
+}
+/* 墓標は id しか持たない。旧形式(yVID|LIST)のままだと、再キーした項目に当たらず、
+   ほかの端末で削除したはずの曲が同期のたびに復活する。同じ規則で読み替える。 */
+function reKeyTombId(id){
+  id=String(id||"");
+  var p=id.indexOf("|");
+  if(id.charAt(0)!=="y"||p<0) return id;
+  var vid=id.slice(1,p);
+  return vid?("y"+vid):id;        // v が無いものは再生リスト。そのまま
+}
+function reKeyTombs(l){
+  return (l||[]).map(function(t){
+    if(!t||!t.id) return t;
+    var n=reKeyTombId(t.id);
+    return n===t.id?t:{id:n,at:t.at};
+  });
+}
 function syncMerge(local,remote,lastSync){
   if(!remote) return local;
-  var tI=NKSync.mergeTombs(local.delItems,remote.delItems);
+  var tI=NKSync.mergeTombs(reKeyTombs(local.delItems),reKeyTombs(remote.delItems));
   var tG=NKSync.mergeTombs(local.delGenres,remote.delGenres);
-  var items=NKSync.mergeById(local.items,remote.items,lastSync,tI,"id",function(l,r,win){
+  var items=NKSync.mergeById(foldItems(local.items),foldItems(remote.items),lastSync,tI,"id",function(l,r,win){
     // 再生回数は端末ごとの内訳を持っているので、両方を突き合わせて合算する
     var o={}; for(var k in win) o[k]=win[k];
     var plays={};
@@ -978,15 +1204,7 @@ function syncMerge(local,remote,lastSync){
     return o;
   });
   var genres=NKSync.mergeById(local.genres,remote.genres,lastSync,tG,"id");
-  // 履歴は追記型。時刻＋IDで重複を除いて合流する
-  var seen={},hist=[];
-  [].concat(local.hist||[],remote.hist||[]).forEach(function(h){
-    if(!h||!h.at)return;
-    var k=h.at+"|"+(h.id||"");
-    if(seen[k])return; seen[k]=1; hist.push(h);
-  });
-  hist.sort(function(a,b){return b.at-a.at;});
-  return {items:items,genres:genres,hist:hist.slice(0,300),delItems:tI,delGenres:tG};
+  return {items:items,genres:genres,delItems:tI,delGenres:tG};
 }
 function paintSync(st,auto){
   var b=$("bSync");
@@ -1000,8 +1218,8 @@ function paintSync(st,auto){
     m.textContent="まだつながっていません。先に「気になり帳」でGoogleドライブの同期設定（クライアントID）を済ませると、こちらは追加設定なしで使えます。";
   } else if(st.phase==="error"){ m.textContent="⚠️ "+(st.msg||"同期に失敗しました");
   } else if(st.phase==="syncing"){ m.textContent="同期しています…";
-  } else if(st.phase==="ok"){ m.textContent="同期しました（"+new Date(st.at).toLocaleTimeString()+"）。登録・ジャンル・★・履歴がPCとスマホで揃います。音量や夜間モードは端末ごとのままです。";
-  } else { m.textContent="登録・ジャンル・★・履歴をGoogleドライブ経由でPCとスマホで揃えます。"; }
+  } else if(st.phase==="ok"){ m.textContent="同期しました（"+new Date(st.at).toLocaleTimeString()+"）。登録・ジャンル・★・再生回数がPCとスマホで揃います。音量や夜間モードは端末ごとのままです。";
+  } else { m.textContent="登録・ジャンル・★・再生回数をGoogleドライブ経由でPCとスマホで揃えます。"; }
 }
 $("bSync").addEventListener("click",function(){
   var p2=$("syncPanel");
@@ -1033,6 +1251,8 @@ Array.prototype.forEach.call(document.querySelectorAll("#sfilters .f"),function(
   x.classList.toggle("on",x.getAttribute("data-f")===S.filter);
 });
 setTimer(0); render(); updateNow();
+// プライベートブラウズなどで最初から保存できない場合も、黙って進めない
+if(!store.persistent()){ saveFailed=true; showStoreWarn(); }
 if(!wakeSupported())$("bWake").style.display="none";
 /* 未取得のタイトルを起動時に静かに埋める（oEmbedのみ・最大8件・0.3秒間隔）*/
 if(window.NKSync){

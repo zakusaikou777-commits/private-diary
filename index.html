@@ -97,7 +97,7 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 <div class="knmodal-h">☁ データの同期・バックアップ<button id="knModalX" class="knmodal-x" type="button">×</button></div>
 
 <div class="knsec">Googleドライブで同期（PC・スマホで揃える）</div>
-<p class="knmodal-note">クライアントIDは4つのアプリで共通です。ここで一度だけ設定すれば、日記帳・気になり帳・暗室・音のすべてで使われます。</p>
+<p class="knmodal-note">クライアントIDは6つのアプリで共通です。ここで一度だけ設定すれば、日記帳・気になり帳・タスク・暗室・音・くつろぎのすべてで使われます。</p>
 <div class="knmodal-row">
 <input id="knCid" type="text" placeholder="Google OAuth クライアントID" style="flex:1;min-width:180px;padding:9px 11px;border:1px solid var(--kn-line,#e2d6bd);border-radius:9px;font:inherit;font-size:13px">
 <button id="knCidSave" class="knbtn ghost" type="button">保存</button>
@@ -109,7 +109,7 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 </div>
 
 <div class="knsec">ファイルに保存（Googleを使わない場合）</div>
-<p class="knmodal-note">4つのアプリのデータ（添付の画像・ファイルも含む）を1つのファイルに書き出し／取り込みします。取り込むと現在のデータは置き換わり、自動で再読み込みします。</p>
+<p class="knmodal-note">6つのアプリのデータ（添付の画像・ファイルも含む）を1つのファイルに書き出し／取り込みします。取り込むと現在のデータは置き換わり、自動で再読み込みします。</p>
 <div class="knmodal-row">
 <button id="knExport" class="knbtn solid" type="button">まとめて書き出す（.json）</button>
 <label class="knbtn ghost">取り込む（ファイルを選択）<input id="knImport" type="file" accept="application/json,.json" hidden></label>
@@ -203,7 +203,7 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 <li><b>気になり帳</b>：ヘッダーの同期アイコンから、ドライブに保存／読み込み（自動同期も可）。</li>
 <li><b>日記帳</b>：日記の設定からドライブに保存。</li>
 <li>端末をまたいでデータを引き継げます。</li>
-<li>上部の <b>☁</b> がデータの同期・バックアップ・セキュリティのすべての入口です。日記帳の中にあった「エクスポート」「セキュリティ」ボタンは、ここから開くようになりました。4つのアプリの同期状態がこの1画面で確認でき、「今すぐ全部同期」でまとめて実行できます。Googleを使わないファイルへの書き出し／取り込み（画像も含む）も同じ画面にあります。クライアントIDは4アプリ共通なので、設定は一度だけです。</li>
+<li>上部の <b>☁</b> がデータの同期・バックアップ・セキュリティのすべての入口です。日記帳の中にあった「エクスポート」「セキュリティ」ボタンは、ここから開くようになりました。6つのアプリの同期状態がこの1画面で確認でき、「今すぐ全部同期」でまとめて実行できます。Googleを使わないファイルへの書き出し／取り込み（画像も含む）も同じ画面にあります。クライアントIDは4アプリ共通なので、設定は一度だけです。</li>
 </ul>
 
 <h4>うまくいかないとき</h4>
@@ -281,6 +281,11 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     tabs[k].addEventListener('click', (function(t){ return function(){ show(t.getAttribute('data-app')); }; })(tabs[k]));
   }
   window.addEventListener('message', function(e){
+    // 送信元を確かめる。ここは各アプリのiframe（同一オリジン）からの命令だけを
+    // 受け付ける場所で、検証が無いと、別サイトが window.open でこのページを開いて
+    // 好きな内容を送り込めてしまう（下の knPaint の innerHTML と組み合わせると
+    // このオリジンで任意のJSが動き、Googleのトークンまで読める）。
+    if(e.origin !== location.origin) return;
     if(!e.data) return;
     if(e.data.knTab){ show(e.data.knTab); return; }
     if(e.data.nkOpenSync){ knModalOpen(true); return; }      // 日記帳のバナーから
@@ -288,15 +293,38 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     if(e.data.nkDiaryInfo){ knEnc = !!e.data.nkDiaryInfo.enc; knPaintEnc(); return; }
     if(e.data.nkSound){ nkSoundCmd(e.data.nkSound); return; }
     if(e.data.nkToTask){
-      // 気になり帳のメモを、タスクタブへ送る
-      taskHash = encodeURIComponent(JSON.stringify(e.data.nkToTask));
+      // 気になり帳のメモを、タスクタブへ送る。
+      // タブがまだ読み込み中だと postMessage は空のページに飛んで消えるので、
+      // 待ち行列に入れて、タスクタブが名乗り出た時点で改めて流す。
+      if(!loaded['tasks'] && !taskHash){
+        // 初回だけはURLのハッシュでも渡す（読み込み前に確実に届く経路）
+        taskHash = encodeURIComponent(JSON.stringify(e.data.nkToTask));
+      } else {
+        knTaskQueue.push(e.data.nkToTask);
+      }
       load('tasks');
-      var fr = document.getElementById('frame-tasks');
-      try{ fr.contentWindow.postMessage({nkTaskAdd: e.data.nkToTask}, '*'); }catch(err){}
+      // 読み込み済みだと分かっているときだけ即送る。同一オリジンの読み込み中
+      // iframe への postMessage は例外を投げずに捨てられるので、「送れたつもり」で
+      // 待ち行列から消してしまうと2件目が失われる。
+      if(knReady['tasks']) knFlushTasks();
       show('tasks');
       return;
     }
   });
+  /* タスクタブへの送信待ち。読み込みが終わるまで postMessage は届かないので、
+     向こうから状態が届いた時点（＝リスナー登録済み）でまとめて流す。 */
+  var knTaskQueue = [];
+  function knFlushTasks(){
+    if(!knTaskQueue.length) return;
+    var fr = document.getElementById('frame-tasks');
+    if(!fr || !fr.contentWindow) return;
+    var rest = [];
+    knTaskQueue.forEach(function(p){
+      try{ fr.contentWindow.postMessage({nkTaskAdd: p}, location.origin); }
+      catch(err){ rest.push(p); }
+    });
+    knTaskQueue = rest;
+  }
 
   /* ── 統合された同期パネル ────────────────────────────
      同期そのものは各アプリが持っている（マージの仕方がアプリごとに違うため）。
@@ -335,7 +363,21 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     var h=Math.floor(m/60); if(h<24) return h+'時間前';
     return Math.floor(h/24)+'日前';
   }
-  function knOnStatus(s){ if(!s||!s.app) return; knSt[s.app]=s; knPaint(); }
+  function knEsc(s){
+    return String(s==null?'':s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+  function knOnStatus(s){
+    if(!s||!s.app) return;
+    knSt[s.app]=s;
+    knReady[s.app]=true;
+    // 状態が届いた＝そのタブは読み込みが終わってリスナーを持っている、という合図。
+    // 待たせていた命令はここで流す（時間で決め打ちすると重いタブに届かない）。
+    knFlushTasks();
+    if(knSyncWait[s.app]){ delete knSyncWait[s.app]; knSendTo(s.app, {nkSync:'now'}); }
+    knPaint();
+  }
   function knPaint(){
     var host=document.getElementById('knStatus'); if(!host) return;
     var anyErr=false, h='';
@@ -347,7 +389,8 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
       else if(s.phase==='syncing'){ txt='同期中…'; }
       else if(s.phase==='off'){ txt='未接続'; }
       else { txt='タブを開くと確認します'; }
-      h+='<div class="knrow '+cls+'"><span class="nm">'+(knLabels[a]||a)+'</span><span class="st">'+txt+'</span></div>';
+      // msg は各アプリから届く文字列なので、必ずエスケープしてから入れる
+      h+='<div class="knrow '+cls+'"><span class="nm">'+knEsc(knLabels[a]||a)+'</span><span class="st">'+knEsc(txt)+'</span></div>';
     });
     host.innerHTML=h;
     var b=document.getElementById('knSyncAuto'); if(b) b.textContent='自動同期: '+(knAuto()?'ON':'OFF');
@@ -365,7 +408,7 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
   }
   function nkPost(msg){
     var fr=document.querySelectorAll('.appframe');
-    for(var i=0;i<fr.length;i++){ try{ fr[i].contentWindow.postMessage(msg,'*'); }catch(e){} }
+    for(var i=0;i<fr.length;i++){ try{ fr[i].contentWindow.postMessage(msg, location.origin); }catch(e){} }
   }
   function nkSndState(err){
     nkPost({nkSoundState:{id:(nkSnd.paused?null:nkSndId), playing:!nkSnd.paused,
@@ -375,16 +418,40 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     try{
       if(!('mediaSession' in navigator)) return;
       navigator.mediaSession.metadata=new MediaMetadata({title:name||'就寝用の音',artist:'音 — BGM',album:'日記帳 & 気になり帳'});
-      navigator.mediaSession.setActionHandler('play', function(){ nkSnd.play().catch(function(){}); });
-      navigator.mediaSession.setActionHandler('pause', function(){ nkSnd.pause(); });
-      navigator.mediaSession.setActionHandler('stop', function(){ nkSnd.pause(); nkSndId=null; nkSndState(); });
+      // ▶は「いま鳴らしているもの」がある時だけ効かせる。停止後も効くままだと、
+      // ロック画面から nkSndId=null のまま再生が始まり、音タブ側はどのカードも
+      // 選ばれていない状態になって、アプリからは止められなくなる。
+      navigator.mediaSession.setActionHandler('play', function(){
+        if(!nkSndId || !nkSnd.src) return;
+        nkSnd.play().then(function(){ nkSndState(); }).catch(function(){});
+      });
+      navigator.mediaSession.setActionHandler('pause', function(){ nkSnd.pause(); nkSndState(); });
+      navigator.mediaSession.setActionHandler('stop', nkSndStop);
     }catch(e){}
+  }
+  function nkMediaClear(){
+    try{
+      if(!('mediaSession' in navigator)) return;
+      ['play','pause','stop'].forEach(function(a){
+        try{ navigator.mediaSession.setActionHandler(a, null); }catch(e){}
+      });
+      navigator.mediaSession.metadata = null;
+      if('playbackState' in navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
+    }catch(e){}
+  }
+  /** 完全に止める。src も消さないと、ロック画面に操作パネルが残り続ける。 */
+  function nkSndStop(){
+    try{ nkSnd.pause(); }catch(e){}
+    nkSndId=null; nkSndName='';
+    try{ nkSnd.removeAttribute('src'); nkSnd.load(); }catch(e){}
+    nkMediaClear();
+    nkSndState();
   }
   function nkSoundCmd(c){
     if(!c||!c.cmd) return;
     try{
       if(c.cmd==='state'){ nkSndState(); return; }
-      if(c.cmd==='stop'){ nkSnd.pause(); nkSndId=null; nkSndState(); return; }
+      if(c.cmd==='stop'){ nkSndStop(); return; }
       if(c.cmd==='vol'){
         if(nkVolSupported() && typeof c.vol==='number') nkSnd.volume=Math.max(0,Math.min(1,c.vol));
         return;
@@ -403,10 +470,23 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 
   function knSend(msg){
     var fr=document.querySelectorAll('.appframe');
-    for(var i=0;i<fr.length;i++){ try{ fr[i].contentWindow.postMessage(msg,'*'); }catch(e){} }
+    for(var i=0;i<fr.length;i++){ try{ fr[i].contentWindow.postMessage(msg, location.origin); }catch(e){} }
+  }
+  function knSendTo(app,msg){
+    var fr=document.getElementById('frame-'+app);
+    if(!fr||!fr.contentWindow) return false;
+    try{ fr.contentWindow.postMessage(msg, location.origin); return true; }catch(e){ return false; }
   }
   function knLoadAll(){ knApps.forEach(function(a){ try{ load(a); }catch(e){} }); }
   function knRefresh(){ knLoadAll(); setTimeout(function(){ knSend({nkSync:'status'}); },600); }
+  /* 「今すぐ全部同期」で、まだ読み込みが終わっていないタブの待ち行列。
+     knOnStatus（＝向こうが名乗り出た合図）で消化する。 */
+  var knSyncWait = {}, knSyncWaitTimer = null;
+  /* そのタブが一度でも状態を送ってきたか（＝messageリスナーを登録済みか）。
+     loaded[] は iframe に src を入れた時点で true になるので読み込み完了の
+     判定には使えない。同一オリジンの読み込み中iframeへの postMessage は
+     例外を投げずに捨てられるため、送信の成否でも判定できない。 */
+  var knReady = {};
 
   // ---- combined backup (shell reads same-origin storage of both apps) ----
   function knOpenDB(){ return new Promise(function(res,rej){ var r=indexedDB.open('kininari',1); r.onupgradeneeded=function(){ try{ if(!r.result.objectStoreNames.contains('files')) r.result.createObjectStore('files',{keyPath:'id'}); }catch(e){} }; r.onsuccess=function(){ res(r.result); }; r.onerror=function(){ rej(r.error); }; }); }
@@ -450,7 +530,10 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
       var obj=await knBuildBackup();
       var blob=new Blob([JSON.stringify(obj)],{type:'application/json'});
       var url=URL.createObjectURL(blob); var a=document.createElement('a');
-      a.href=url; a.download='nikki-kininari-backup-'+new Date().toISOString().slice(0,10)+'.json';
+      // ファイル名はローカル日付で。toISOString はUTCなので JST 0〜9時だと前日になる
+      var d=new Date(), pad=function(n){ return (n<10?'0':'')+n; };
+      var ymd=d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
+      a.href=url; a.download='nikki-kininari-backup-'+ymd+'.json';
       document.body.appendChild(a); a.click(); a.remove(); setTimeout(function(){URL.revokeObjectURL(url);},1000);
       knMsg('書き出しました。', true);
     }catch(e){ knMsg('書き出しに失敗しました。', false); }
@@ -465,7 +548,7 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
       try{
         var frs=document.querySelectorAll('.appframe');
         for(var fi=0; fi<frs.length; fi++){ frs[fi].src='about:blank'; }
-        loaded={};
+        loaded={}; knReady={};
       }catch(e){}
       await new Promise(function(r){ setTimeout(r, 150); });
       if(typeof obj.diary==='string') localStorage.setItem('diaryEntries', obj.diary);
@@ -485,8 +568,24 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
         var files=(obj.kininari.files||[]);
         if(files.length){ var db=await knOpenDB(); for(var i=0;i<files.length;i++){ var f=files[i]; try{ var bl=await (await fetch(f.dataUrl)).blob(); await knIdbPut(db,{id:f.id,blob:bl,name:f.name,type:f.type,size:bl.size}); }catch(e){} } }
       }
-      knMsg('取り込みました。再読み込みします…', true);
-      setTimeout(function(){ location.reload(); }, 900);
+      // 同期の記録（最終同期時刻・Drive上のファイルID）を捨てる。
+      // 残したままだと、リロード直後の自動同期が「Driveのほうが新しい」と判断して
+      // 取り込んだ内容を数秒で上書きし返してしまう。
+      try{
+        ['shared:nksync:file','kininari:gd:file','kininari:gd:sync',
+         'tasks:gtaskList','tasks:gtaskSync'].forEach(function(k){ localStorage.removeItem(k); });
+        knApps.forEach(function(a){ localStorage.removeItem('shared:nksync:sync:'+a); });
+        // さらに、自動同期をいったんOFFにする。取り込んだ内容を確認してから
+        // 自分でONに戻してもらうほうが、勝手に上書きされるより安全。
+        localStorage.setItem(KN_AUTO_KEY, '0');
+        // 日記帳と気になり帳は独自の同期エンジンで、別のキーを見ている。
+        // ここを消し忘れると、リロード直後にDriveから取りに行って
+        // 取り込んだ内容に古い項目が戻ってきてしまう。
+        localStorage.setItem('autoSyncDrive', 'false');
+        localStorage.setItem('kininari:gd:auto', '0');
+      }catch(e){}
+      knMsg('取り込みました。安全のため自動同期はOFFにしています。内容を確かめてから☁でONに戻してください。再読み込みします…', true);
+      setTimeout(function(){ location.reload(); }, 2200);
     }catch(e){ knMsg('取り込めませんでした。ファイルを確認してください。', false); }
   }
 
@@ -497,10 +596,33 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
   var hx=document.getElementById('knHelpX'); if(hx) hx.addEventListener('click', function(){ document.getElementById('knHelp').classList.remove('open'); });
   var hl=document.getElementById('knHelp'); if(hl) hl.addEventListener('click', function(e){ if(e.target.id==='knHelp') hl.classList.remove('open'); });
   document.getElementById('knSyncAll').addEventListener('click', function(){
-    knApps.forEach(function(a){ knSt[a]={phase:'syncing',at:0,msg:''}; });
-    knPaint(); knLoadAll();
-    setTimeout(function(){ knSend({nkSync:'now'}); }, 500);
-    setTimeout(function(){ knSend({nkSync:'status'}); }, 6000);
+    // 以前は knLoadAll() の 500ms 後に一斉送信していたが、気になり帳(326KB+React)や
+    // 日記帳(131KB)は読み込みが間に合わず、命令が空のページに飛んで消えていた。
+    // 取りこぼしたタブは6秒後の問い合わせに idle を返すので「タブを開くと確認します」と
+    // 表示され、同期していないのにエラーにもならなかった。
+    // いまは各タブが状態を送ってきた時点（＝リスナー登録済み）で個別に命令する。
+    knSyncWait = {};
+    knApps.forEach(function(a){ knSt[a]={phase:'syncing',at:0,msg:''}; knSyncWait[a]=1; });
+    knPaint();
+    knLoadAll();
+    // すでに名乗り出ているタブには即送る。まだのタブは knOnStatus で拾う。
+    knApps.forEach(function(a){
+      if(knReady[a] && knSendTo(a, {nkSync:'now'})) delete knSyncWait[a];
+    });
+    if(knSyncWaitTimer) clearTimeout(knSyncWaitTimer);
+    knSyncWaitTimer = setTimeout(function(){
+      // それでも名乗り出なかったタブは、黙って諦めずに理由を出す
+      var left = Object.keys(knSyncWait);
+      left.forEach(function(a){
+        knSendTo(a, {nkSync:'now'});   // 最後にもう一度だけ試す
+        if(knSt[a] && knSt[a].phase==='syncing'){
+          knSt[a]={phase:'error',at:Date.now(),msg:'タブの読み込みが終わらず同期できませんでした'};
+        }
+      });
+      knSyncWait = {};
+      knSend({nkSync:'status'});
+      knPaint();
+    }, 20000);
   });
   document.getElementById('knSyncAuto').addEventListener('click', function(){ knSetAuto(!knAuto()); });
   // 日記帳から移設した操作。実体は日記帳側に残し、ここは入口だけ持つ。

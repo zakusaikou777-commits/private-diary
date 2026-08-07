@@ -478,7 +478,7 @@
   var ttsSupported = ("speechSynthesis" in window);
 
   /* ---------- audio ---------- */
-  var audioCtx = null;
+  var audioCtx = null, audioResume = null;
   var voice = null;
 
   function ensureAudio(){
@@ -486,21 +486,35 @@
       var Ctx = window.AudioContext || window.webkitAudioContext;
       if(!Ctx) return null;
       if(!audioCtx) audioCtx = new Ctx();
-      if(audioCtx.state === "suspended") audioCtx.resume();
+      if(audioCtx.state !== "running"){
+        /* iOSは着信などで中断されると suspended のまま戻らない。resume() の完了を
+           待たずに currentTime を使うと、指定した時刻が過去になって音が出ない。 */
+        try { audioResume = audioCtx.resume(); } catch(e){ audioResume = null; }
+      }
       return audioCtx;
     } catch(e){ return null; }
   }
   function playTone(freq, delay, dur, peak){
     delay = delay||0; dur = dur||1.0; peak = peak||0.13;
     var ctx = ensureAudio(); if(!ctx) return;
-    var t = ctx.currentTime + delay;
-    var o = ctx.createOscillator(), g = ctx.createGain();
-    o.type = "sine"; o.frequency.value = freq;
-    g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(peak, t + 0.04);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g); g.connect(ctx.destination);
-    o.start(t); o.stop(t + dur + 0.05);
+    var fire = function(){
+      try {
+        var t = ctx.currentTime + delay;
+        var o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = "sine"; o.frequency.value = freq;
+        g.gain.setValueAtTime(0, t);
+        g.gain.linearRampToValueAtTime(peak, t + 0.04);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(ctx.destination);
+        o.start(t); o.stop(t + dur + 0.05);
+      } catch(e){}
+    };
+    // まだ動いていないなら、再開が済んでから鳴らす（先に予約すると取りこぼす）
+    if(ctx.state !== "running" && audioResume && audioResume.then){
+      audioResume.then(fire, function(){});
+      return;
+    }
+    fire();
   }
   function senseTone(idx){ playTone(SENSE_FREQS[idx % SENSE_FREQS.length], 0, 1.1, 0.12); }
   function playChime(){ playTone(528,0,1.7,0.16); playTone(660,0.16,1.7,0.16); playTone(792,0.32,1.7,0.16); }
@@ -569,27 +583,101 @@
     var out = String(text||"").split(/(?:。|！|？)\s*/).map(function(x){ return x.trim(); }).filter(Boolean);
     return out.length ? out : [String(text||"")];
   }
+  /* Chrome/Safari は発話中の Utterance が回収されると、読み上げを途中で打ち切る。
+     終わる（または失敗する）まで、ここで参照を握っておく。 */
+  var speaking = [];
+  var speakTimer = null;
+  /* iOS Safari は「利用者の操作と同じ実行の流れ」で speak() しないと、
+     そのセッションのあいだ以後ずっと黙ってしまう。直前が操作なら待たずに読ませる。 */
+  var lastGesture = 0;
+  ["pointerdown","mousedown","touchstart","keydown"].forEach(function(ev){
+    try { document.addEventListener(ev, function(){ lastGesture = Date.now(); }, true); } catch(e){}
+  });
+  function inGesture(){ return (Date.now() - lastGesture) < 1200; }
+
   function speak(text){
     try {
       if(!ttsSupported) return;
       var ss = window.speechSynthesis;
       var parts = splitJa(text);
-      var go = function(){ parts.forEach(function(t){ try{ ss.speak(mkUtter(t)); }catch(e){} }); };
-      if(ss.speaking || ss.pending){ ss.cancel(); setTimeout(go, 90); } else go();
+      var go = function(){
+        speakTimer = null;
+        parts.forEach(function(t){
+          try {
+            var u = mkUtter(t);
+            speaking.push(u);
+            var drop = function(){ var i = speaking.indexOf(u); if(i >= 0) speaking.splice(i, 1); };
+            u.onend = drop; u.onerror = drop;
+            ss.speak(u);
+          } catch(e){}
+        });
+      };
+      // 連打で go が積み上がらないよう、待機中のものは必ず捨ててから入れ替える
+      if(speakTimer){ clearTimeout(speakTimer); speakTimer = null; }
+      if(ss.speaking || ss.pending){
+        ss.cancel(); speaking.length = 0;
+        if(inGesture()){
+          go();                                     // 操作と同じ流れで（iOSの解禁のため）
+          /* cancel と同じ回で speak を投げると取りこぼす engine がある。
+             少しあとに何も鳴っていなければ、もう一度だけ入れ直す。
+             これが無いと「テスト」を続けて押した2回目が無音になる。 */
+          speakTimer = setTimeout(function(){
+            speakTimer = null;
+            try { if(!ss.speaking && !ss.pending){ speaking.length = 0; go(); } } catch(e){}
+          }, 260);
+        }
+        else speakTimer = setTimeout(go, 90);       // cancel 直後は取りこぼす engine がある
+      } else go();
     } catch(e){}
   }
-  function stopSpeech(){ try { if(ttsSupported) window.speechSynthesis.cancel(); } catch(e){} }
+  function stopSpeech(){
+    if(speakTimer){ clearTimeout(speakTimer); speakTimer = null; }
+    speaking.length = 0;
+    try { if(ttsSupported) window.speechSynthesis.cancel(); } catch(e){}
+  }
 
   /* ---------- wake lock ---------- */
-  var wakeLock = null;
-  function reqWake(){ try { if("wakeLock" in navigator){ navigator.wakeLock.request("screen").then(function(w){ wakeLock = w; }).catch(function(){}); } } catch(e){} }
-  function relWake(){ try { if(wakeLock){ wakeLock.release(); wakeLock = null; } } catch(e){} }
-  document.addEventListener("visibilitychange", function(){ if(document.visibilityState === "visible" && S.phase === "running") reqWake(); });
+  /* 要求は非同期なので、返ってくる前に解放を頼まれることがある。そのとき素朴に
+     wakeLock を見ても null なので誰も解放できず、画面がついたままになる。
+     「いま欲しいかどうか」を wakeWanted で持ち、届いた時点で判断する。 */
+  var wakeLock = null, wakeReq = null, wakeWanted = false;
+  function reqWake(){
+    try {
+      if(!("wakeLock" in navigator)) return;
+      wakeWanted = true;
+      if(wakeLock || wakeReq) return;                 // 二重取得を防ぐ
+      wakeReq = navigator.wakeLock.request("screen");
+      wakeReq.then(function(w){
+        wakeReq = null;
+        if(!wakeWanted){ try { w.release(); } catch(e){} return; }   // 待っている間に不要になった
+        wakeLock = w;
+        try { w.addEventListener("release", function(){ if(wakeLock === w) wakeLock = null; }); } catch(e){}
+      }, function(){ wakeReq = null; });
+    } catch(e){ wakeReq = null; }
+  }
+  function relWake(){
+    wakeWanted = false;
+    try { if(wakeLock){ wakeLock.release(); } } catch(e){}
+    wakeLock = null;
+  }
 
   /* ---------- timers ---------- */
-  var tick = null, cueTick = null;
-  function startTimer(){ stopTimer(); tick = setInterval(function(){ S.secondsLeft = Math.max(0, S.secondsLeft - 1); renderClock(); if(S.secondsLeft === 0) onComplete(); }, 1000); }
-  function stopTimer(){ if(tick){ clearInterval(tick); tick = null; } }
+  /* 1秒ずつ引く方式だと、タブが裏に回ったり端末が凍った分だけ時計が遅れる。
+     Wake Lock が使えない端末では「10分」が実時間で何十分にもなっていた。
+     終了時刻を持って、そこから残りを計算する。 */
+  var tick = null, cueTick = null, endAt = 0;
+  function readClock(){ return Math.max(0, Math.round((endAt - Date.now()) / 1000)); }
+  function onTick(){ S.secondsLeft = readClock(); renderClock(); if(S.secondsLeft === 0) onComplete(); }
+  function startTimer(){ stopTimer(); endAt = Date.now() + S.secondsLeft * 1000; tick = setInterval(onTick, 1000); }
+  function stopTimer(){
+    if(tick){ clearInterval(tick); tick = null; if(endAt) S.secondsLeft = readClock(); }
+    endAt = 0;
+  }
+  document.addEventListener("visibilitychange", function(){
+    if(document.visibilityState !== "visible" || S.phase !== "running") return;
+    reqWake();
+    if(tick) onTick();   // 裏にいるあいだ止まっていた時計を、実時間に合わせ直す
+  });
   function startCues(){ stopCues(); cueTick = setInterval(function(){
       S.activeSense = (S.activeSense + 1) % SENSES.length;
       renderSense();
@@ -610,11 +698,12 @@
     startTimer(); startCues(); reqWake();
     if(S.speakCues){ senseTone(0); speak("目を閉じて、「" + S.scene + "」を思い浮かべてください。気づいたことを、声に出して、詳しく。"); }
   }
-  function pause(){ S.phase = "paused"; renderPhase(); stopTimer(); stopCues(); stopSpeech(); relWake(); }
+  function pause(){ S.phase = "paused"; renderPhase(); stopTimer(); renderClock(); stopCues(); stopSpeech(); relWake(); }
   function resume(){ S.phase = "running"; renderPhase(); startTimer(); startCues(); reqWake(); }
   function endNow(){
-    var sec = S.durationMin*60 - S.secondsLeft;
     stopTimer(); stopCues(); stopSpeech(); relWake();
+    // stopTimer() が残り時間を実時間で締めるので、そのあとで経過を出す
+    var sec = Math.max(0, S.durationMin*60 - S.secondsLeft);
     S.pending = { sec: sec, scene: S.scene }; S.rating = null; $("noteEl").value = "";
     S.phase = "done"; renderPhase(); renderDone();
   }
@@ -646,8 +735,8 @@
   function recKey(h){ return (h && (h.ts || (h.date + "|" + (h.sec||0)))) + ""; }
   function syncGetLocal(){ return { history: S.history, clearedAt: S.clearedAt || 0 }; }
   function syncSetLocal(d){
-    S.history = d.history || [];
-    S.clearedAt = d.clearedAt || 0;
+    S.history = Array.isArray(d && d.history) ? d.history : [];   // 形の壊れた受信で以後の描画が止まらないように
+    S.clearedAt = (d && d.clearedAt) || 0;
     try { store.set(KEY, JSON.stringify(S.history)); } catch(e){}
     try { store.set(CLR_KEY, String(S.clearedAt)); } catch(e){}
     renderTenten(); renderJournal();
@@ -697,12 +786,14 @@
     setTimeout(function(){ sync.start(); }, 900);
   }
 
-  /* 声の設定は端末に入っている音声に依存するので、同期せずこの端末だけに持つ */
+  /* 声の設定は端末に入っている音声に依存するので、同期せずこの端末だけに持つ。
+     音声ガイドのON/OFFも、隣の声の設定だけ残って本体が毎回OFFに戻るのは不親切なので
+     ここに一緒に入れる（これも端末ごとの好み）。 */
   var VOICE_KEY = "image-streaming:voice";
   function saveVoicePrefs(){
     try {
       store.set(VOICE_KEY, JSON.stringify({
-        voiceURI: S.voiceURI, vPitch: S.vPitch, vRate: S.vRate, vPreset: S.vPreset
+        voiceURI: S.voiceURI, vPitch: S.vPitch, vRate: S.vRate, vPreset: S.vPreset, speakCues: S.speakCues
       }));
     } catch(e){}
   }
@@ -714,6 +805,7 @@
       if(typeof o.vPitch === "number") S.vPitch = Math.max(0.6, Math.min(1.6, o.vPitch));
       if(typeof o.vRate  === "number") S.vRate  = Math.max(0.6, Math.min(1.3, o.vRate));
       if(typeof o.vPreset === "string") S.vPreset = o.vPreset;
+      if(typeof o.speakCues === "boolean") S.speakCues = o.speakCues;
     } catch(e){}
   }
 
@@ -921,7 +1013,10 @@
     if(!store.persistent) $("persistNote").hidden = false;
 
     // load history
-    try { var raw = store.get(KEY); if(raw) S.history = JSON.parse(raw) || []; } catch(e){ S.history = []; }
+    /* 配列以外のJSON（"{}" など）でも JSON.parse は通ってしまう。そのまま入れると
+       あとの .filter() で init() ごと止まり、ボタンが全部死ぬ。形まで確かめる。 */
+    try { var raw = store.get(KEY), h0 = raw ? JSON.parse(raw) : null; S.history = Array.isArray(h0) ? h0 : []; }
+    catch(e){ S.history = []; }
     try { S.clearedAt = parseInt(store.get(CLR_KEY) || "0", 10) || 0; } catch(e){ S.clearedAt = 0; }
     setupSync();
 
@@ -934,7 +1029,7 @@
     // events
     $("newScene").addEventListener("click", function(){ S.scene = nextScene(S.scene); renderScene(); });
     $("beginBtn").addEventListener("click", begin);
-    $("toggleBtn").addEventListener("click", function(){ S.speakCues = !S.speakCues; if(S.speakCues) ensureAudio(); else stopSpeech(); renderToggle(); });
+    $("toggleBtn").addEventListener("click", function(){ S.speakCues = !S.speakCues; if(S.speakCues) ensureAudio(); else stopSpeech(); saveVoicePrefs(); renderToggle(); });
     $("testBtn").addEventListener("click", function(){
       ensureAudio(); senseTone(0);
       speak("これは音声ガイドのテストです。聞こえていますか。ゆっくり息をして、目を閉じてみてください。");
@@ -990,17 +1085,31 @@
     loadVoicePrefs();
     // 設定を読んだ後にもう一度描き直す（testBtn側の paintVoice はこれより前に走る）
     try { paintVoice(); } catch(e){}
+    renderToggle();   // 保存してあった音声ガイドのON/OFFを反映する
     if(ttsSupported){ pickVoice(); try { window.speechSynthesis.onvoiceschanged = pickVoice; } catch(e){} }
     else { var vb = $("voiceBox"); if(vb) vb.style.display = "none"; }
 
     // keyboard: space to start / pause / resume
     document.addEventListener("keydown", function(e){
-      if(e.code === "Space" && e.target.tagName !== "TEXTAREA"){
-        e.preventDefault();
-        if(S.phase === "idle") begin();
-        else if(S.phase === "running") pause();
-        else if(S.phase === "paused") resume();
+      if(e.code !== "Space") return;
+      /* 何かにフォーカスがあるときの Space は、その部品のためのもの。
+         横取りすると「記録する」「破棄」や鮮明さのボタンがキーボードで押せなくなる。 */
+      var el = e.target, tag = (el && el.tagName || "").toUpperCase();
+      if(el && el.isContentEditable) return;
+      if(tag === "TEXTAREA" || tag === "INPUT" ||
+         tag === "SELECT" || tag === "A" || tag === "OPTION") return;
+      /* ボタンは「キーボードで選んでいるとき」だけ譲る。
+         指やマウスで押したあとはフォーカスが残っているだけなので、
+         そこまで譲ると「Spaceで一時停止」が効かなくなる。 */
+      if(tag === "BUTTON"){
+        var kb = false;
+        try { kb = !!(el.matches && el.matches(":focus-visible")); } catch(err){ kb = false; }
+        if(kb) return;
       }
+      e.preventDefault();
+      if(S.phase === "idle") begin();
+      else if(S.phase === "running") pause();
+      else if(S.phase === "paused") resume();
     });
   }
 

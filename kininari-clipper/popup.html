@@ -24,6 +24,10 @@
   .settings.open { display: block; }
   .settings p { font-size: 11px; color: var(--soft); margin: 0 0 6px; line-height: 1.5; }
   .hint { font-size: 10.5px; color: var(--soft); margin-top: 4px; line-height: 1.5; }
+  .hint.ok { color: #2e7d52; }
+  .hint.err { color: var(--red); }
+  .perm { width: 100%; margin-top: 10px; border: 1px solid var(--line); background: #fff; color: var(--ink); border-radius: 9px; padding: 8px; font-size: 12px; font-weight: 700; font-family: inherit; cursor: pointer; }
+  .perm:disabled { opacity: .6; cursor: default; }
 </style>
 </head>
 <body>
@@ -46,15 +50,18 @@
   <input id="folder" type="text" placeholder="例: あとで読む（なければ自動で作成）" />
 
   <div class="row">
-    <button id="save" class="save">気になり帳に保存</button>
+    <button id="save" class="save" disabled>気になり帳に保存</button>
     <button id="gear" class="gear" title="設定">⚙</button>
   </div>
   <div id="status" class="status"></div>
+  <div id="notice" class="hint"></div>
 
   <div id="settings" class="settings">
-    <p>保存先の気になり帳（kininari.html）のURLを入れてください。https のホスティング先のものです。</p>
+    <p>保存先の気になり帳（kininari.html）のURLを入れてください。https（社内やローカルなら http でも可）のホスティング先のものです。</p>
     <input id="kurl" type="text" placeholder="https://example.com/kininari.html" />
     <div class="hint">例: 結合アプリを https://yourname.github.io/app/ に置いた場合は https://yourname.github.io/app/kininari.html</div>
+    <button id="perm" class="perm">保存の確認を許可する</button>
+    <div id="permMsg" class="hint">許可すると、裏で開いたタブの保存が終わったのを確かめてから閉じます。許可しなくても保存は動きますが、保存できたかどうかは分かりません。</div>
   </div>
 </div>
 <script src="popup.js"></script>

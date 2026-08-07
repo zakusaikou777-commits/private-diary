@@ -219,12 +219,52 @@
 
   /* ── アプリごとのインスタンス ──────────────────────────── */
   /** マージ結果に「同期済み」の印を付ける。次回以降、Driveから消えていたら
-   *  それは他端末での削除だと判断できる。 */
+   *  それは他端末での削除だと判断できる。
+   *
+   *  ★これはDriveへ送る中身にだけ使う。ローカルに付けてよいのは
+   *   アップロードが成功したあと（= 本当にDriveに載ったあと）だけ。
+   *   送信前に付けると、送信が失敗したとき「同期済みなのにDriveに無い」＝
+   *   他端末での削除、と誤判定して、まだ一度も送っていないデータを消す。 */
   function markSynced(v) {
     if (Array.isArray(v)) return v.map(markSynced);
     if (v && typeof v === "object") {
       var o = {}, isItem = false;
       for (var k in v) { o[k] = markSynced(v[k]); if (k === "id") isItem = true; }
+      if (isItem) o.synced = 1;
+      return o;
+    }
+    return v;
+  }
+
+  /** id の集合。プロトタイプ無しにしておく。ふつうのオブジェクトだと
+   *  id が "constructor" や "toString" のとき、送っていないのに
+   *  「載っている」と判定されてしまう（音のジャンルidは利用者の入力）。 */
+  function idSet() { return Object.create(null); }
+
+  /** 送信できた中身に含まれる id を集める。
+   *  ★必ずアップロードを始める前に呼ぶこと。各アプリの getLocal() は
+   *   内部配列をそのまま返すことがあり、通信の往復中に項目が追加されると、
+   *   送っていないものまで拾ってしまう。 */
+  function collectIds(v, out) {
+    out = out || idSet();
+    if (Array.isArray(v)) { v.forEach(function (x) { collectIds(x, out); }); return out; }
+    if (v && typeof v === "object") {
+      if (typeof v.id === "string" || typeof v.id === "number") out[v.id] = 1;
+      for (var k in v) collectIds(v[k], out);
+    }
+    return out;
+  }
+
+  /** ids に載っている項目にだけ印を付ける。
+   *  アップロード中に増えた項目には付けない（Driveに載っていないため）。 */
+  function markUploaded(v, ids) {
+    if (Array.isArray(v)) return v.map(function (x) { return markUploaded(x, ids); });
+    if (v && typeof v === "object") {
+      var o = {}, isItem = false;
+      for (var k in v) {
+        o[k] = markUploaded(v[k], ids);
+        if (k === "id" && ids[v[k]] === 1) isItem = true;
+      }
       if (isItem) o.synced = 1;
       return o;
     }
@@ -258,6 +298,20 @@
     }
     function blankDoc() { return { app: "nikki-sync", v: 1, apps: {} }; }
 
+    /** アップロード成功後に呼ぶ。ids（送信前に確定させたもの）に載っている
+     *  項目にだけ印を付けて保存し直す。そのときの最新のローカルを読み直すので、
+     *  送信中に追加された項目を古いスナップショットで上書きすることもない。
+     *  付ける印が1つも無いときは何もしない（各アプリの setLocal は再描画まで
+     *  伴うため、毎回の同期で無駄に画面を作り直さない）。 */
+    function commitSynced(ids) {
+      try {
+        var cur = cfg.getLocal();
+        var next = markUploaded(cur, ids);
+        if (JSON.stringify(next) === JSON.stringify(cur)) return;
+        cfg.setLocal(next);
+      } catch (e) {}
+    }
+
     /** 実際の同期。pull → merge → 必要なら push を1往復でやる */
     function run(interactive) {
       if (busy) return Promise.resolve();
@@ -269,36 +323,47 @@
         .then(function (id) {
           if (!id) {
             // まだ無い → いまのローカルをそのまま作る
+            var snap = cfg.getLocal();
             var doc = blankDoc();
-            doc.apps[cfg.app] = markSynced(cfg.getLocal());
-            cfg.setLocal(doc.apps[cfg.app]);
+            doc.apps[cfg.app] = markSynced(snap);
+            var ids0 = collectIds(snap);   // 送る前に確定させる
             return upload(tok, null, JSON.stringify(doc)).then(function (m2) {
+              commitSynced(ids0);   // 載ってから印を付ける
               setLastSync(m2.modifiedTime || new Date().toISOString());
             });
           }
           return meta(tok, id).then(function (m1) {
             return readRemote(tok, id).then(function (doc) {
               var remote = doc.apps[cfg.app] || null;
-              var merged = markSynced(cfg.merge(cfg.getLocal(), remote, lastSyncMs()));
-              var changed = !remote || JSON.stringify(merged) !== JSON.stringify(remote);
-              // マージ結果をローカルへ（他アプリの区画には触らない）
-              cfg.setLocal(merged);
-              if (!changed) { setLastSync(m1.modifiedTime); return; }
+              // マージ結果はまだ印を付けない。付けるのは送信できたあと。
+              // ローカルへ先に反映してから読み直すのは、各アプリの setLocal が
+              // normalize で整形するため。整形後を送れば、Driveの中身と
+              // この端末の中身が食い違わない。
+              cfg.setLocal(cfg.merge(cfg.getLocal(), remote, lastSyncMs()));
+              var snap = cfg.getLocal();
+              var payload = markSynced(snap);
+              var ids = collectIds(snap);   // 送る前に確定させる
+              var changed = !remote || JSON.stringify(payload) !== JSON.stringify(remote);
+              // 中身が同じなら、それは全部Driveに載っているということなので印だけ付ける
+              if (!changed) { commitSynced(ids); setLastSync(m1.modifiedTime); return; }
               // 書く直前にもう一度確認（compare-and-swap）
               return meta(tok, id).then(function (m2) {
                 if (m2.modifiedTime !== m1.modifiedTime) {
                   // 間に他端末が書いた → 読み直してマージし直す
                   return readRemote(tok, id).then(function (d2) {
-                    var again = markSynced(cfg.merge(cfg.getLocal(), d2.apps[cfg.app] || null, lastSyncMs()));
-                    cfg.setLocal(again);
-                    d2.apps[cfg.app] = again;
+                    cfg.setLocal(cfg.merge(cfg.getLocal(), d2.apps[cfg.app] || null, lastSyncMs()));
+                    var snap2 = cfg.getLocal();
+                    var ids2 = collectIds(snap2);
+                    d2.apps[cfg.app] = markSynced(snap2);
                     return upload(tok, id, JSON.stringify(d2)).then(function (m3) {
+                      commitSynced(ids2);
                       setLastSync(m3.modifiedTime || new Date().toISOString());
                     });
                   });
                 }
-                doc.apps[cfg.app] = merged;
+                doc.apps[cfg.app] = payload;
                 return upload(tok, id, JSON.stringify(doc)).then(function (m3) {
+                  commitSynced(ids);
                   setLastSync(m3.modifiedTime || new Date().toISOString());
                 });
               });
@@ -368,9 +433,11 @@
     function report() {
       var st = {};
       try { st = cfg.getStatus() || {}; } catch (e) {}
-      try { parent.postMessage({ nkSyncStatus: { app: cfg.app, label: cfg.label, phase: st.phase || "idle", at: st.at || 0, msg: st.msg || "" } }, "*"); } catch (e) {}
+      try { parent.postMessage({ nkSyncStatus: { app: cfg.app, label: cfg.label, phase: st.phase || "idle", at: st.at || 0, msg: st.msg || "" } }, location.origin); } catch (e) {}
     }
     window.addEventListener("message", function (e) {
+      // 命令を受け付けるのはシェル（同一オリジン）からだけにする
+      if (e.origin !== location.origin) return;
       var d = e.data;
       if (!d || !d.nkSync) return;
       if (d.nkSync === "status") { report(); return; }

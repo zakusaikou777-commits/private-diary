@@ -142,6 +142,11 @@ input[type=date],input[type=time],select,.note-in{border:1px solid var(--line);b
   <div id="list"></div>
 
   <div class="gtbox">
+    <label class="gtauto" style="margin-top:0"><input type="checkbox" id="ntf">期限の時刻にお知らせする</label>
+    <p class="note" id="ntfNote"></p>
+  </div>
+
+  <div class="gtbox">
     <button class="btn" id="bGt">Googleタスクと同期</button>
     <label class="gtauto"><input type="checkbox" id="gtAuto">タスクを変えたら自動で送る</label>
     <p class="note" id="gtNote"></p>
@@ -196,24 +201,47 @@ try{
   var o=JSON.parse(store.get(KEY)||"null");
   if(o){ if(Array.isArray(o.items))T=o.items; if(Array.isArray(o.deleted))DEL=o.deleted; }
 }catch(e){}
+/* sync.js が項目に付ける管理用の印。決め打ちのキーだけで作り直すと、この印が
+   毎回落ちてしまい、sync.js 側の「一度同期した項目がDriveから消えている＝
+   他端末で削除された」という判定が永久に働かなくなる（削除が墓標だけ頼りになる）。
+   ここを通しても消さずに持ち越す。 */
+var SYNC_FIELDS=["synced"];
 function normalize(){
   var now=Date.now();
   T=T.filter(function(x){return x&&x.id;}).map(function(x){
-    return {id:x.id, title:String(x.title||""), note:String(x.note||""),
+    var o={id:x.id, title:String(x.title||""), note:String(x.note||""),
             date:x.date||"", time:x.time||"", rep:x.rep||"",
             done:!!x.done, doneAt:x.doneAt||0,
             repDay:x.repDay||0,
+            repWas:x.repWas||"", repNextId:x.repNextId||"",
             gtaskId:x.gtaskId||"", gtaskUpdated:x.gtaskUpdated||"",
+            // Googleアプリ側で消された印。ここで落とすと次の同期で送り直してしまい、
+            // 消したはずのタスクが新しいIDで復活する。必ず持ち越す。
+            gtUnlinked:x.gtUnlinked?1:0,
+            // 前回Googleタスクと揃えられたときの updatedAt（この端末の時計）。
+            // 「こちらで直したか」をこれと比べれば同じ時計どうしの比較で済み、
+            // Googleサーバとの時差で誤判定しない。旧版の gtPulledAt から引き継ぐ。
+            gtSyncedAt:typeof x.gtSyncedAt==="number"?x.gtSyncedAt
+                      :(typeof x.gtPulledAt==="number"?x.gtPulledAt:0),
             gcalEventId:x.gcalEventId||"", createdAt:x.createdAt||now,
             updatedAt:typeof x.updatedAt==="number"?x.updatedAt:(x.createdAt||now)};
+    SYNC_FIELDS.forEach(function(k){ if(x[k]!==undefined)o[k]=x[k]; });
+    return o;
   });
 }
 normalize();
-function save(){
+/* 保存の本体。gtTouch() を呼ばないぶんだけ save() と違う。
+   Googleタスク同期の後始末からは必ずこちらを呼ぶ。save() を呼ぶと
+   保存→gtTouch→10秒後にgtSync→保存…と、タブを開いている限り止まらない。 */
+function persistOnly(){
   try{store.set(KEY,JSON.stringify({items:T,deleted:DEL}));}catch(e){}
   if(sync)sync.touch(true);
-  if(typeof gtTouch==="function")gtTouch();
+  ntfSchedule();
   render();
+}
+function save(){
+  persistOnly();
+  gtTouch();
 }
 function byId(id){for(var i=0;i<T.length;i++)if(T[i].id===id)return T[i];return null;}
 
@@ -338,13 +366,23 @@ function calPush(t){
       return r.json();
     });
   }).then(function(ev){
-    if(ev&&ev.id){t.gcalEventId=ev.id;t.updatedAt=Date.now();save();}
+    // 通信のあいだにDrive同期が走ると normalize() が T を作り直すので、
+    // 手元の t は既に捨てられた古い実体かもしれない。必ずidで引き直して書く。
+    var cur=byId(t.id)||t;
+    if(ev&&ev.id){cur.gcalEventId=ev.id;cur.updatedAt=Date.now();save();}
     toast("Googleカレンダーに登録しました。",3500);
   }).catch(function(e){ toast(calErrMsg(e),6000); });
 }
 
 /* ══════ Google Tasks 連携（双方向）══════
-   こちらの updatedAt と、Google側の updated を比べて新しいほうを採用する。
+   「前回そろえた時点から、どちら側が変わったか」で決める。時刻の比較は必ず
+   同じ物差しどうしで行う。端末の時計とGoogleサーバの時刻を直接比べると、
+   時計が数分ずれているだけで判定がひっくり返り、スマホで直した内容を
+   古い内容で黙って上書きしてしまうため。
+     Google側 : gUpd = g.updated        と seen   = t.gtaskUpdated（どちらもGoogleの時刻）
+     こちら側 : lUpd = t.updatedAt      と synced = t.gtSyncedAt  （どちらも端末の時計）
+   両方が変わっていたら競合。共通の物差しが無いので大小では決められず、
+   「こちらがまだ見ていない新しい情報」であるGoogle側を採り、件数を必ず知らせる。
    Drive同期（PC↔スマホ）とは別系統で、互いに干渉しない。 */
 function gtFetch(tk,path,opt){
   opt=opt||{}; opt.headers=opt.headers||{};
@@ -367,6 +405,64 @@ function gtListId(tk){
     return it[0].id;
   });
 }
+/* 認証 → リストID → 本体、をまとめて面倒みる。
+   Googleアカウントを切り替えると、覚えていたリストIDは404を返し続ける。
+   404（と、再認証しても駄目だった401）のときは覚えたIDを捨てて一度だけやり直す。 */
+function gtRun(fn){
+  return getToken(false).catch(function(){return getToken(true);}).then(function(tk){
+    return gtListId(tk).then(function(l){ return fn(tk,l); }).catch(function(e){
+      var m=String(e&&e.message||e);
+      if(!/40[14]/.test(m))throw e;
+      store.del(GT_LIST_KEY);
+      // 404はリストIDだけが古い（トークンはそのまま使える）。401はトークンごと
+      // 無効なので取り直す。どちらもやり直しは一度だけ。
+      return (/401/.test(m)?getToken(true):Promise.resolve(tk)).then(function(tk2){
+        return gtListId(tk2).then(function(l2){ return fn(tk2,l2); });
+      });
+    });
+  });
+}
+/* 一覧は1回100件までしか返らない。nextPageToken を辿らないと101件目以降
+   （完了ぶんも数に入る）が「Google側から消えた」と誤判定され、紐付けが
+   一斉に外れて次の段階で重複登録される。上限に当たったら partial を立て、
+   呼び出し側は「消えた」判定を一切しない。 */
+var GT_MAX_PAGES=20;
+function gtListAll(tk,listId){
+  var out=[], pages=0;
+  function step(token){
+    return gtFetch(tk,"/lists/"+encodeURIComponent(listId)+"/tasks?maxResults=100&showCompleted=true&showHidden=true"
+      +(token?("&pageToken="+encodeURIComponent(token)):"")).then(function(j){
+      out=out.concat((j&&j.items)||[]);
+      pages++;
+      var nt=j&&j.nextPageToken;
+      if(nt&&pages<GT_MAX_PAGES)return step(nt);
+      return {items:out, partial:!!nt};
+    });
+  }
+  return step("");
+}
+/* Google側へ伝えるべき削除の控え。自動送信がOFFでも、次に同期できたときに必ず送る。
+   送り終えたあとも gtaskId は90日残す。Google側に生き残ったタスクが新しいuidで
+   取り込み直されて復活するのを防ぐため（ローカルの墓標はidが違うので効かない）。 */
+var GT_DEL_KEY="tasks:gtaskDeleted", GT_DEL_TTL=90*24*3600*1000;
+function gtDelList(){
+  var a=[]; try{a=JSON.parse(store.get(GT_DEL_KEY)||"[]");}catch(e){a=[];}
+  if(!Array.isArray(a))a=[];
+  var cut=Date.now()-GT_DEL_TTL;
+  return a.filter(function(x){return x&&x.gid&&(x.at||0)>cut;});
+}
+function gtDelSave(a){ try{store.set(GT_DEL_KEY,JSON.stringify(a.slice(-500)));}catch(e){} }
+function gtDelAdd(gid){
+  if(!gid)return;
+  var a=gtDelList(),i;
+  for(i=0;i<a.length;i++)if(a[i].gid===gid){a[i].at=Date.now();a[i].sent=0;gtDelSave(a);return;}
+  a.push({gid:gid,at:Date.now(),sent:0}); gtDelSave(a);
+}
+function gtDelMarkSent(gid){
+  var a=gtDelList(),ch=false;
+  a.forEach(function(x){ if(x.gid===gid&&!x.sent){x.sent=1;ch=true;} });
+  if(ch)gtDelSave(a);
+}
 /* こちら → Google の形へ */
 function toGoogle(t){
   var g={title:t.title||"(無題)",status:t.done?"completed":"needsAction"};
@@ -383,7 +479,13 @@ function fromGoogle(g,base){
   t.note=g.notes||"";
   t.date=g.due?String(g.due).slice(0,10):"";
   t.done=(g.status==="completed");
-  if(t.done&&!t.doneAt)t.doneAt=Date.now();
+  if(t.done){
+    // 完了日時はGoogle側の completed を使う。ここを取り込んだ時刻にすると
+    // 完了一覧の並びが狂い、「1週間より古い完了は送らない」判定も効かなくなる。
+    var ca=g.completed?new Date(g.completed).getTime():0;
+    if(!ca||!isFinite(ca))ca=0;
+    if(ca)t.doneAt=ca; else if(!t.doneAt)t.doneAt=Date.now();
+  }
   if(!t.done)t.doneAt=0;
   t.gtaskId=g.id;
   t.gtaskUpdated=g.updated||"";
@@ -395,67 +497,121 @@ function gtBusy(v,msg){
 }
 function gtSync(){
   gtBusy(true);
-  var tk,listId;
-  return getToken(false).catch(function(){return getToken(true);}).then(function(t){
-    tk=t; return gtListId(tk);
-  }).then(function(l){
-    listId=l;
-    return gtFetch(tk,"/lists/"+encodeURIComponent(listId)+"/tasks?maxResults=100&showCompleted=true&showHidden=true");
-  }).then(function(j){
-    var remote=(j&&j.items)||[];
+  return gtRun(function(tk,listId){
+   return gtListAll(tk,listId).then(function(res){
+    var remote=res.items, partial=res.partial;
     var byGid={}; remote.forEach(function(g){byGid[g.id]=g;});
     var mine={}; T.forEach(function(t){ if(t.gtaskId)mine[t.gtaskId]=t; });
-    var ops=[], added=0, updated=0, sent=0;
+    var ops=[], added=0, updated=0, sent=0, failed=0, conflicts=0, unlinked=0;
+    var gone={}; gtDelList().forEach(function(x){ gone[x.gid]=1; });
+
+    // ⓪ 消し損ねていたGoogle側の削除を、自動送信のON/OFFに関わらずここで片付ける。
+    //    残したままだと、Google側に生きているタスクが次の同期で取り込み直される。
+    gtDelList().forEach(function(x){
+      if(x.sent)return;
+      ops.push(gtFetch(tk,"/lists/"+encodeURIComponent(listId)+"/tasks/"+encodeURIComponent(x.gid),{method:"DELETE"})
+        .then(function(){ gtDelMarkSent(x.gid); })
+        .catch(function(e){
+          // 既に無い（404/410）なら目的は果たせているので待ち行列から外す
+          if(/40[49]|410/.test(String(e&&e.message||e))){ gtDelMarkSent(x.gid); return; }
+          failed++;
+        }));
+    });
 
     // ① Google側にあってこちらに無い → 取り込む
     remote.forEach(function(g){
       if(mine[g.id])return;
+      if(gone[g.id])return;   // こちらで消したもの。uidを変えて戻ってこないよう弾く
       var t=fromGoogle(g);
-      t.updatedAt=Date.now();
+      // この updatedAt は「取り込んだ時刻」であって利用者の編集ではない。
+      // 同じ値を gtSyncedAt にも入れて、あとで見分けられるようにする
+      t.updatedAt=Date.now(); t.gtSyncedAt=t.updatedAt;
       T.unshift(t); added++;
     });
 
-    // ② 両方にある → updated が新しいほうを採る
+    // ② 両方にある → seen/gUpd/lUpd を見て新しいほうを採る
     T.forEach(function(t){
       if(!t.gtaskId)return;
       var g=byGid[t.gtaskId];
       if(!g){
-        // Google側から消えた → こちらでも紐付けを外す（タスク自体は残す）
-        t.gtaskId=""; t.gtaskUpdated=""; return;
+        // 一覧が途中までしか取れていないときは、無いことを「消えた」と読んではいけない
+        if(partial)return;
+        // Google側から消えた → こちらでも紐付けを外す（タスク自体は残す）。
+        // 印は永続させる。今回限りにすると normalize() で落ちて、次の同期で③が
+        // 新しいIDで送り直し、Googleアプリで消したはずのタスクが復活する。
+        t.gtaskId=""; t.gtaskUpdated=""; t.gtUnlinked=1; unlinked++; return;
       }
+      // 再びGoogle側に見つかった（別端末が送り直した等）なら、印は用済み
+      if(t.gtUnlinked)t.gtUnlinked=0;
       var gUpd=new Date(g.updated||0).getTime();
-      var seen=new Date(t.gtaskUpdated||0).getTime();
-      if(gUpd>seen){
-        // Google側で変わった → こちらへ反映
-        fromGoogle(g,t); t.updatedAt=Date.now(); updated++;
-      } else {
-        // こちらのほうが新しければ送る
+      var seen=new Date(t.gtaskUpdated||0).getTime();   // 前回この端末が見たGoogle側の時刻
+      var lUpd=t.updatedAt||0;
+      var synced=t.gtSyncedAt||0;                       // 前回そろえたときの updatedAt
+      // 変わったかどうかは同じ時計どうしでだけ比べる（上の説明を参照）。
+      // synced が無い＝この印より前から在るタスク。判断材料が無いので
+      // 「直していない」側には倒さず、下の分岐で一度だけ送って印を付ける
+      var gChanged=gUpd>seen;
+      var lChanged=synced>0&&lUpd>synced;
+      if(gChanged){
+        // Google側で変わった＝こちらがまだ見ていない情報なので取り込む。
+        // 競合していても時刻の大小では決めない（比べられる共通の時計が無い）
+        if(lChanged)conflicts++;
+        fromGoogle(g,t); t.updatedAt=Date.now(); t.gtSyncedAt=t.updatedAt; updated++;
+      } else if(lChanged||!synced){
+        // こちらだけ変わった（か、まだ一度も印が付いていない）→ 送る。
+        // 変わっていないのに送ると、そのたびGoogle側の updated が進み、それを見た
+        // 別の端末がまた取り込む…と無意味な往復が続くので送らない
+        var sentUpd=lUpd;
         ops.push(gtFetch(tk,"/lists/"+encodeURIComponent(listId)+"/tasks/"+encodeURIComponent(t.gtaskId),
           {method:"PATCH",body:JSON.stringify(toGoogle(t))})
-          .then(function(g2){ if(g2){t.gtaskUpdated=g2.updated||"";} sent++; })
-          .catch(function(){}));
+          .then(function(g2){
+            // 通信中にDrive同期が T を作り直しているかもしれないので、idで引き直す
+            var cur=byId(t.id)||t;
+            if(g2){cur.gtaskUpdated=g2.updated||"";}
+            // 送れたのは sentUpd 時点の内容。いまの updatedAt を入れると、
+            // 通信中に打った編集が「送信済み」扱いになって永久に届かない
+            cur.gtSyncedAt=sentUpd; sent++;
+          })
+          .catch(function(){ failed++; }));
       }
     });
 
     // ③ こちらにあってGoogleに無い → 送る（完了済みの古いものは除く）
     T.forEach(function(t){
       if(t.gtaskId)return;
+      if(t.gtUnlinked)return;    // Googleアプリ側で消されたもの。二度と送り返さない
       if(t.done&&t.doneAt&&Date.now()-t.doneAt>7*86400000)return;  // 1週間前より古い完了は送らない
+      var sentUpd2=t.updatedAt||0;
       ops.push(gtFetch(tk,"/lists/"+encodeURIComponent(listId)+"/tasks",
         {method:"POST",body:JSON.stringify(toGoogle(t))})
-        .then(function(g2){ if(g2){t.gtaskId=g2.id;t.gtaskUpdated=g2.updated||"";} sent++; })
-        .catch(function(){}));
+        .then(function(g2){
+          // POSTの返りは必ずidで引き直した実体へ書く。手元の t はDrive同期の
+          // normalize() に作り直されて捨てられている場合があり、そこへ書くと
+          // gtaskId が消えて次の同期でもう一度POSTしてしまう（重複の元）。
+          var cur=byId(t.id)||t;
+          if(g2){cur.gtaskId=g2.id;cur.gtaskUpdated=g2.updated||"";}
+          // ここで印を付けておかないと、次の同期で「こちらが直した」と読まれ、
+          // 送ったばかりの内容をもう一度送り返してしまう
+          cur.gtSyncedAt=sentUpd2; sent++;
+        })
+        .catch(function(){ failed++; }));
     });
 
     return Promise.all(ops).then(function(){
-      store.set(GT_SYNC_KEY,new Date().toISOString());
-      normalize(); save();
+      // 1件でも送れていないなら最終同期時刻は進めない（次回もう一度試す）
+      if(!failed)store.set(GT_SYNC_KEY,new Date().toISOString());
+      normalize(); persistOnly();
       var bits=[];
       if(added)bits.push("取り込み "+added+"件");
       if(updated)bits.push("更新 "+updated+"件");
       if(sent)bits.push("送信 "+sent+"件");
-      toast(bits.length?("Googleタスクと同期しました（"+bits.join(" / ")+"）"):"Googleタスクと同期しました。変更はありません。",5000);
+      if(conflicts)bits.push("競合 "+conflicts+"件（両方で直したのでGoogle側を採りました）");
+      if(unlinked)bits.push("紐付けを外した "+unlinked+"件（Google側で削除。以後は送りません）");
+      if(partial)bits.push("一覧が多すぎて途中まで");
+      if(failed)toast("Googleタスクへ"+failed+"件を送れませんでした"+(bits.length?"（"+bits.join(" / ")+"）":"")+"。",7000);
+      else toast(bits.length?("Googleタスクと同期しました（"+bits.join(" / ")+"）"):"Googleタスクと同期しました。変更はありません。",5000);
     });
+   });
   }).catch(function(e){
     var m=String(e&&e.message||e);
     if(/NOCID/.test(m))toast("先に ☁ でGoogleドライブのクライアントIDを設定してください。",6000);
@@ -463,7 +619,11 @@ function gtSync(){
     else if(/403/.test(m))toast("Googleタスクの権限がありません。Cloud ConsoleでTasks APIの有効化と、スコープ（.../auth/tasks）の追加が必要です。",9000);
     else if(/リストが見つかりません/.test(m))toast(m,6000);
     else toast("Googleタスクと同期できませんでした。",5000);
-  }).then(function(){ gtBusy(false); });
+  }).then(function(){
+    // 旧版が付けていた今回限りの印が残っていたら掃除する（gtUnlinked へ移行済み）
+    T.forEach(function(t){ if(t._gtUnlinked)delete t._gtUnlinked; });
+    gtBusy(false);
+  });
 }
 
 /* ══════ 追加 ══════ */
@@ -524,18 +684,37 @@ $("nt").addEventListener("keydown",function(e){if(e.key==="Enter")add();});
 function toggle(id){
   var t=byId(id); if(!t)return;
   if(!t.done && t.rep && t.date){
-    // 繰り返しは、完了したら次回ぶんを作って自分は完了済みにする
+    // 繰り返しは、完了したら次回ぶんを作って自分は完了済みにする。
+    // 元の繰り返し設定(repWas)と作った次回ぶん(repNextId)を覚えておく。
+    // 覚えずに rep を空にすると、完了を取り消したときに元へ戻せず、
+    // 繰り返さなくなった元タスクと次回ぶんが二重に残ってしまう。
+    var now=Date.now();
     var nd=nextDate(t.date,t.rep,t.repDay);
     var nx={id:uid(),title:t.title,note:t.note,date:nd,time:t.time,rep:t.rep,
             repDay:(t.repDay||Number(t.date.split("-")[2])),
-            done:false,doneAt:0,gcalEventId:"",createdAt:Date.now(),updatedAt:Date.now()};
+            done:false,doneAt:0,gcalEventId:"",createdAt:now,updatedAt:now};
     T.unshift(nx);
-    t.done=true;t.doneAt=Date.now();t.rep="";t.updatedAt=Date.now();
+    t.done=true;t.doneAt=now;t.repWas=t.rep;t.rep="";t.repNextId=nx.id;t.updatedAt=now;
     save();
     toast("次回は "+dueLabel({date:nd,time:t.time})+" です。",4000);
     return;
   }
   t.done=!t.done; t.doneAt=t.done?Date.now():0; t.updatedAt=Date.now();
+  if(!t.done && t.repWas){
+    // 完了の取り消しは、完了時にやったことをそのまま巻き戻す
+    t.rep=t.repWas; t.repWas="";
+    var nid=t.repNextId; t.repNextId="";
+    if(nid){
+      var n2=byId(nid);
+      // 自動で作っただけで、まだ誰も触っていない次回ぶんだけ引っ込める
+      if(n2&&!n2.done&&(n2.updatedAt||0)<=(n2.createdAt||0)){
+        if(n2.gtaskId)gtDelAdd(n2.gtaskId);   // Google側へ送っていたら消す予約もする
+        T=T.filter(function(x){return x.id!==nid;});
+        DEL.push({id:nid,at:Date.now()});
+        if(editId===nid)editId=null;
+      }
+    }
+  }
   save();
 }
 
@@ -579,13 +758,43 @@ function groupOf(t){
   if(t.date<=addDays(td,7))return "今週";
   return "この先";
 }
+/* 編集フォームは render() のたびに保存済みの値から作り直される。裏で走った同期
+   （Drive 3秒 / Googleタスク 10秒）が途中で render() を呼ぶと、打ちかけの文字が
+   消えてしまうので、開いている編集欄の中身とカーソル位置だけ持ち越す。 */
+var EDIT_FIELDS=["eTitle","eDate","eTime","eRep","eNote"];
+/* いま画面に出ている編集フォームが「どのタスクのものか」。editId を見ては駄目で、
+   ✎ の切り替えは「editId を書き換えてから render()」の順なので、grabEdit の時点の
+   editId はもう次のタスクを指している。それを鵜呑みにすると、DOMに残っている前の
+   タスクの値を次のタスクのフォームへ書き戻し、保存で別タスクを潰してしまう。 */
+var editFormId=null;
+function grabEdit(){
+  if(!editFormId)return null;
+  var g={id:editFormId, vals:{},focus:"",s:null,e:null},any=false;
+  EDIT_FIELDS.forEach(function(id){ var el=$(id); if(el){g.vals[id]=el.value;any=true;} });
+  if(!any)return null;
+  var a=document.activeElement;
+  if(a&&a.id&&EDIT_FIELDS.indexOf(a.id)>=0){
+    g.focus=a.id;
+    try{ if(typeof a.selectionStart==="number"){g.s=a.selectionStart;g.e=a.selectionEnd;} }catch(err){}
+  }
+  return g;
+}
+function restoreEdit(g){
+  // 掴んだときと違うタスクの欄には絶対に書き戻さない
+  if(!g||!editId||g.id!==editId)return;
+  EDIT_FIELDS.forEach(function(id){ var el=$(id); if(el&&id in g.vals)el.value=g.vals[id]; });
+  if(!g.focus)return;
+  var el=$(g.focus); if(!el)return;
+  try{ el.focus(); if(g.s!==null&&el.setSelectionRange)el.setSelectionRange(g.s,g.e); }catch(err){}
+}
 function render(){
+  var keep=grabEdit();
   var c=counts();
   $("cOpen").textContent=c.open; $("cToday").textContent=c.today;
   $("cOver").textContent=c.over; $("cNone").textContent=c.none; $("cDone").textContent=c.done;
   $("count").innerHTML= c.open? ("のこり <b>"+c.open+"</b>"+(c.over?" · 期限切れ "+c.over:"")) : "ぜんぶ完了";
 
-  var l=visible(),h="",lastG="";
+  var l=visible(),h="",lastG="",shownEdit=null;
   if(!l.length){
     h='<div class="empty">'+(T.length?"この条件に合うタスクはありません。":"まだタスクがありません。<br>上の欄に、やることを書いてみてください。")+'</div>';
   } else {
@@ -606,6 +815,7 @@ function render(){
        + '<button class="mini" data-del="'+t.id+'" title="削除">🗑</button>'
        + '</div></div>';
       if(editId===t.id){
+        shownEdit=t.id;
         h+='<div class="edit">'
          + '<div class="frow"><span class="flbl">名前</span><input class="note-in" style="min-height:0" id="eTitle" value="'+esc(t.title)+'"></div>'
          + '<div class="frow"><span class="flbl">期限</span><input type="date" id="eDate" value="'+esc(t.date)+'"><input type="time" id="eTime" value="'+esc(t.time)+'"></div>'
@@ -620,6 +830,8 @@ function render(){
     });
   }
   $("list").innerHTML=h;
+  editFormId=shownEdit;   // いまDOMに出したフォームのタスク（出していなければnull）
+  restoreEdit(keep);
   Array.prototype.forEach.call(document.querySelectorAll("#filters .f"),function(b){
     b.classList.toggle("on",b.getAttribute("data-f")===filter);
   });
@@ -637,8 +849,11 @@ $("list").addEventListener("click",function(e){
       var nr=$("eRep").value, nd=$("eDate").value;
       if(nr&&!nd){toast("繰り返しには期限が必要です。",4500);return;}
       t2.title=($("eTitle").value||"").trim()||t2.title;
+      // 毎月の基準日は、日付欄を実際に変えたとき（か、まだ基準が無いとき）だけ更新する。
+      // 保存のたびに書き換えると、31日のタスクが2月に28日へ丸められたあと
+      // 「毎月28日」に固定されてしまい、翌月に元の日付へ戻らなくなる。
+      if(nd&&(nd!==t2.date||!t2.repDay))t2.repDay=Number(nd.split("-")[2]);
       t2.date=nd; t2.time=$("eTime").value; t2.rep=nr;
-      if(nd)t2.repDay=Number(nd.split("-")[2]);
       t2.note=$("eNote").value; t2.updatedAt=Date.now();
     }
     editId=null; save(); return;
@@ -650,15 +865,12 @@ $("list").addEventListener("click",function(e){
       T=T.filter(function(x){return x.id!==id;});
       DEL.push({id:id,at:Date.now()});
       if(editId===id)editId=null;
+      // Googleタスクにも送っていたなら、あちらからも消す。ここで直接消しに行くと
+      // 自動送信OFFのときや通信に失敗したときに消し漏れ、次の同期で新しいuidの
+      // 別タスクとして戻ってきてしまう（墓標はidが違うので効かない）。
+      // 控えに残しておき、次に同期できたときへ持ち越す。
+      if(gid)gtDelAdd(gid);
       save();
-      // Googleタスクにも送っていたなら、あちらからも消す
-      if(gid&&gtAutoOn()){
-        getToken(false).then(function(tk){
-          return gtListId(tk).then(function(l){
-            return gtFetch(tk,"/lists/"+encodeURIComponent(l)+"/tasks/"+encodeURIComponent(gid),{method:"DELETE"});
-          });
-        }).catch(function(){});
-      }
     }
     return;
   }
@@ -686,6 +898,15 @@ Array.prototype.forEach.call(document.querySelectorAll("#filters .f"),function(b
 
 /* シェル経由でも受け取れるようにする（同じタブが既に開いている場合）*/
 window.addEventListener("message",function(e){
+  // シェル(index.html)の同一オリジンiframeとして開かれる前提。
+  // 誰でも書き込める窓口にしないため、送り元が違えば何もしない。
+  if(e.origin!==location.origin)return;
+  if(e.data&&e.data.nkSync==="cid"){
+    // クライアントIDが変わった＝Googleアカウントごと変わったかもしれない。
+    // 覚えていたリストIDは別アカウントでは404を返し続けるので捨てる。
+    store.del(GT_LIST_KEY);
+    return;
+  }
   var p=e.data&&e.data.nkTaskAdd; if(!p||!p.title)return;
   if(T.some(function(x){return !x.done&&x.title===String(p.title).slice(0,120);})){
     toast("同じ名前のタスクが既にあります。",4000); return;
@@ -759,6 +980,127 @@ function gtTouch(){
   gtTimer=setTimeout(function(){ gtTimer=null; gtSync().then(gtPaint); }, 10000);
 }
 gtPaint();
+
+/* ══════ 期限のお知らせ（気になり帳と同じつくり）══════
+   通知の予約(TimestampTrigger)は対応ブラウザが限られるので、あるかどうかを
+   その都度確かめ、無ければタブを開いている間だけ自分で見に行く。
+   タスクごとにタイマーを持つと数が増えたときに電池を食うので、
+   タイマーは30秒に1本だけ。時刻まで決めたタスクだけが対象（日付だけのタスクは
+   鳴らす瞬間が決まらないため）。 */
+var NTF_KEY="tasks:notify";
+var ntfOn=(store.get(NTF_KEY)==="1"), ntfSeen={}, ntfInit=false;
+function ntfCan(){ return typeof Notification!=="undefined"; }
+function ntfTrig(){
+  try{ return ("serviceWorker" in navigator)&&ntfCan()&&("TimestampTrigger" in window); }catch(e){ return false; }
+}
+function ntfSw(){ return ntfTrig()&&Notification.permission==="granted"; }
+function ntfAt(t){ if(!t||t.done||!t.date||!t.time)return null; return dueTs(t); }
+function ntfBody(t){
+  var b=[dueLabel(t)];
+  if(t.note)b.push(t.note.split("\n")[0].slice(0,40));
+  return b.filter(Boolean).join(" · ");
+}
+/* 先の予定をまとめてOSに預ける（対応ブラウザのみ）*/
+function ntfSchedule(){
+  if(!ntfSw())return;
+  navigator.serviceWorker.ready.then(function(reg){
+    return reg.getNotifications({includeTriggered:true}).then(function(ns){
+      var now=Date.now();
+      ns.forEach(function(n){
+        if(!n.tag||n.tag.indexOf("tasks-")!==0)return;
+        // 既に鳴った通知まで閉じると、保存のたびにお知らせが画面から消えてしまう。
+        // 予約時刻を data に入れてあるので、まだ先の分だけ取り消す
+        var at=(n.data&&n.data.at)||n.timestamp||0;
+        if(at>now)n.close();
+      });
+      if(!ntfOn)return;
+      // 期限の近い順に預ける。格納順（作成順）のまま先頭40件だと、
+      // 新しいタスクが増えたときに「明日が期限の古いタスク」が漏れる
+      var due=[];
+      T.forEach(function(t){
+        var tt=ntfAt(t);
+        if(tt!=null&&tt>now)due.push({t:t,at:tt});
+      });
+      due.sort(function(a,b){return a.at-b.at;});
+      due.slice(0,40).forEach(function(x){   // 先の分まで預けすぎない
+        try{
+          reg.showNotification("⏰ "+(x.t.title||"タスク"),{
+            body:ntfBody(x.t), tag:"tasks-"+x.t.id,
+            showTrigger:new TimestampTrigger(x.at), data:{url:location.href, at:x.at}
+          });
+        }catch(e){}
+      });
+    });
+  }).catch(function(){});
+}
+function ntfCancel(){
+  if(!ntfTrig())return;
+  navigator.serviceWorker.ready.then(function(reg){
+    return reg.getNotifications({includeTriggered:true}).then(function(ns){
+      ns.forEach(function(n){ if(n.tag&&n.tag.indexOf("tasks-")===0)n.close(); });
+    });
+  }).catch(function(){});
+}
+function ntfFire(t){
+  var shown=false;
+  try{
+    if(ntfCan()&&Notification.permission==="granted"){
+      var n=new Notification("⏰ "+(t.title||"タスク"),{body:ntfBody(t),tag:"tasks-"+t.id});
+      n.onclick=function(){ try{window.focus();}catch(e){} n.close(); };
+      shown=true;
+    }
+  }catch(e){}
+  // OS通知が使えない/断られている場合は、画面の帯でお知らせする
+  if(!shown)toast("⏰ "+(t.title||"タスク")+(ntfBody(t)?"（"+ntfBody(t)+"）":""),9000);
+}
+function ntfScan(){
+  if(ntfSw())return;                           // OSに預けてあるなら二重に鳴らさない
+  var now=Date.now();
+  T.forEach(function(t){
+    var tt=ntfAt(t);
+    if(tt==null||tt>now)return;
+    var k=t.id+"@"+tt;
+    if(ntfSeen[k])return;
+    ntfSeen[k]=1;
+    // 開いた時点で既に過ぎているぶんは鳴らさない（起動のたびに古い分が鳴らないように）
+    if(ntfInit&&ntfOn)ntfFire(t);
+  });
+  ntfInit=true;
+}
+function ntfPaint(){
+  var c=$("ntf"); if(c)c.checked=ntfOn;
+  var p=$("ntfNote"); if(!p)return;
+  if(!ntfCan())p.textContent="このブラウザは通知に対応していません。";
+  else if(!ntfOn)p.textContent="時刻まで決めたタスクを、その時刻にお知らせします。";
+  else if(Notification.permission==="denied")p.textContent="OSの通知は今ブロックされています。開いている間は画面の帯でお知らせします。";
+  else if(ntfSw())p.textContent="お知らせします（対応ブラウザではタブを閉じていても届きます）。";
+  else p.textContent="このタブを開いている間にお知らせします。";
+}
+$("ntf").addEventListener("change",function(){
+  if(!$("ntf").checked){ ntfOn=false; store.set(NTF_KEY,"0"); ntfCancel(); ntfPaint(); return; }
+  if(!ntfCan()){ ntfOn=false; $("ntf").checked=false; ntfPaint(); toast("このブラウザは通知に対応していません。",4000); return; }
+  var go=function(perm){
+    if(perm==="granted"){
+      ntfOn=true; store.set(NTF_KEY,"1"); ntfSchedule();
+      toast(ntfTrig()?"期限の時刻にお知らせします。":"このタブを開いている間にお知らせします。",4000);
+    } else if(perm==="denied"){
+      ntfOn=true; store.set(NTF_KEY,"1");
+      toast("OSの通知はブロック中です。開いている間は画面の帯でお知らせします。",6000);
+    } else { ntfOn=false; $("ntf").checked=false; }
+    ntfPaint();
+  };
+  // requestPermission は「戻り値がPromise」の新しい形と「コールバック」の古い形がある。
+  // 両方に備え、二重に呼ばれないよう一度だけ通す。
+  var done=false, once=function(p){ if(done)return; done=true; go(p); };
+  if(Notification.permission!=="default"){ once(Notification.permission); return; }
+  try{
+    var r=Notification.requestPermission(once);
+    if(r&&r.then)r.then(once).catch(function(){ once(Notification.permission); });
+  }catch(e){ once(Notification.permission); }
+});
+if("serviceWorker" in navigator){ try{ navigator.serviceWorker.register("sw.js").catch(function(){}); }catch(e){} }
+ntfPaint(); ntfScan(); if(ntfOn)ntfSchedule();
+setInterval(ntfScan,30000);
 
 renderQuick(); render();
 })();

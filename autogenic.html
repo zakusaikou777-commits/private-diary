@@ -133,6 +133,17 @@ header{margin-bottom:16px}
     <div style="margin-top:16px"><button class="btn warn" id="stopBtn">やめる（消去動作をして終わります）</button></div>
   </div>
 
+  <!-- 中断からの復帰。起動直後は操作の外なので、iOSでは読み上げも音も出せない。
+       かならず1回タップしてもらい、その中で画面ロックと音の解禁をする。 -->
+  <div id="resume" style="display:none">
+    <div class="card">
+      <p class="ttl">消去動作が残っています</p>
+      <p class="note" style="margin-top:0">前回の練習が、消去動作をしないまま中断されていました。だるさやぼんやりした感じが残らないよう、短い消去動作だけ行います。</p>
+      <button class="btn go" id="resumeBtn">消去動作をはじめる</button>
+      <button class="btn" id="resumeSkip">いまはしない（自分で手足を動かします）</button>
+    </div>
+  </div>
+
   <div id="home">
     <div class="card">
       <p class="ttl">きょうの練習</p>
@@ -180,6 +191,7 @@ header{margin-bottom:16px}
     <div class="card">
       <p class="ttl">画面を消さない</p>
       <label class="opt"><input type="checkbox" id="optWake"><span class="t"><span class="n">練習中は自動でON</span><span class="d">切ると、途中で画面が消えて読み上げが止まり、消去動作まで進めないことがあります。</span></span></label>
+      <p class="note" id="wakeSupport" style="display:none"></p>
     </div>
 
     <div class="card">
@@ -246,12 +258,24 @@ var store=(function(){
   var ok=false,mem={};
   try{var k="__t"+Math.random();localStorage.setItem(k,"1");localStorage.removeItem(k);ok=true;}catch(e){ok=false;}
   return {
-    get:function(k){try{if(ok)return localStorage.getItem(k);}catch(e){}return (k in mem)?mem[k]:null;},
-    set:function(k,v){try{if(ok){localStorage.setItem(k,v);return;}}catch(e){}mem[k]=v;},
-    del:function(k){try{if(ok){localStorage.removeItem(k);return;}}catch(e){}delete mem[k];}
+    // 容量オーバー等で localStorage に書けなかったぶんは mem に退避する。
+    // mem に残っている＝書けなかった最新のぶん、なので localStorage より優先して読む。
+    // ここを見ないと「保存できたつもりで、読み出すと古いまま」になる。
+    get:function(k){
+      if(k in mem)return mem[k];
+      try{ if(ok)return localStorage.getItem(k); }catch(e){}
+      return null;
+    },
+    set:function(k,v){
+      try{ if(ok){ localStorage.setItem(k,v); delete mem[k]; return; } }catch(e){}
+      mem[k]=v;
+    },
+    del:function(k){ try{ if(ok)localStorage.removeItem(k); }catch(e){} delete mem[k]; }
   };
 })();
-function esc(t){return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+// 属性値にもそのまま差し込めるよう " と ' も潰す。
+// 台本は取り込み・同期で外から入ってくるので、id や文もエスケープが要る。
+function esc(t){return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
 function toast(m,ms){var e=$("toast");e.textContent=m;e.style.display="block";clearTimeout(toast._t);toast._t=setTimeout(function(){e.style.display="none";},ms||3800);}
 
 /* ══════ 台本 ══════
@@ -323,30 +347,75 @@ var BASE_CANCEL=[
    既定(BASE_*)はコードに持ち、編集ぶんだけを SCRIPT_KEY に保存する。
    こうしておくと、アプリのファイルを新しくしても編集が消えない。 */
 var SCRIPT_KEY="autogenic:script";
-var STEPS=[], CANCEL=[], CANCEL_SHORT=[];
+var STEPS=[], CANCEL=[];
 var SCRIPT={steps:null,cancel:null,updatedAt:0};
 
 function cloneLines(a){ return (a||[]).map(function(l){
-  var o={say:l.say,hold:l.hold};
-  if(l.slow)o.slow=true; if(l.g)o.g=l.g;
+  var o={say:(l&&l.say!=null)?String(l.say):"",hold:(l&&isFinite(+l.hold))?+l.hold:8};
+  if(l&&l.slow)o.slow=true; if(l&&l.g)o.g=String(l.g);
   return o;
 }); }
+/* ══════ 台本の検証 ══════
+   台本は読み込み(JSON)や同期で外から入ってくる。say が無い・hold が数値でない行が
+   1つでも混ざると、再生中に例外や NaN になって消去動作の途中で止まり、
+   起動時には renderSteps() が落ちてアプリごと使えなくなる。
+   そうならないよう、保存する前・使う前に必ずここを通して整える。 */
+function normLine(l){
+  if(!l||typeof l!=="object")return null;
+  var say=String(l.say==null?"":l.say).trim();
+  if(!say)return null;                       // 読み上げる文の無い行は捨てる
+  var h=+l.hold; if(!isFinite(h)||h<0)h=8;   // 沈黙は編集画面と同じ範囲に収める
+  var o={say:say,hold:Math.min(60,h)};
+  if(l.slow)o.slow=true;
+  if(l.g)o.g=String(l.g);
+  return o;
+}
+function normLines(a){
+  if(!Array.isArray(a))return [];
+  var out=[];
+  a.forEach(function(l){ var n=normLine(l); if(n)out.push(n); });
+  return out;
+}
+function normSteps(a){
+  if(!Array.isArray(a))return [];
+  var out=[],seen={};
+  a.forEach(function(s,i){
+    if(!s||typeof s!=="object")return;
+    var id=String(s.id==null?"":s.id).trim()||("c"+i);
+    while(seen[id])id+="_";                  // id が重なると段階のON/OFFが混ざる
+    seen[id]=1;
+    out.push({id:id,name:String(s.name==null?"":s.name).trim()||id,
+              always:!!s.always,def:!!s.def,hand:!!s.hand,
+              caution:String(s.caution==null?"":s.caution),
+              custom:!!s.custom,               // これが落ちると「段階を削除」が出せなくなる
+              lines:normLines(s.lines)});
+  });
+  return out;
+}
+/* 消去動作だけは、何があっても空にしない（空だとぼんやりしたまま終わってしまう） */
+function safeCancel(a){
+  var n=normLines(a);
+  return n.length?n:cloneLines(BASE_CANCEL);
+}
+/* 中断・復帰時の短縮版は、消去動作の先頭から3行ぶん＋最後の1行 */
+function shortCancel(){
+  var a=safeCancel(CANCEL);
+  var s=a.slice(0,3);
+  if(a.length>3)s.push(a[a.length-1]);
+  return s.length?s:cloneLines(BASE_CANCEL);
+}
 function baseStepsCopy(){
   return BASE_STEPS.map(function(s){
     return {id:s.id,name:s.name,always:!!s.always,def:!!s.def,hand:!!s.hand,
-            caution:s.caution||"",lines:cloneLines(s.lines)};
+            caution:s.caution||"",custom:false,lines:cloneLines(s.lines)};
   });
 }
 function applyScript(){
-  // 保存されている編集ぶんがあればそれを、無ければ既定を使う
-  STEPS = (SCRIPT.steps && SCRIPT.steps.length) ? SCRIPT.steps.map(function(s){
-    return {id:s.id,name:s.name,always:!!s.always,def:!!s.def,hand:!!s.hand,
-            caution:s.caution||"",lines:cloneLines(s.lines)};
-  }) : baseStepsCopy();
-  CANCEL = (SCRIPT.cancel && SCRIPT.cancel.length) ? cloneLines(SCRIPT.cancel) : cloneLines(BASE_CANCEL);
-  // 中断時の短縮版は、消去動作の先頭から3行ぶんを流用する
-  CANCEL_SHORT = CANCEL.slice(0,3).concat(CANCEL.length>3?[CANCEL[CANCEL.length-1]]:[]);
-  if(!CANCEL_SHORT.length) CANCEL_SHORT = cloneLines(BASE_CANCEL);
+  // 保存されている編集ぶんがあればそれを、無ければ既定を使う。
+  // 壊れた台本が保存済みでも、ここで整えるので次の起動から自然に直る。
+  var st=normSteps(SCRIPT.steps);
+  STEPS = st.length ? st : baseStepsCopy();
+  CANCEL = safeCancel(SCRIPT.cancel);
 }
 function loadScript(){
   try{
@@ -383,11 +452,24 @@ try{
 }catch(e){}
 function saveCfg(){try{store.set(CFG_KEY,JSON.stringify(C));}catch(e){}}
 
-/* ══════ 記録 ══════ */
+/* ══════ 記録 ══════
+   練習の記録は取り戻せないので、上限で古いものを黙って捨てない。
+   （「音」タブの再生履歴は消えても困らないが、こちらは練習そのものの控え）
+   増えすぎたときは、捨てずに一度だけ知らせる。 */
+var HIST_MAX=20000;   // 目安。毎日続けても50年ぶん。超えても消さない
+var histWarned=false;
+function guardHist(a){
+  a=Array.isArray(a)?a:[];
+  if(a.length>HIST_MAX&&!histWarned){
+    histWarned=true;
+    try{ toast("記録が"+a.length+"件になりました。動きが重くなってきたら、古いぶんを書き出してから消してください。",9000); }catch(e){}
+  }
+  return a;
+}
 var H=[], clearedAt=0;
-try{ var r=JSON.parse(store.get(KEY)||"[]"); if(Array.isArray(r))H=r; }catch(e){}
+try{ var r=JSON.parse(store.get(KEY)||"[]"); if(Array.isArray(r))H=guardHist(r); }catch(e){}
 try{ clearedAt=parseInt(store.get(CLR_KEY)||"0",10)||0; }catch(e){}
-function saveHist(){try{store.set(KEY,JSON.stringify(H));}catch(e){} if(sync)sync.touch(true);}
+function saveHist(){H=guardHist(H);try{store.set(KEY,JSON.stringify(H));}catch(e){} if(sync)sync.touch(true);}
 
 /* ══════ 声（暗室と共有）══════ */
 var ttsOK=("speechSynthesis" in window), voice=null;
@@ -428,27 +510,71 @@ function splitJa(t){
   var a=String(t||"").split(/(?:。|！|？)\s*/).map(function(x){return x.trim();}).filter(Boolean);
   return a.length?a:[String(t||"")];
 }
-/* rateAdj は「繰り返すほど少しずつゆっくり」の演出ぶん */
-function speak(text,rateAdj){
-  if(!ttsOK)return;
-  try{
-    var ss=window.speechSynthesis;
-    var parts=splitJa(text);
-    var go=function(){
-      parts.forEach(function(t){
+/* utterance をローカル変数にしか持たないと Chrome/Edge で GC され、
+   読み上げが途中で切れる。終わるまで参照を残すための置き場。 */
+var uttKeep=[];
+/* 世代番号。やめる・次の行に進んだあとに、古い読み上げの onend が
+   進行を動かしてしまわないようにする。 */
+var speakGen=0, speakTimer=0;
+/* 読み上げが「進んでいる」ことの目印。文の切れ目ごとに1つ増える。
+   これが増えていない＝speaking が true のまま固まっている（Chromeの既知の不具合）。
+   遅いだけの端末と、固まった端末を見分けるために使う。 */
+var speakTick=0;
+/* rateAdj は「繰り返すほど少しずつゆっくり」の演出ぶん。
+   onDone は最後の一文を読み終えた合図（進行はこれを主に使う）。
+   読み上げを始められたときだけ true を返す。 */
+function speak(text,rateAdj,onDone){
+  var gen=++speakGen;
+  clearTimeout(speakTimer); speakTimer=0;
+  if(!ttsOK)return false;
+  var parts=splitJa(String(text==null?"":text)).filter(Boolean);
+  if(!parts.length)return false;
+  var fired=false;
+  var fire=function(){
+    if(fired)return; fired=true;
+    if(gen!==speakGen)return;              // すでに次へ進んでいる／やめた
+    if(onDone)onDone();
+  };
+  var go=function(){
+    if(gen!==speakGen)return;              // cancel 待ちの間に やめる が押された
+    try{
+      var ss=window.speechSynthesis;
+      parts.forEach(function(t,i){
+        var last=(i===parts.length-1);
         try{
           var u=new SpeechSynthesisUtterance(t);
           if(voice){u.voice=voice;u.lang=voice.lang;}else u.lang="ja-JP";
           u.rate=Math.max(0.55,V.vRate+(rateAdj||0));
           u.pitch=V.vPitch; u.volume=1;
+          var tick=function(){ speakTick++; };
+          u.onstart=tick;
+          if(last){ u.onend=function(){ tick(); fire(); }; u.onerror=function(){ tick(); fire(); }; }
+          else { u.onend=tick; u.onerror=tick; }
+          uttKeep.push(u);
+          if(uttKeep.length>16)uttKeep.splice(0,uttKeep.length-16);
           ss.speak(u);
-        }catch(e){}
+        }catch(e){ if(last)fire(); }
       });
-    };
-    if(ss.speaking||ss.pending){ss.cancel();setTimeout(go,90);}else go();
-  }catch(e){}
+    }catch(e){ fire(); }
+  };
+  try{
+    var ss2=window.speechSynthesis;
+    if(ss2.speaking||ss2.pending){ ss2.cancel(); speakTimer=setTimeout(go,90); }
+    else go();
+  }catch(e){ return false; }
+  return true;
 }
-function stopSpeech(){try{if(ttsOK)window.speechSynthesis.cancel();}catch(e){}}
+/* cancel 待ちの再開タイマーを残すと、消去動作の途中に前の暗示文が割り込む。
+   ここで必ず捨てる。 */
+function speechBusy(){
+  try{ return !!(ttsOK&&(window.speechSynthesis.speaking||window.speechSynthesis.pending)); }catch(e){ return false; }
+}
+function stopSpeech(){
+  speakGen++;
+  clearTimeout(speakTimer); speakTimer=0;
+  try{if(ttsOK)window.speechSynthesis.cancel();}catch(e){}
+  uttKeep.length=0;
+}
 
 /* ══════ 合図音 ══════ */
 var actx=null;
@@ -487,25 +613,52 @@ function bgStop(){ if(embedded){bgPost({cmd:"stop"});return;} try{bgA.pause();}c
 function bgSetVol(v){ if(embedded){bgPost({cmd:"vol",vol:v});return;} try{bgA.volume=v;}catch(e){} }
 
 /* ══════ Wake Lock（練習中だけ自動でON）══════ */
-var wakeLock=null, wakeWant=false;
+var wakeLock=null, wakeWant=false, wakeBusy=false, wakeFailed=false, wakeWarned=false;
+var wakeSupported=(function(){try{return ("wakeLock" in navigator)&&!!navigator.wakeLock;}catch(e){return false;}})();
+// 画面の表示は「いま実際にどうなっているか」に合わせる。取れていないのに
+// 「消えないようにしています」と出ていると、消えたことに気づけない。
+function paintWake(){
+  var e=$("wakeNote"); if(!e)return;
+  if(wakeLock){ e.textContent="画面を消さないようにしています"; e.style.color="var(--leaf)"; e.style.display="block"; }
+  else if(wakeWant&&wakeFailed){ e.textContent="⚠ この端末では画面が自動で消えません。消えると読み上げが止まります"; e.style.color="var(--warn)"; e.style.display="block"; }
+  else { e.style.display="none"; }
+}
+function wakeFail(){
+  wakeFailed=true; paintWake();
+  if(wakeWarned)return; wakeWarned=true;
+  toast("この端末では、画面が自動で消えないようにできませんでした。画面が消えると読み上げが止まり、消去動作まで進めません。ときどき画面に触れるか、端末の自動ロックを切ってお使いください。",11000);
+}
+function wakeAcquire(){
+  if(!wakeSupported||wakeLock||wakeBusy)return;
+  var p;
+  try{ p=navigator.wakeLock.request("screen"); }catch(e){ wakeFail(); return; }
+  if(!p||!p.then){ wakeFail(); return; }
+  wakeBusy=true;
+  p.then(function(l){
+    wakeBusy=false;
+    // 取得が返るより先に解放していたら、届いたぶんをその場で捨てる。
+    // これを忘れると誰も release せず、画面が消えないままになる。
+    if(!wakeWant){ try{l.release();}catch(e){} paintWake(); return; }
+    wakeLock=l; wakeFailed=false;
+    try{ l.addEventListener("release",function(){ if(wakeLock===l)wakeLock=null; paintWake(); }); }catch(e){}
+    paintWake();
+  }).catch(function(){
+    wakeBusy=false;
+    if(wakeWant)wakeFail(); else paintWake();
+  });
+}
 function wakeOn(){
-  if(!C.wake||!("wakeLock" in navigator))return;
-  wakeWant=true;
-  navigator.wakeLock.request("screen").then(function(l){
-    wakeLock=l; $("wakeNote").style.display="block";
-    l.addEventListener("release",function(){wakeLock=null;});
-  }).catch(function(){});
+  wakeFailed=false; wakeWarned=false;
+  wakeWant=!!C.wake;                      // 設定で切っている人には要求しない（警告も出さない）
+  if(!wakeWant){ paintWake(); return; }
+  if(!wakeSupported){ wakeFail(); return; }
+  wakeAcquire();
 }
 function wakeOff(){
-  wakeWant=false;
+  wakeWant=false; wakeFailed=false;
   try{if(wakeLock)wakeLock.release();}catch(e){}
-  wakeLock=null; $("wakeNote").style.display="none";
+  wakeLock=null; paintWake();
 }
-document.addEventListener("visibilitychange",function(){
-  if(document.visibilityState==="visible"&&wakeWant&&!wakeLock){
-    try{navigator.wakeLock.request("screen").then(function(l){wakeLock=l;}).catch(function(){});}catch(e){}
-  }
-});
 
 /* ══════ 進行 ══════ */
 var R=null;   // {seq, i, t, startedAt, phase}
@@ -513,7 +666,7 @@ function activeSteps(){
   return STEPS.filter(function(s){ return s.always || C.steps[s.id]; });
 }
 function expand(line, idx){
-  var t=line.say;
+  var t=String((line&&line.say!=null)?line.say:"");
   var a=(C.hand==="L")?"左":"右", b=(C.hand==="L")?"右":"左";
   t=t.replace(/%A%/g,a).replace(/%B%/g,b);
   return t;
@@ -522,30 +675,101 @@ function buildSeq(){
   var seq=[], slowN=0;
   activeSteps().forEach(function(s){
     seq.push({mark:s.name});
-    s.lines.forEach(function(l){
+    (s.lines||[]).forEach(function(l){
+      var t=expand(l);
+      if(!t)return;                       // 編集中の書きかけ（空行）は読み上げない
       // 繰り返しの暗示ほど、ほんの少しずつゆっくりにする
       var adj=0;
       if(l.slow){ adj=-0.02*Math.min(slowN,4); slowN++; } else slowN=0;
-      seq.push({say:expand(l), hold:l.hold, g:l.g, rate:adj, step:s.name});
+      seq.push({say:t, hold:l.hold, g:l.g, rate:adj, step:s.name});
     });
   });
   seq.push({mark:"消去動作",cancel:true});
-  CANCEL.forEach(function(l){ seq.push({say:l.say,hold:l.hold,g:l.g,step:"消去動作",cancel:true}); });
+  // 消去動作は必ず入れる。編集途中や壊れた台本でも既定に落として空にはしない。
+  safeCancel(CANCEL).forEach(function(l){ seq.push({say:l.say,hold:l.hold,g:l.g,step:"消去動作",cancel:true}); });
   return seq;
+}
+/* 待ち時間は必ず有限の数にする。hold が数値でないと NaN になり、
+   setTimeout(…,NaN) が 0ms 扱いになって消去動作が一瞬で流れ去ってしまう。 */
+function speechMs(say){ return Math.max(2,String(say==null?"":say).length*0.14)*1000; }
+function holdMs(it){
+  var h=+(it&&it.hold), p=+C.pace;
+  if(!isFinite(h)||h<0)h=0;
+  if(!isFinite(p)||p<=0)p=1;
+  var ms=h*p*1000;
+  return isFinite(ms)?Math.min(ms,120000):0;
 }
 function totalSec(seq){
   var t=0;
-  seq.forEach(function(x){ if(x.say) t+=x.hold*C.pace+Math.max(2,x.say.length*0.14); });
-  return Math.round(t);
+  (seq||[]).forEach(function(x){ if(x&&x.say) t+=(holdMs(x)+speechMs(x.say))/1000; });
+  return Math.round(t)||0;
 }
 function fmt(s){var m=Math.floor(s/60),x=Math.round(s%60);return m+":"+(x<10?"0":"")+x;}
 
+/* ══════ 「練習中」の目印 ══════
+   進行はメモリの R にしか無いので、リロードやPWAの再起動で消えると
+   消去動作を通らずに終わってしまう。目印を残し、次の起動で拾って必ず通す。 */
+var PEND_KEY="autogenic:inPractice";
+/* 目印には「鼓動」を書き足しつづける。
+   これで「いま別のタブが練習中」と「アプリごと落ちた」を見分けられる。
+   見分けないと、2枚目のタブが横から消去動作を始め、
+   しかも1枚目の復帰に要る localStorage の控えまで消してしまう。 */
+var BEAT_MS=5000, DEAD_MS=20000, beatT=0;
+var PEND_TRIES=3;   // 復帰の消去動作をやり直す回数の上限（これが無いと繰り返しになりうる）
+function markPending(steps,pend){
+  pend=pend||{};
+  var v=JSON.stringify({at:(+pend.at)||Date.now(),beat:Date.now(),
+                        tries:(+pend.tries)||0,steps:steps||[]});
+  try{ sessionStorage.setItem(PEND_KEY,v); }catch(e){}
+  store.set(PEND_KEY,v);          // アプリごと閉じて開き直した時のための控え
+}
+function beatTick(){
+  if(!R||R.preview||!R.pend){ beatT=0; return; }
+  markPending(R.steps,R.pend);
+  beatT=setTimeout(beatTick,BEAT_MS);
+}
+function beatOn(){ clearTimeout(beatT); beatT=setTimeout(beatTick,BEAT_MS); }
+function beatOff(){ clearTimeout(beatT); beatT=0; }
+function readPending(){
+  var raw=null, own=false;
+  try{ raw=sessionStorage.getItem(PEND_KEY); }catch(e){}
+  if(raw)own=true; else raw=store.get(PEND_KEY);
+  if(!raw)return null;
+  try{
+    var o=JSON.parse(raw);
+    if(!o||typeof o!=="object"||!o.at){ clearPending(); return null; }
+    // 古すぎる目印は拾わない（何日も前の練習で急に消去動作が始まると驚くため）
+    if(Date.now()-o.at>30*60000){ clearPending(); return null; }
+    o.own=own;                    // このタブ自身の目印か（sessionStorage にあったか）
+    return o;
+  }catch(e){ clearPending(); return null; }   // 壊れた値を残すと、以後ずっと拾えない
+}
+/* このタブのものではない目印が、いままさに動いているか */
+function pendAlive(p){ return !!p&&!p.own&&(Date.now()-((+p.beat)||p.at))<DEAD_MS; }
+function clearPending(){
+  beatOff();
+  try{ sessionStorage.removeItem(PEND_KEY); }catch(e){}
+  store.del(PEND_KEY);
+}
+
+/* 消去動作に入ったら「やめる」の意味が変わる（先頭からやり直しではなく、最後まで飛ばす）。
+   押す前に分かるよう、ボタンの文字も合わせる。 */
+function paintStop(){
+  try{
+    $("stopBtn").textContent=(R&&R.phase==="cancel")
+      ? "消去動作の最後まで飛ばして終わる" : "やめる（消去動作をして終わります）";
+  }catch(e){}
+}
 function begin(preview){
+  if(R)return;
   ensureAudio(); loadVoice(); pickVoice();
   var seq = preview ? previewSeq() : buildSeq();
-  R={seq:seq,i:-1,total:totalSec(seq),elapsed:0,preview:!!preview,startedAt:Date.now(),steps:activeSteps().map(function(s){return s.name;})};
+  var names=activeSteps().map(function(s){return s.name;});
+  R={seq:seq,i:-1,total:totalSec(seq),elapsed:0,preview:!!preview,startedAt:Date.now(),steps:names,tok:0,phase:"run"};
+  $("resume").style.display="none";
   $("home").style.display="none"; $("run").style.display="block";
-  if(!preview){ wakeOn(); bgStart(); }
+  $("glyph").textContent=""; $("barIn").style.width="0"; paintStop();
+  if(!preview){ R.pend={at:Date.now(),tries:0}; markPending(names,R.pend); beatOn(); wakeOn(); bgStart(); }
   softTone();
   step();
 }
@@ -560,48 +784,206 @@ function previewSeq(){
   s.push({say:a+"腕が、重たい。",hold:3,rate:-0.02,step:"試聴"});
   return s;
 }
+/* 進行が例外で止まると、消去動作の途中で無音のまま固まってしまう。
+   何が起きても次の行へ、最後は必ず finish() まで運ぶ。 */
 function step(){
+  try{ runStep(); }catch(e){ stepFail(); }
+}
+/* 続けてつまずいたときの行き先は「終わり」ではなく「消去動作」。
+   ここで finish() に落とすと、消去動作を1行も流さずに終わってしまう。 */
+function stepFail(){
+  if(!R){ try{finish();}catch(e){} return; }
+  R.fails=(R.fails||0)+1;
+  if(R.fails>3){
+    if(R.phase==="cancel"){ try{bareCancel();}catch(e){ try{finish();}catch(e2){} } return; }
+    try{ toCancel("うまく進められませんでした。消去動作をして終わります。"); }
+    catch(e){ try{bareCancel();}catch(e2){ try{finish();}catch(e3){} } }
+    return;
+  }
+  // やり直しは同じ行から。runStep は先頭で R.i を進めるので、ここで戻しておく。
+  // 進めたまま繰り返すと、消去動作の行が1回も読まれずに抜け落ちていく。
+  try{ if(R.i>0)R.i--; clearTimeout(R.t); R.t=setTimeout(step,700); }
+  catch(e){ try{finish();}catch(e2){} }
+}
+/* 消去動作の最中まで例外が続いたときの、最後の手段。
+   画面には一切触れず、読み上げと時間だけで消去動作を最後まで流し切る。
+   （ここが無いと、まさに守るべき消去動作が黙って落ちる） */
+function bareCancel(){
+  var steps=(R&&R.steps)||[], pend=R&&R.pend,
+      dur=R?Math.round((Date.now()-R.startedAt)/1000):0;
+  try{clearTimeout(R&&R.t);}catch(e){}
+  try{stopSpeech();}catch(e){}
+  var list=[]; try{ list=shortCancel(); }catch(e){ list=cloneLines(BASE_CANCEL); }
+  R={seq:[],i:0,total:0,elapsed:0,preview:false,startedAt:Date.now()-(isFinite(dur)?dur:0)*1000,
+     steps:steps,tok:0,phase:"cancel",bare:true,pend:pend};
+  var i=0;
+  var go=function(){
+    if(!R||!R.bare)return;
+    if(i>=list.length){ try{finish();}catch(e){ R=null; } return; }
+    var it=list[i++]||{}, say=String(it.say==null?"":it.say);
+    var wait=holdMs(it)+speechMs(say);
+    if(!isFinite(wait)||wait<1500)wait=4000;
+    try{ speak(say,0,null); }catch(e){}
+    try{ R.t=setTimeout(go,Math.min(60000,wait)); }catch(e){ try{finish();}catch(e2){ R=null; } }
+  };
+  R.skipEnd=function(){ i=Math.max(i,list.length-1); go(); };
+  paintStop();
+  try{ toast("画面がうまく描けていません。消去動作は読み上げでお伝えします。",9000); }catch(e){}
+  go();
+}
+function runStep(){
   if(!R)return;
   R.i++;
   if(R.i>=R.seq.length){ finish(); return; }
-  var it=R.seq[R.i];
+  var it=R.seq[R.i]||{};
   if(it.mark){
     $("stage").textContent=it.mark;
-    if(it.cancel){ chime(); }
-    return step();
+    if(it.cancel){ R.phase="cancel"; paintStop(); chime(); }
+    return runStep();
   }
+  var say=String(it.say==null?"":it.say);
   $("stage").textContent=it.step||"";
-  $("line").textContent=it.say;
-  if(it.g)$("glyph").textContent=it.g;
-  speak(it.say, it.rate);
-  var wait=(it.hold*C.pace+Math.max(2,it.say.length*0.14))*1000;
+  $("line").textContent=say;
+  $("glyph").textContent=it.g||"";     // 前の段階の字を残さない
+  var hold=holdMs(it), sp=speechMs(say), wait=hold+sp;
   R.elapsed+=wait/1000;
   var pct=Math.min(100,Math.round(R.elapsed/Math.max(1,R.total)*100));
-  $("barIn").style.width=pct+"%";
+  $("barIn").style.width=(isFinite(pct)?pct:0)+"%";
   $("left").textContent="のこり およそ "+fmt(Math.max(0,R.total-R.elapsed));
-  R.t=setTimeout(step,wait);
+  R.stepAt=Date.now(); R.stepWait=wait;
+  var tok=++R.tok, moved=false;
+  var next=function(ms){
+    if(!R||tok!==R.tok)return;
+    moved=true;
+    // 読み終わった時点から数え直す。ここを更新しないと、読み上げが見積りより
+    // 長かっただけで「止まっていた」と誤って判定してしまう（下の30秒の見張り）。
+    R.stepAt=Date.now(); R.stepWait=Math.max(0,isFinite(ms)?ms:0);
+    clearTimeout(R.t);
+    R.t=setTimeout(step,Math.max(0,isFinite(ms)?ms:2000));
+  };
+  // 読み終わりを合図にして、そのあとの沈黙を数える。
+  // 見積り時間だけで進めると、ゆっくりの行や「間＝長め」で読み上げが途中で切れる。
+  var spoken=speak(say,it.rate,function(){ next(hold); });
+  if(!moved){
+    // 予備のタイマー。onend が来ない端末（Chromeの既知の不具合）でも必ず先に進む。
+    // まだ読み上げ中なら少し待つが、待ち時間には固い上限を置く。
+    // 青天井にすると4分の練習が20分になり、目印の有効期限(30分)まで超えてしまう。
+    // ただし読み進んでいる間（speakTick が増える間）は、遅いだけなので待ち直す。
+    // 消去動作だけは長引いても読み切る方を選ぶ（4行しかないので、伸びても知れている）。
+    var isC=(R.phase==="cancel"), mul=isC?4:1.6, add=isC?10000:4000, ext=isC?9000:3000;
+    var cap=Date.now()+hold+sp*mul+add, seen=speakTick;
+    var fb=function(){
+      if(!R||tok!==R.tok)return;
+      if(spoken&&speechBusy()){
+        if(speakTick!==seen){ seen=speakTick; cap=Date.now()+sp*mul*0.75+ext; }
+        if(Date.now()<cap){ R.t=setTimeout(fb,1200); return; }
+      }
+      step();
+    };
+    clearTimeout(R.t);
+    R.t=setTimeout(fb, spoken?Math.min(300000,hold+sp*1.3+1200):wait);
+  }
+  R.fails=0;   // 1行進めたら失敗の数を戻す（4回「連続」で消去動作へ、という意味にする）
 }
 function finish(){
-  var wasPreview=R&&R.preview, dur=R?Math.round((Date.now()-R.startedAt)/1000):0, steps=R?R.steps:[];
-  clearTimeout(R&&R.t); R=null;
-  bgStop(); wakeOff(); chime();
-  $("run").style.display="none"; $("home").style.display="block";
-  $("barIn").style.width="0"; $("glyph").textContent=""; $("line").textContent="";
+  var wasPreview=R&&R.preview, dur=R?Math.round((Date.now()-R.startedAt)/1000):0, steps=(R&&R.steps)||[];
+  try{clearTimeout(R&&R.t);}catch(e){}
+  R=null;
+  // 後始末はどれか1つ落ちても残りが通るようにする（画面ロックや背景音を残さない）
+  clearPending();
+  try{bgStop();}catch(e){}
+  try{wakeOff();}catch(e){}
+  try{chime();}catch(e){}
+  try{
+    paintStop();
+    $("run").style.display="none"; $("resume").style.display="none"; $("home").style.display="block";
+    $("barIn").style.width="0"; $("glyph").textContent=""; $("line").textContent=""; $("left").textContent="";
+  }catch(e){}
   if(wasPreview)return;
-  askRecord(dur,steps);
+  try{ askRecord(dur,steps); }catch(e){}
+}
+/* 消去動作（短縮版）だけを流す。中断・復帰・異常時の共通の出口。
+   目印はここでも張り直す。消去動作の最中にもう一度落ちても拾い直せるように。 */
+function runCancelOnly(steps,dur,pend){
+  var seq=[{mark:"消去動作",cancel:true}];
+  shortCancel().forEach(function(l){ seq.push({say:l.say,hold:l.hold,g:l.g,step:"消去動作",cancel:true}); });
+  R={seq:seq,i:-1,total:totalSec(seq),elapsed:0,preview:false,
+     startedAt:Date.now()-(isFinite(dur)?dur:0)*1000,steps:steps||[],tok:0,phase:"cancel",
+     pend:pend||{at:Date.now(),tries:0}};
+  markPending(R.steps,R.pend); beatOn(); paintStop();
+  $("resume").style.display="none";
+  $("home").style.display="none"; $("run").style.display="block";
+  $("barIn").style.width="0";
+  step();
+}
+function toCancel(msg){
+  if(!R||R.preview)return;
+  var dur=Math.round((Date.now()-R.startedAt)/1000), steps=R.steps, pend=R.pend;
+  try{clearTimeout(R.t);}catch(e){}
+  stopSpeech();
+  if(msg)toast(msg,9000);
+  runCancelOnly(steps,dur,pend);
+}
+/* 消去動作の最中の「やめる」で先頭からやり直すと、いつまでも終われない。
+   最後の1行まで飛ばして、そこで終える。 */
+function skipCancelEnd(){
+  if(!R)return;
+  try{clearTimeout(R.t);}catch(e){}
+  stopSpeech();
+  toast("消去動作の最後だけ流します。手足は、しっかり動かしてください。",7000);
+  if(R.skipEnd){ try{R.skipEnd();}catch(e){ try{finish();}catch(e2){} } return; }
+  var last=-1, sq=R.seq||[];
+  for(var i=sq.length-1;i>=0;i--){ if(sq[i]&&sq[i].say){ last=i; break; } }
+  if(last<0||R.i>=last){ try{finish();}catch(e){} return; }
+  R.i=last-1; R.tok++;
+  step();
 }
 /* 中断でも、必ず消去動作を通す */
 function abort(){
   if(!R)return;
-  clearTimeout(R.t); stopSpeech();
-  var wasPreview=R.preview, dur=Math.round((Date.now()-R.startedAt)/1000), steps=R.steps;
-  if(wasPreview){ R=null; bgStop(); wakeOff(); $("run").style.display="none"; $("home").style.display="block"; return; }
-  var seq=[{mark:"消去動作",cancel:true}];
-  CANCEL_SHORT.forEach(function(l){ seq.push({say:l.say,hold:l.hold,g:l.g,step:"消去動作",cancel:true}); });
-  R={seq:seq,i:-1,total:totalSec(seq),elapsed:0,preview:false,startedAt:Date.now()-dur*1000,steps:steps};
-  step();
+  if(R.preview){
+    try{clearTimeout(R.t);}catch(e){} stopSpeech();
+    R=null; bgStop(); wakeOff();
+    $("run").style.display="none"; $("home").style.display="block";
+    $("glyph").textContent=""; $("line").textContent="";
+    return;
+  }
+  if(R.phase==="cancel"){ skipCancelEnd(); return; }
+  toCancel(null);
 }
 $("stopBtn").addEventListener("click",abort);
+
+document.addEventListener("visibilitychange",function(){
+  if(document.visibilityState!=="visible")return;
+  // 画面が消えている間は読み上げもタイマーも止まる。予定より大きく遅れていたら、
+  // 何事もなかったように続けず、消去動作に移って必ず終わらせる。
+  // ただしPCのChromeは、裏に回っただけでタイマーを1分近く間引くことがある。
+  // 短く見ると健康な練習まで打ち切ってしまうので、余裕をもって90秒にする。
+  if(R&&!R.preview&&R.phase!=="cancel"&&R.stepAt&&
+     (Date.now()-R.stepAt-(R.stepWait||0))>90000){
+    toCancel("画面が消えていたあいだ、練習が止まっていました。このまま消去動作をして終わります。");
+    return;
+  }
+  if(wakeWant&&!wakeLock)wakeAcquire();
+});
+/* 離れるときは読み上げと音だけ確実に止める。
+   「練習中」の目印は消さない（次の起動で消去動作を出すため）。 */
+window.addEventListener("pagehide",function(){
+  if(edT)edSave();
+  if(!R)return;
+  // 鼓動も止める。止めないと「まだ生きている」ように見えて、
+  // 次の起動が「別のタブが練習中」と誤解し、復帰の消去動作をしなくなる。
+  beatOff();
+  try{clearTimeout(R.t);}catch(e){}
+  stopSpeech();
+  try{bgStop();}catch(e){}
+  try{if(wakeLock)wakeLock.release();}catch(e){}
+  wakeLock=null;
+});
+window.addEventListener("pageshow",function(e){
+  // 戻る操作でページが復元されると進行が止まったままになる。放置せず消去動作へ。
+  if(e&&e.persisted&&R&&!R.preview)toCancel("練習が止まっていました。このまま消去動作をして終わります。");
+});
 
 /* ══════ 記録 ══════ */
 function askRecord(dur,steps){
@@ -638,7 +1020,7 @@ function renderSteps(){
   STEPS.forEach(function(s){
     if(s.always)return;
     var on=!!C.steps[s.id];
-    h+='<label class="opt"><input type="checkbox" data-s="'+s.id+'"'+(on?" checked":"")+'>'
+    h+='<label class="opt"><input type="checkbox" data-s="'+esc(s.id)+'"'+(on?" checked":"")+'>'
       +'<span class="t"><span class="n">'+esc(s.name)+'</span>'
       +(s.caution?'<span class="d">'+esc(s.caution)+'</span>':'')
       +'</span></label>';
@@ -691,13 +1073,19 @@ $("voiceTest").addEventListener("click",function(){
   speak("気持ちが、落ち着いている。両腕が、重たい。",0);
 });
 $("tryBtn").addEventListener("click",function(){ begin(true); });
+/* 注意画面を「はじめる」の途中で出したのか、読み返しに来ただけなのかを覚えておく。
+   読み返しただけで練習が始まってしまうと、心づもりのないまま始まってしまう。 */
+var gateForStart=false;
 $("startBtn").addEventListener("click",function(){
-  if(!C.gateSeen){ $("gate").style.display="block"; return; }
+  if(!C.gateSeen){ gateForStart=true; $("gate").style.display="block"; return; }
   begin(false);
 });
-$("gateOk").addEventListener("click",function(){ C.gateSeen=true; saveCfg(); $("gate").style.display="none"; begin(false); });
-$("gateBack").addEventListener("click",function(){ $("gate").style.display="none"; });
-$("gateShow").addEventListener("click",function(){ $("gate").style.display="block"; });
+$("gateOk").addEventListener("click",function(){
+  C.gateSeen=true; saveCfg(); $("gate").style.display="none";
+  if(gateForStart){ gateForStart=false; begin(false); }
+});
+$("gateBack").addEventListener("click",function(){ gateForStart=false; $("gate").style.display="none"; });
+$("gateShow").addEventListener("click",function(){ gateForStart=false; $("gate").style.display="block"; });
 
 /* ══════ 編集画面 ══════ */
 function edRender(){
@@ -711,7 +1099,7 @@ function edRender(){
       +'</div>';
     st.lines.forEach(function(l,li){
       h+='<div class="eline">'
-        +'<input class="say" data-si="'+si+'" data-li="'+li+'" value="'+esc(l.say).replace(/"/g,"&quot;")+'">'
+        +'<input class="say" data-si="'+si+'" data-li="'+li+'" value="'+esc(l.say)+'">'
         +'<input class="hold" type="number" min="0" max="60" data-si="'+si+'" data-li="'+li+'" value="'+(l.hold||0)+'">'
         +'<label class="sw"><input type="checkbox" data-slow="1" data-si="'+si+'" data-li="'+li+'"'+(l.slow?" checked":"")+'>ゆっくり</label>'
         +'<button class="x" data-del="1" data-si="'+si+'" data-li="'+li+'">✕</button>'
@@ -724,7 +1112,7 @@ function edRender(){
     +'<span class="lk">削除できません</span></div>';
   CANCEL.forEach(function(l,li){
     h+='<div class="eline">'
-      +'<input class="say" data-cs="1" data-li="'+li+'" value="'+esc(l.say).replace(/"/g,"&quot;")+'">'
+      +'<input class="say" data-cs="1" data-li="'+li+'" value="'+esc(l.say)+'">'
       +'<input class="hold" type="number" min="0" max="60" data-cs="1" data-li="'+li+'" value="'+(l.hold||0)+'">'
       +(CANCEL.length>2?'<button class="x" data-cdel="1" data-li="'+li+'">✕</button>':'')
       +'</div>';
@@ -735,8 +1123,26 @@ function edRender(){
     +'<b>%A%</b> は利き手の側、<b>%B%</b> は反対側に置き換わります。<br>'
     +'<b>消去動作は消せません。</b>ここを空にすると、練習後にぼんやりした状態のまま終わってしまうためです。';
 }
+/* 編集中の保存。書きかけの空行はここでは捨てない。
+   捨ててしまうと「＋ 行を追加」で足した行が、描き直しの前に消えてしまう。
+   全画面なので、戻る操作やタブ切り替えで消えないよう、その場で書いておく。 */
+var edT=0;
+function edSave(){
+  clearTimeout(edT); edT=0;
+  SCRIPT.steps = STEPS.map(function(st){
+    return {id:st.id,name:st.name,always:!!st.always,def:!!st.def,hand:!!st.hand,
+            caution:st.caution||"",custom:!!st.custom,lines:cloneLines(st.lines)};
+  });
+  SCRIPT.cancel = cloneLines(CANCEL);
+  SCRIPT.updatedAt=Date.now();
+  try{ store.set(SCRIPT_KEY,JSON.stringify(SCRIPT)); }catch(e){}
+  if(sync)sync.touch(true);
+  renderSteps();   // renderPlan もこの中から呼ばれる
+}
+function edSaveSoon(){ clearTimeout(edT); edT=setTimeout(edSave,600); }
 function edCommit(){
-  // 空行を捨てる。すべて空になった段階は既定に戻す
+  // とじる時だけ、空行を捨てる。すべて空になった段階は既定に戻す
+  clearTimeout(edT); edT=0;
   SCRIPT.steps = STEPS.map(function(st){
     var lines=st.lines.filter(function(l){ return (l.say||"").trim(); });
     return {id:st.id,name:st.name,always:!!st.always,def:!!st.def,hand:!!st.hand,
@@ -749,39 +1155,53 @@ function edCommit(){
     SCRIPT.steps = null;   // 全部空なら既定へ
     toast("読み上げる段階が無くなったため、既定の台本に戻しました。",6000);
   }
+  // 無くなった段階のON/OFF設定が残ると、使わない id が溜まっていく
+  var alive={};
+  BASE_STEPS.forEach(function(s){ alive[s.id]=1; });
+  (SCRIPT.steps||[]).forEach(function(st){ alive[st.id]=1; });
+  var dirty=false;
+  Object.keys(C.steps).forEach(function(k){ if(!alive[k]){ delete C.steps[k]; dirty=true; } });
+  if(dirty)saveCfg();
   saveScript(); renderSteps(); renderPlan();
 }
 $("edBody").addEventListener("input",function(e){
   var t=e.target, li=+t.getAttribute("data-li");
   if(t.getAttribute("data-cs")){
+    if(!CANCEL[li])return;
     if(t.classList.contains("say")) CANCEL[li].say=t.value;
     else CANCEL[li].hold=Math.max(0,Math.min(60,+t.value||0));
-    return;
+    edSaveSoon(); return;
   }
   var si=+t.getAttribute("data-si");
-  if(isNaN(si)||!STEPS[si])return;
+  if(isNaN(si)||!STEPS[si]||!STEPS[si].lines[li])return;
   if(t.classList.contains("say")) STEPS[si].lines[li].say=t.value;
   else if(t.classList.contains("hold")) STEPS[si].lines[li].hold=Math.max(0,Math.min(60,+t.value||0));
   else if(t.getAttribute("data-slow")) STEPS[si].lines[li].slow=t.checked;
+  edSaveSoon();
 });
 $("edBody").addEventListener("click",function(e){
   var b=e.target.closest("button"); if(!b)return;
   var si=+b.getAttribute("data-si"), li=+b.getAttribute("data-li");
   if(b.getAttribute("data-add")!==null&&b.getAttribute("data-add")!==""){
     var k=+b.getAttribute("data-add");
-    STEPS[k].lines.push({say:"",hold:8}); edCommit(); edRender(); return;
+    if(!STEPS[k])return;
+    STEPS[k].lines.push({say:"",hold:8}); edSave(); edRender(); return;
   }
-  if(b.getAttribute("data-cadd")){ CANCEL.push({say:"",hold:8}); edCommit(); edRender(); return; }
+  if(b.getAttribute("data-cadd")){ CANCEL.push({say:"",hold:8}); edSave(); edRender(); return; }
   if(b.getAttribute("data-cdel")){
     if(CANCEL.length<=2){ toast("消去動作はこれ以上減らせません。",4000); return; }
-    CANCEL.splice(li,1); edCommit(); edRender(); return;
+    CANCEL.splice(li,1); edSave(); edRender(); return;
   }
-  if(b.getAttribute("data-del")){ STEPS[si].lines.splice(li,1); edCommit(); edRender(); return; }
+  if(b.getAttribute("data-del")){
+    if(!STEPS[si])return;
+    STEPS[si].lines.splice(li,1); edSave(); edRender(); return;
+  }
   if(b.getAttribute("data-delstep")!==null&&b.getAttribute("data-delstep")!==""){
     var d=+b.getAttribute("data-delstep");
+    if(!STEPS[d])return;
     if(!window.confirm("「"+STEPS[d].name+"」を削除しますか？"))return;
     delete C.steps[STEPS[d].id]; saveCfg();
-    STEPS.splice(d,1); edCommit(); edRender(); return;
+    STEPS.splice(d,1); edSave(); edRender(); return;
   }
 });
 $("edAddStep").addEventListener("click",function(){
@@ -791,7 +1211,7 @@ $("edAddStep").addEventListener("click",function(){
   STEPS.push({id:id,name:nm,always:false,def:false,hand:false,caution:"",custom:true,
               lines:[{say:"",hold:8,slow:true},{say:"",hold:8,slow:true}]});
   C.steps[id]=true; saveCfg();
-  edCommit(); edRender();
+  edSave(); edRender();
 });
 $("edOpen").addEventListener("click",function(){ edRender(); $("editor").style.display="block"; });
 $("edClose").addEventListener("click",function(){ edCommit(); $("editor").style.display="none"; });
@@ -817,25 +1237,50 @@ $("edFile").addEventListener("change",function(e){
   var f=e.target.files&&e.target.files[0]; if(!f)return;
   f.text().then(function(t){
     var o=JSON.parse(t);
-    if(o.app!=="autogenic-script"||!Array.isArray(o.steps)) throw new Error("形式が違います");
-    SCRIPT.steps=o.steps; SCRIPT.cancel=Array.isArray(o.cancel)&&o.cancel.length?o.cancel:cloneLines(BASE_CANCEL);
+    if(!o||o.app!=="autogenic-script"||!Array.isArray(o.steps)) throw new Error("形式が違います");
+    // 保存する前に中身まで確かめる。壊れた行を保存してしまうと、
+    // 描き直しで例外になった時にはもう書き込み済みで、次の起動から開けなくなる。
+    var steps=normSteps(o.steps);
+    if(!steps.some(function(st){ return st.lines.length; })) throw new Error("読み上げる行がありません");
+    var inN=0,outN=0;
+    o.steps.forEach(function(s){ if(s&&Array.isArray(s.lines))inN+=s.lines.length; });
+    steps.forEach(function(s){ outN+=s.lines.length; });
+    var dropped=(outN<inN)||(steps.length<o.steps.length);
+    SCRIPT.steps=steps;
+    SCRIPT.cancel=safeCancel(o.cancel);
     saveScript(); edRender(); renderSteps(); renderPlan();
-    toast("読み込みました。",3500);
+    toast(dropped?"読み込みました。読み上げる文が無い行は取り除いています。":"読み込みました。",dropped?6000:3500);
   }).catch(function(){ toast("読み込めませんでした。書き出したファイルを選んでください。",5000); });
   e.target.value="";
 });
 
 /* ══════ 同期（sync.js に相乗り）══════ */
 var sync=null;
-function syncGetLocal(){ return {history:H, clearedAt:clearedAt, script:SCRIPT}; }
+function edIsOpen(){ try{ return $("editor").style.display==="block"; }catch(e){ return false; } }
+function syncGetLocal(){ return {history:guardHist(H), clearedAt:clearedAt, script:SCRIPT}; }
 function syncSetLocal(d){
-  H=d.history||[]; clearedAt=d.clearedAt||0;
+  d=d||{};
+  H=guardHist(d.history); clearedAt=d.clearedAt||0;
   try{store.set(KEY,JSON.stringify(H));}catch(e){}
   try{store.set(CLR_KEY,String(clearedAt));}catch(e){}
-  if(d.script){
-    SCRIPT=d.script;
-    try{ store.set(SCRIPT_KEY,JSON.stringify(SCRIPT)); }catch(e){}
-    applyScript(); renderSteps(); renderPlan();
+  if(d.script&&typeof d.script==="object"){
+    /* 編集画面を開いている最中に STEPS を作り直すと、画面に出ている行と中身がずれ、
+       打った文字が別の行に入ったり、黙って捨てられたりする。開いている間は当てない。 */
+    if(edIsOpen()){
+      toast("編集中のため、ほかの端末の誘導文はいまは取り込みませんでした。この端末の編集を残します。",7000);
+    } else {
+      // ドライブから来た台本も中身は信用しない。読み込み(JSON)と同じ検証を通す。
+      // ここを素通しすると、他の端末の壊れた台本でこの端末まで起動不能になる。
+      var st=normSteps(d.script.steps);
+      // 消去動作は「編集されていなければ null のまま」にする。
+      // 既定のコピーを入れてしまうと、以後 BASE_CANCEL を直しても誰にも届かなくなる。
+      var cn=normLines(d.script.cancel);
+      SCRIPT={steps:st.some(function(x){return x.lines.length;})?st:null,
+              cancel:cn.length?cn:null,
+              updatedAt:(+d.script.updatedAt)||0};
+      try{ store.set(SCRIPT_KEY,JSON.stringify(SCRIPT)); }catch(e){}
+      applyScript(); renderSteps(); renderPlan();
+    }
   }
   renderRecs();
 }
@@ -849,6 +1294,7 @@ function syncMerge(local,remote){
     if(seen[x.ts])return; seen[x.ts]=1; out.push(x);
   });
   out.sort(function(a,b){return a.ts-b.ts;});
+  out=guardHist(out);                  // 増えすぎたら知らせるだけ。端末をまたいでも記録は捨てない
   // 誘導文は端末間で揃える。あとに編集した方を採る
   var ls=(local.script&&local.script.updatedAt)||0, rs=(remote.script&&remote.script.updatedAt)||0;
   var sc = rs>ls ? remote.script : (local.script||null);
@@ -883,6 +1329,40 @@ loadVoice();
 if(ttsOK){ pickVoice(); try{window.speechSynthesis.onvoiceschanged=pickVoice;}catch(e){} }
 else { $("voiceNote").textContent="この端末では読み上げが使えないため、画面の文字と合図音だけで進みます。"; }
 renderSteps(); paintSegs(); renderRecs(); renderPlan();
+if(!wakeSupported){
+  // 練習前に伝えておく。注意画面では「画面が消えないようにします」と約束しているので、
+  // できない端末だと知らないまま画面が消え、消去動作まで進めなくなる。
+  var ws=$("wakeSupport");
+  if(ws){ ws.textContent="※ この端末では、アプリから画面を消えないようにできません。練習中は端末の自動ロックを長め（またはオフ）にしてお使いください。"; ws.style.display="block"; }
+}
+/* 練習の途中でリロード・再起動されると、消去動作を通らずに終わってしまう。
+   目印が残っていたら、短縮版の消去動作だけを必ず流す。
+   目印はここでは消さない。消すと、この復帰中にもう一度リロードされたときに
+   消去動作が跡形もなく消えてしまう。消すのは finish() でだけ。
+   起動直後は操作の外なので、iOS では読み上げも AudioContext も動かない。
+   黙って無音で終わるより、1回タップしてもらう方がずっとよい。 */
+(function(){
+  var p=readPending(); if(!p)return;
+  // 別のタブが「いま練習中」なら、横から始めない（控えも消さない）
+  if(pendAlive(p))return;
+  if(((+p.tries)||0)>=PEND_TRIES){ clearPending(); return; }   // 繰り返しにならないよう上限を置く
+  $("home").style.display="none";
+  $("resume").style.display="block";
+  toast("前回の練習が、消去動作をしないまま中断されていました。下のボタンから、消去動作だけ行ってください。",10000);
+  $("resumeBtn").addEventListener("click",function(){
+    if(R)return;
+    // ここは利用者の操作の中。音の解禁と画面ロックの取得は必ずこの中で行う。
+    ensureAudio(); loadVoice(); pickVoice();
+    wakeOn(); bgStart();
+    var dur=Math.max(0,Math.round((Date.now()-p.at)/1000));
+    runCancelOnly(p.steps||[],dur,{at:p.at,tries:((+p.tries)||0)+1});
+  });
+  $("resumeSkip").addEventListener("click",function(){
+    clearPending();
+    $("resume").style.display="none"; $("home").style.display="block";
+    toast("手足をぎゅっと握ってひらく、腕を曲げて伸ばす、大きく伸びをする。これだけでも行ってください。",9000);
+  });
+})();
 })();
 </script>
 </body>
