@@ -140,7 +140,12 @@
         .editor-content a { color: var(--color-primary); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
         .editor-content a:hover { background: rgba(33, 128, 141, 0.10); border-radius: 3px; }
         .diary-img { max-width: 100%; height: auto; border-radius: var(--radius-base); display: block; margin: var(--space-8) 0; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
-        .img-missing { display: inline-block; padding: var(--space-8) var(--space-12); margin: var(--space-8) 0; border: 1px dashed var(--color-border); border-radius: var(--radius-base); font-size: 12px; color: var(--color-text-secondary); background: rgba(0,0,0,.03); }
+        /* 出せない画像。<img data-did> は消さずに隠し、理由は隣の札で出す。
+           要素ごと差し替えると、保存時に data-did が本文から消えてしまう
+           （＝あとから画像を戻しても二度と紐づかない）。
+           編集領域の中では alt が描画されないので、札は別要素にする。 */
+        img.img-missing { display: none; }
+        .img-missing-note { display: inline-block; padding: var(--space-8) var(--space-12); margin: var(--space-8) 0; border: 1px dashed var(--color-border); border-radius: var(--radius-base); font-size: 12px; color: var(--color-text-secondary); background: rgba(0,0,0,.03); user-select: none; }
         .tags-section { padding: var(--space-12); border-top: 1px solid var(--color-border); border-bottom: 1px solid var(--color-border); background-color: rgba(94, 82, 64, 0.03); }
         .tags-label { font-size: 13px; font-weight: 600; margin-bottom: var(--space-12); color: var(--color-text); }
         .tags-display { display: flex; flex-wrap: wrap; gap: var(--space-8); align-items: center; min-height: 28px; margin-bottom: var(--space-12); }
@@ -557,27 +562,76 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
         // 本文に貼った画像の置き場。実体はここに置き、本文には id だけを残す。
         // 本文（＝localStorage）に data: URL を入れると、6つのアプリで分け合っている
         // 5MBを一気に食い潰して、日記そのものが保存できなくなる。
+        //
+        // ★画像は DiaryDB ではなく専用のDBに置く。
+        //   最初は DiaryDB を version 2 に上げて images ストアを足したが、
+        //   別のタブ（や更新前のページ）が version 1 のまま接続していると
+        //   upgrade は blocked になり、onsuccess も onerror も飛んでこない。
+        //   その結果 dbPromise が永久に未解決になり、「画像を取り込んでいます…」の
+        //   まま何も起きなくなっていた。新しいDBを version 1 で開けば、
+        //   既存の接続と衝突しない。
+        const IMG_DB_NAME = 'DiaryImagesDB';
         const IMG_STORE = 'images';
-        const dbPromise = new Promise((resolve, reject) => {
-            const request = indexedDB.open(DB_NAME, 2);
-            request.onupgradeneeded = (e) => {
-                const db = e.target.result;
-                if (!db.objectStoreNames.contains(STORE_NAME)) {
-                    db.createObjectStore(STORE_NAME);
-                }
-                if (!db.objectStoreNames.contains(IMG_STORE)) {
-                    db.createObjectStore(IMG_STORE, { keyPath: 'id' });
-                }
-            };
-            request.onsuccess = () => resolve(request.result);
-            request.onerror = () => reject(request.error);
+        const IDB_OPEN_TIMEOUT = 8000;
+
+        /** IndexedDB を安全に開く。blocked と時間切れを必ず拾って、
+         *  「待ち続けて何も言わない」状態を作らない。 */
+        function openIdb(name, version, upgrade) {
+            return new Promise((resolve, reject) => {
+                let settled = false;
+                const done = fn => v => { if (settled) return; settled = true; clearTimeout(timer); fn(v); };
+                const ok = done(resolve), ng = done(reject);
+                const timer = setTimeout(() => ng(new Error('IDB_TIMEOUT')), IDB_OPEN_TIMEOUT);
+                let request;
+                // version を渡さなければ「いまあるバージョンのまま開く」になる。
+                // 小さい番号を決め打ちすると VersionError で永久に開けなくなる。
+                try { request = (version == null) ? indexedDB.open(name) : indexedDB.open(name, version); }
+                catch (e) { return ng(e); }
+                request.onupgradeneeded = (e) => { try { upgrade(e.target.result); } catch (err) { console.error(err); } };
+                request.onsuccess = () => {
+                    const db = request.result;
+                    // 時間切れ／blocked で先に諦めたあとに開けた接続は、その場で閉じる。
+                    // 握ったまま捨てると、以後のバージョン変更を永久にブロックする。
+                    if (settled) { try { db.close(); } catch (e) {} return; }
+                    // 他のタブがバージョンを上げようとしたら、こちらは黙って手を引く。
+                    // 握ったままだと相手が永久にブロックされる。
+                    db.onversionchange = () => { try { db.close(); } catch (e) {} };
+                    ok(db);
+                };
+                request.onerror = () => ng(request.error || new Error('IDB_ERROR'));
+                request.onblocked = () => ng(new Error('IDB_BLOCKED'));
+            });
+        }
+
+        // ★handles を置く DiaryDB は、バージョンを指定せずに開く。
+        //   v23〜v25 はここを version 2 に上げて images ストアを足していたため、
+        //   1 を決め打ちすると「要求(1) < 既存(2)」の VersionError になり、
+        //   同期フォルダのハンドルが二度と読めない＝フォルダ同期が黙って死ぬ。
+        const dbPromise = openIdb(DB_NAME, null, (db) => {
+            if (!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME);
         });
+        // 開けなかった理由を覚えておく。放置すると未処理のPromise拒否になるうえ、
+        // 失敗の理由を利用者に伝えられない
+        let handleDbError = null;
+        dbPromise.catch(e => { handleDbError = e; console.error('[diary] 設定用DBを開けません', e); });
+        const imgDbPromise = openIdb(IMG_DB_NAME, 1, (db) => {
+            if (!db.objectStoreNames.contains(IMG_STORE)) db.createObjectStore(IMG_STORE, { keyPath: 'id' });
+        });
+        // 開けなかった理由を覚えておき、失敗の通知に使う（黙って止まらない）
+        let imgDbError = null;
+        imgDbPromise.catch(e => { imgDbError = e; console.error('[diary] 画像用DBを開けません', e); });
 
         /* ── 画像の出し入れ ───────────────────────────────── */
+        // 書き出し用の data URL は作るのが高い（復号→FileReader→base64）。
+        // 入力のたびの自動保存で毎回作り直すと、写真が増えるほど画面が固まる。
+        // 中身が変わったときだけ捨てて、あとは使い回す。
+        const imgDataUrlCache = new Map();   // id -> { type, dataUrl }
+        function imgCacheDrop(id) { imgDataUrlCache.delete(id); }
         function imgTx(mode) {
-            return dbPromise.then(db => db.transaction(IMG_STORE, mode).objectStore(IMG_STORE));
+            return imgDbPromise.then(db => db.transaction(IMG_STORE, mode).objectStore(IMG_STORE));
         }
         function imgPut(rec) {
+            imgCacheDrop(rec && rec.id);
             return imgTx('readwrite').then(st => new Promise((res, rej) => {
                 const r = st.put(rec); r.onsuccess = () => res(true); r.onerror = () => rej(r.error);
             }));
@@ -593,16 +647,62 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
             }));
         }
         function imgDelete(id) {
+            imgCacheDrop(id);
             return imgTx('readwrite').then(st => new Promise((res) => {
                 const r = st.delete(id); r.onsuccess = () => res(true); r.onerror = () => res(false);
             }));
         }
+        /** v23〜v25 は画像を DiaryDB(version 2) の images ストアに入れていた。
+         *  そこに残っているぶんを新しいDBへ移す。開けなければ黙って諦める
+         *  （引っ越せなくても、新しく貼る画像は普通に使えるようにしておく）。 */
+        async function migrateImagesFromOldDb() {
+            try {
+                // 旧版の置き場は同じ DiaryDB なので、dbPromise の接続をそのまま使う。
+                // ここで開き直すとバージョン違いで衝突するうえ、indexedDB.databases() が
+                // 無いブラウザ（Firefox）では引っ越しが一度も走らなかった。
+                const db = await dbPromise.catch(() => null);
+                if (!db || !db.objectStoreNames.contains(IMG_STORE)) return 0;
+                const recs = await new Promise((res) => {
+                    try {
+                        const r = db.transaction(IMG_STORE, 'readonly').objectStore(IMG_STORE).getAll();
+                        r.onsuccess = () => res(r.result || []);
+                        r.onerror = () => res([]);
+                    } catch (e) { res([]); }
+                });
+                let moved = 0;
+                for (const rec of recs) {
+                    if (!rec || !rec.id) continue;
+                    if (await imgGet(rec.id)) continue;    // 既に移してある
+                    try { await imgPut(rec); moved++; } catch (e) {}
+                }
+                if (moved) console.info('[diary] 画像' + moved + '枚を新しい保存先へ移しました');
+                return moved;
+            } catch (e) { console.warn('[diary] 旧DBからの引っ越し', e); return 0; }
+        }
+
         function imgId() {
             return 'i' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        }
+        /** idに埋めた作成時刻（ms）。読めなければ0。掃除の猶予判定に使う。
+         *  Date.now().toString(36) はいま8桁、遠い将来9桁になるので両方試す。 */
+        function imgIdTime(id) {
+            const s = String(id || '');
+            if (s[0] !== 'i') return 0;
+            for (const n of [8, 9]) {
+                const t = parseInt(s.slice(1, 1 + n), 36);
+                if (t > 1500000000000 && t < 4000000000000) return t;
+            }
+            return 0;
         }
         // まだ日記に保存されていない画像（貼った直後〜保存を押すまで）。
         // 掃除の対象から外さないと、保存前に実体だけ消えて表示できなくなる。
         const pendingImageIds = new Set();
+        // 貼ったばかりの画像は、別のタブがまだ保存し終えていないかもしれない。
+        // この時間が経つまでは、参照が見当たらなくても捨てない（B-多タブ）
+        const GC_GRACE_MS = 10 * 60 * 1000;
+        // 同期・取り込みの最中は掃除しない。取り込んだ画像を、それを使う本文が
+        // entries に入るより先に「未参照」と判定して消してしまうため
+        let syncInFlight = 0;
 
         async function saveHandle(key, handle) {
             const db = await dbPromise;
@@ -713,9 +813,43 @@ async function imgDecode(rec) {
   const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ENC.unb64(rec.iv) }, cryptoKey, rec.data);
   return new Blob([pt], { type: rec.type || 'image/jpeg' });
 }
+/** いまの鍵で読める画像を全部平文にして持ってくる（包み直しの前準備）。
+ *  鍵とメタを入れ替えてから復号すると、その途中に自動保存や同期が割り込んだとき
+ *  「新しいsaltなのに古い鍵で暗号化した本文」ができ、新旧どちらのパスフレーズでも
+ *  開けなくなる。だから読み出しは必ず入れ替えの前に済ませる。
+ *  返り値: { plains:[{id,blob,w,h}], failed:number } */
+async function imgReadAllPlain() {
+  const plains = [];
+  let failed = 0;
+  let keys = [];
+  try { keys = await imgKeys(); } catch (e) { console.warn('[diary] imgReadAllPlain', e); return { plains, failed: -1 }; }
+  for (const k of keys) {
+    try {
+      const rec = await imgGet(k);
+      if (!rec) continue;
+      const blob = await imgDecode(rec);
+      if (!blob) { failed++; continue; }
+      plains.push({ id: k, blob, w: rec.w, h: rec.h });
+    } catch (e) { failed++; }
+  }
+  return { plains, failed };
+}
+/** 平文の一覧を、いまの設定（暗号化ON/OFF）で保存し直す。返り値: 失敗枚数 */
+async function imgWriteAllPlain(plains) {
+  let failed = 0;
+  for (const pl of (plains || [])) {
+    try {
+      const next = await imgEncode(pl.blob);
+      await imgPut({ id: pl.id, ...next, w: pl.w, h: pl.h, size: pl.blob.size });
+    } catch (e) { console.warn('[diary] 画像の包み直しに失敗', pl.id, e); failed++; }
+  }
+  return failed;
+}
 /** 暗号化のON/OFFを切り替えたとき、保存済みの画像も包み直す。
- *  片方だけ残すと、次に開いたときに読めない画像ができる。 */
+ *  片方だけ残すと、次に開いたときに読めない画像ができる。
+ *  返り値: 包み直せなかった枚数（0以外なら呼び出し側が必ず伝える） */
 async function imgRewrapAll() {
+  let failed = 0;
   try {
     const keys = await imgKeys();
     for (const k of keys) {
@@ -724,12 +858,15 @@ async function imgRewrapAll() {
       const want = (encEnabled && cryptoKey) ? 1 : 0;
       if ((rec.enc ? 1 : 0) === want) continue;
       let plain;
-      try { plain = await imgDecode(rec); } catch (e) { continue; }   // 読めないものは触らない
-      if (!plain) continue;
-      const next = await imgEncode(plain);
-      await imgPut({ id: rec.id, ...next, w: rec.w, h: rec.h, size: rec.size });
+      try { plain = await imgDecode(rec); } catch (e) { failed++; continue; }   // 読めないものは触らない
+      if (!plain) { failed++; continue; }
+      try {
+        const next = await imgEncode(plain);
+        await imgPut({ id: rec.id, ...next, w: rec.w, h: rec.h, size: rec.size });
+      } catch (e) { console.warn('[diary] 包み直しに失敗', k, e); failed++; }
     }
-  } catch (e) { console.warn('[diary] imgRewrapAll', e); }
+  } catch (e) { console.warn('[diary] imgRewrapAll', e); failed++; }
+  return failed;
 }
 
 /* ── 貼り付けた画像を縮めてから保存する ─────────────────────
@@ -951,14 +1088,19 @@ window.addEventListener('beforeunload', (e) => {
             if (status === 'locked') openUnlockModal();
             // 旧版が本文に埋めた data: URL の画像を端末内の保存先へ移す（初回だけ）。
             // ロック中は本文を持っていないので、解除したあとに回す。
-            if (status !== 'locked') {
-                migrateInlineImages()
+            // 本文を読めていないとき（storageLoadFailed）も触らない。参照が分からない
+            // まま掃除すると、端末内の画像を全部消してしまう。
+            const imgReady = (status !== 'locked' && !storageLoadFailed)
+                ? migrateImagesFromOldDb()
+                    .then(() => migrateInlineImages())
                     .then(() => gcImages())
-                    .catch(err => console.warn('[diary] 画像の移行', err));
-            }
+                    .catch(err => console.warn('[diary] 画像の移行', err))
+                : Promise.resolve();
             // 先に他端末の分を取り込む。取り込まないまま保存すると、こちらの
-            // 全件書き出しで相手の日記を消してしまう（#2）
-            if (autoSyncDriveEnabled) drivePullAndMerge(true).catch(() => {});
+            // 全件書き出しで相手の日記を消してしまう（#2）。
+            // ただし掃除と並走させない。Driveから受け取った画像を、それを使う日記が
+            // entries に入るより先に「未参照」と判定して消してしまうため
+            if (autoSyncDriveEnabled) imgReady.then(() => drivePullAndMerge(true)).catch(() => {});
         }
 
         function looksLikeHtml(s) {
@@ -970,7 +1112,7 @@ window.addEventListener('beforeunload', (e) => {
          *  そのままだと localStorage を圧迫し続けるうえ、サニタイズで消えて
          *  「容量だけ食っている見えない画像」になる。 */
         async function migrateInlineImages() {
-            let moved = 0;
+            let moved = 0, failed = 0;
             for (const e of entries) {
                 const html = String((e && e.content) || '');
                 if (!/<img[^>]+src\s*=\s*["']data:image\//i.test(html)) continue;
@@ -983,14 +1125,22 @@ window.addEventListener('beforeunload', (e) => {
                     if (!/^data:image\//i.test(src)) continue;
                     try {
                         const blob = await (await fetch(src)).blob();
-                        const small = await downscaleImageFile(blob) || { blob, w: 0, h: 0 };
+                        // 縮小できない形式（壊れている・canvasが扱えない）でも、
+                        // 元のデータをそのまま保存する。以前はここで失敗すると
+                        // 本文から <img> ごと削除していて、写真が黙って消えていた
+                        const small = await downscaleImageFile(blob);
+                        const use = (small && !small.error) ? small : { blob, w: 0, h: 0 };
                         const id = imgId();
-                        const rec = await imgEncode(small.blob);
-                        await imgPut({ id, ...rec, w: small.w, h: small.h, size: small.blob.size });
+                        const rec = await imgEncode(use.blob);
+                        await imgPut({ id, ...rec, w: use.w, h: use.h, size: use.blob.size });
                         Array.from(el.attributes).forEach(a => el.removeAttribute(a.name));
                         el.setAttribute('data-did', id);
                         changed = true; moved++;
-                    } catch (err) { el.remove(); changed = true; }
+                    } catch (err) {
+                        // 移せなくても本文には手を付けない（消すくらいなら重いまま残す）
+                        console.warn('[diary] 本文の画像を移せませんでした', err);
+                        failed++;
+                    }
                 }
                 if (changed) { e.content = tpl.innerHTML; e.contentFormat = 'html'; }
             }
@@ -998,6 +1148,7 @@ window.addEventListener('beforeunload', (e) => {
                 const ok = await saveEntriesToStorage();
                 if (ok) showToast(`本文の画像${moved}枚を端末内の保存先へ移しました`, 'success');
             }
+            if (failed) showToast(`本文の画像${failed}枚は移せませんでした（本文はそのまま残しています）`, 'warning');
             return moved;
         }
 
@@ -1183,7 +1334,9 @@ window.addEventListener('beforeunload', (e) => {
                 const et = entry.tags || [];
                 const hasImg = /data-did="/.test(entry.content || '');
                 const tagHtml = et.length
-                    ? `<div class="entry-tags">${et.map(t => `<span class="entry-tag" data-tag="${escapeHtml(t)}">${escapeHtml(t)}</span>`).join('')}</div>`
+                    // 属性値には escapeAttr。escapeHtml は " を変換しないので、
+                    // 取り込んだ日記のタグ名だけで属性を突き破られる
+                    ? `<div class="entry-tags">${et.map(t => `<span class="entry-tag" data-tag="${escapeAttr(t)}">${escapeHtml(t)}</span>`).join('')}</div>`
                     : '';
                 li.innerHTML = `<div class="entry-date">${formatDate(entry.date)}${hasImg ? ' <span class="entry-imgmark" title="画像あり">🖼️</span>' : ''}</div>`
                     + `<div class="entry-title">${escapeHtml(entry.title)}</div>${tagHtml}`;
@@ -1284,10 +1437,16 @@ window.addEventListener('beforeunload', (e) => {
             if (counts.size === 0) { area.style.display = 'none'; list.innerHTML = ''; return; }
             area.style.display = '';
 
-            // 絞り込み欄は、タグが増えて探しにくくなってから出す
-            const q = (document.getElementById('tagSearchInput') || {}).value || '';
+            // 絞り込み欄は、タグが増えて探しにくくなってから出す。
+            // 隠すときは中身も空にする。残したままだと、見えない入力で絞り込まれ続けて
+            // 「タグが勝手に減った・戻せない」状態になる
             const searchBox = document.getElementById('tagSearchInput');
-            if (searchBox) searchBox.style.display = counts.size > 10 ? '' : 'none';
+            const showSearch = counts.size > 10;
+            if (searchBox) {
+                searchBox.style.display = showSearch ? '' : 'none';
+                if (!showSearch) searchBox.value = '';
+            }
+            const q = searchBox ? (searchBox.value || '') : '';
 
             const sel = currentFilters.tags;
             const clearBtn = document.getElementById('tagClearBtn');
@@ -1329,6 +1488,9 @@ window.addEventListener('beforeunload', (e) => {
         }
         function clearTagFilter() {
             currentFilters.tags = [];
+            // 「解除」なので、タグ名の絞り込みも一緒に戻す（片方だけ残ると混乱する）
+            const searchBox = document.getElementById('tagSearchInput');
+            if (searchBox) searchBox.value = '';
             renderEntriesList();
         }
 
@@ -1389,6 +1551,10 @@ function clipboardImageFiles(cd) {
 
 function renderEditor() {
   const section = document.getElementById('editorSection');
+  // 直前の描画で作った blob: URL は、どの分岐へ進むにしても必ず捨てる。
+  // 早期returnの後ろに置いていたため、日記を消した／ロックしたときに
+  // URLが回収されずメモリに残り続けていた
+  revokeLiveImgUrls();
 
   if (appLocked) {
     section.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🔒</div><p>日記は暗号化されています。続けるにはロックを解除してください。</p><button class="btn btn-primary" type="button" onclick="openUnlockModal()" style="margin-top: var(--space-12);">ロックを解除</button></div>`;
@@ -1419,7 +1585,7 @@ function renderEditor() {
       <button type="button" onclick="rteToggleBlock('ul')" aria-label="箇条書きリスト">リスト</button>
       <button type="button" onclick="rteToggleBlock('blockquote')" aria-label="引用">引用</button>
       <button type="button" onclick="insertTablePrompt()" aria-label="表を挿入">表</button>
-      <button type="button" onclick="rteCreateLink()" aria-label="リンクを挿入">リンク</button>
+      <button type="button" onclick="rteCreateLink()" aria-label="リンクを挿入" title="リンクを作る／カーソル位置のリンクを編集する（本文のリンクは長押し・ダブルクリックでも編集できます）">🔗 リンク</button>
       <button type="button" onclick="pickImages()" aria-label="画像を挿入">🖼️ 画像</button>
     </div>
 
@@ -1484,16 +1650,16 @@ function renderEditor() {
   } else {
     editor.innerHTML = sanitizeHtml(raw);
   }
-  // 前の描画で作った blob: URL を捨ててから、いまの本文の画像を出す
-  revokeLiveImgUrls();
+  // 古い blob: URL は関数の先頭で捨てている。いまの本文の画像を出す
   hydrateImages(editor);
 
-  // 本文のリンクを押したときは、開くのではなく編集にする。
-  // 編集中に開かれても困るし、スマホだと「リンクを直す」入口がここしか無い。
-  editor.addEventListener('click', (ev) => {
-    const a = ev.target && ev.target.closest ? ev.target.closest('a') : null;
-    if (!a || !editor.contains(a)) return;
-    ev.preventDefault();
+  /* 本文のリンクの扱い。
+     ふつうに押したときは「開かない」だけにして、カーソルは既定どおり置く。
+     以前はここで必ずダイアログを開いていたため、リンクの文字にカーソルを置くことも、
+     直後に続きを書くこともできなかった（文章として編集できないほうが困る）。
+     編集は ①ツールバーの🔗（カーソル位置のリンクを拾う） ②ダブルクリック
+     ③長押し／右クリック の3つで開ける。 */
+  const openLinkEditorFor = (a) => {
     try {
       const sel = window.getSelection();
       const r = editor.ownerDocument.createRange();
@@ -1501,7 +1667,40 @@ function renderEditor() {
       sel.removeAllRanges(); sel.addRange(r);
     } catch (e) {}
     rteCreateLink();
+  };
+  const anchorFromEvent = (ev) => {
+    const a = ev.target && ev.target.closest ? ev.target.closest('a') : null;
+    return (a && editor.contains(a)) ? a : null;
+  };
+  editor.addEventListener('click', (ev) => {
+    if (anchorFromEvent(ev)) ev.preventDefault();   // 編集中に開いてしまわない
   });
+  editor.addEventListener('dblclick', (ev) => {
+    const a = anchorFromEvent(ev);
+    if (!a) return;
+    ev.preventDefault();
+    openLinkEditorFor(a);
+  });
+  // 右クリック＝Androidの長押しでもここに来る
+  editor.addEventListener('contextmenu', (ev) => {
+    const a = anchorFromEvent(ev);
+    if (!a) return;
+    ev.preventDefault();
+    openLinkEditorFor(a);
+  });
+  // iOSは長押しでcontextmenuが来ないことがあるので、指の長押しも自前で見る
+  let touchTimer = null, touchAnchor = null;
+  const cancelTouch = () => { if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; } touchAnchor = null; };
+  editor.addEventListener('touchstart', (ev) => {
+    const a = anchorFromEvent(ev);
+    cancelTouch();
+    if (!a) return;
+    touchAnchor = a;
+    touchTimer = setTimeout(() => { touchTimer = null; if (touchAnchor) openLinkEditorFor(touchAnchor); }, 550);
+  }, { passive: true });
+  editor.addEventListener('touchmove', cancelTouch, { passive: true });
+  editor.addEventListener('touchend', cancelTouch);
+  editor.addEventListener('touchcancel', cancelTouch);
 
   // 写真をドラッグして落とす経路。既定に任せると data: URL が本文に入る。
   editor.addEventListener('dragover', (ev) => {
@@ -1544,7 +1743,13 @@ function renderEditor() {
       const pasted = html ? sanitizeHtml(html)
                    : (plain ? escapeHtml(plain).replace(/\n/g, '<br>') : '');
       if (pasted) insertHtmlAtCursor(pasted);
-      if (wantImage) { insertImageFiles(files); return; }
+      if (wantImage) {
+        // 一緒に貼った文字はここで確定させる。画像が1枚も取り込めなかった場合、
+        // insertImageFiles は本文を保存しないので、文字だけ未保存で残ってしまう
+        if (pasted) syncEditorContent();
+        insertImageFiles(files);
+        return;
+      }
       if (!pasted) return;
     } else {
       // URLだけを貼ったときは、そのままの文字列ではなくリンクにする。
@@ -1593,7 +1798,13 @@ function renderEditor() {
 
      function updateCharCount() {
   const editor = document.getElementById('contentEditor');
-  const count = editor ? (editor.innerText || '').replace(/\u200B/g, '').length : (currentEntry?.content?.length || 0);
+  // \u300C\u753B\u50CF\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u300D\u306E\u672D\u306F\u672C\u6587\u3067\u306F\u306A\u3044\u306E\u3067\u3001\u6587\u5B57\u6570\u306B\u6570\u3048\u306A\u3044
+  const noteLen = editor
+    ? Array.from(editor.querySelectorAll('[data-imgnote]')).reduce((n, e) => n + (e.textContent || '').length, 0)
+    : 0;
+  const count = editor
+    ? Math.max(0, (editor.innerText || '').replace(/\u200B/g, '').length - noteLen)
+    : (currentEntry?.content?.length || 0);
   const el = document.getElementById('charCount');
   if (el) el.textContent = count;
 
@@ -1756,6 +1967,8 @@ function renderEditor() {
             if (!editor) return '';
             const tmp = document.createElement('div');
             tmp.innerHTML = editor.innerHTML;
+            // 「画像が見つかりません」の札は画面用。保存内容には持ち込まない
+            tmp.querySelectorAll('[data-imgnote]').forEach(n => n.remove());
             tmp.querySelectorAll('img').forEach(el => {
                 const did = el.getAttribute('data-did') || '';
                 const alt = el.getAttribute('alt') || '';
@@ -1775,11 +1988,31 @@ function renderEditor() {
             liveImgUrls.forEach(u => { try { URL.revokeObjectURL(u); } catch (e) {} });
             liveImgUrls = [];
         }
+        /** 出せない画像の見た目だけを差し替える。
+         *  ★<img data-did> そのものは絶対に消さない・置き換えない。
+         *    以前は span に replaceWith していたため、次に1文字打った瞬間
+         *    serializeEditor がその span を保存し、画像のidが本文から永久に消えていた
+         *    （あとから画像を戻しても二度と紐づかない）。
+         *    いまは src を外して alt に理由を借りるだけにして、参照は必ず残す。 */
         function imgPlaceholder(el, text) {
-            const box = document.createElement('span');
-            box.className = 'img-missing';
-            box.textContent = text;
-            el.replaceWith(box);
+            el.removeAttribute('src');
+            el.classList.remove('diary-img');
+            el.classList.add('img-missing');   // 画像自体は隠すだけ（消さない）
+            let note = el.nextElementSibling;
+            if (!(note && note.hasAttribute && note.hasAttribute('data-imgnote'))) {
+                note = el.ownerDocument.createElement('span');
+                note.setAttribute('data-imgnote', '1');
+                note.setAttribute('contenteditable', 'false');
+                note.className = 'img-missing-note';
+                el.parentNode.insertBefore(note, el.nextSibling);
+            }
+            note.textContent = text;
+        }
+        /** 表示できたので、札を外して画像を出す */
+        function imgPlaceholderClear(el) {
+            el.classList.remove('img-missing');
+            const note = el.nextElementSibling;
+            if (note && note.hasAttribute && note.hasAttribute('data-imgnote')) note.remove();
         }
         async function hydrateImages(root) {
             if (!root) return;
@@ -1787,6 +2020,9 @@ function renderEditor() {
             for (const el of els) {
                 const did = el.getAttribute('data-did');
                 if (!DID_RE.test(did)) { el.remove(); continue; }
+                // 既に同じ画像を出している要素は作り直さない。作り直すと
+                // 1枚貼るたびに既存枚数ぶんの blob: URL が積み上がる
+                if (el.dataset.hydratedDid === did && /^blob:/.test(el.src || '')) continue;
                 try {
                     const rec = await imgGet(did);
                     if (!rec) { imgPlaceholder(el, '🖼️ 画像が見つかりません'); continue; }
@@ -1795,6 +2031,8 @@ function renderEditor() {
                     const u = URL.createObjectURL(blob);
                     liveImgUrls.push(u);
                     el.src = u;
+                    el.dataset.hydratedDid = did;
+                    imgPlaceholderClear(el);
                     el.classList.add('diary-img');
                 } catch (e) {
                     imgPlaceholder(el, String(e && e.message) === 'LOCKED'
@@ -1819,6 +2057,10 @@ function renderEditor() {
                     return `${head}。変換に失敗しました。画像が大きすぎるかもしれません。`;
                 case 'store':
                     return `${head}。端末の保存容量が足りません。不要な写真や他サイトのデータを整理してください。`;
+                case 'db':
+                    return `${head}。画像の保存先を開けませんでした。このアプリを開いている他のタブを閉じて、ページを再読み込みしてください。`;
+                case 'insert':
+                    return `${head}。本文に差し込めませんでした。本文をタップしてカーソルを置いてから、もう一度お試しください。`;
                 default:
                     return `${head}。`;
             }
@@ -1834,6 +2076,20 @@ function renderEditor() {
             if (appLocked) { showToast('ロックを解除してから貼り付けてください', 'error'); return 0; }
             const editor = document.getElementById('contentEditor');
             if (!editor || !currentEntry) { showToast('先に日記を開いてください', 'error'); return 0; }
+
+            // 保存先が使えないなら、待たせずにその場で理由を伝える。
+            // ここで待ってしまうと「取り込んでいます…」のまま何も起きない。
+            try {
+                await imgDbPromise;
+            } catch (e) {
+                showToast(imgFailMessage('db', list.length), 'error');
+                return 0;
+            }
+
+            // ★差し込む前に、必ず本文の中のカーソル位置を確保する。
+            //   ここを省くと、ツールバーの🖼️から入れたとき選択が一覧に残ったままで、
+            //   画像が一覧のDOMへ入り本文には何も残らない（それでも成功と表示していた）
+            rteEnsureRangeInEditor(editor);
 
             let added = 0, keptGif = 0;
             const fails = [];   // 失敗の理由をためる
@@ -1853,8 +2109,13 @@ function renderEditor() {
                             console.warn('[diary] 画像を保存できません', e);
                             fails.push('store'); continue;
                         }
+                        // 本文に入らなかったら「追加しました」と言わない。実体も残さない
+                        if (!insertHtmlAtCursor(`<img data-did="${id}" alt="">`)) {
+                            console.warn('[diary] 本文に差し込めませんでした', id);
+                            try { await imgDelete(id); } catch (e2) {}
+                            fails.push('insert'); continue;
+                        }
                         pendingImageIds.add(id);
-                        insertHtmlAtCursor(`<img data-did="${id}" alt="">`);
                         added++;
                         if (small.kept) keptGif++;
                     } catch (e) {
@@ -1898,15 +2159,49 @@ function renderEditor() {
             while ((m = re.exec(String(html || '')))) { if (DID_RE.test(m[1])) out.push(m[1]); }
             return out;
         }
+        /** localStorage にいま入っている本文から画像idを拾う。
+         *  別のタブが保存したぶんは、こちらのメモリ上の entries には入っていない。
+         *  読めない（暗号文・壊れている）ときは null を返し、掃除自体を見送る。 */
+        function storedImageIds() {
+            try {
+                const raw = localStorage.getItem('diaryEntries');
+                if (!raw) return [];
+                const parsed = JSON.parse(raw);
+                if (isEncBlob(parsed)) return null;          // 中身を見られない
+                if (!Array.isArray(parsed)) return null;
+                const out = [];
+                parsed.forEach(e => contentImageIds(e && e.content).forEach(id => out.push(id)));
+                return out;
+            } catch (e) { return null; }
+        }
         async function gcImages() {
+            // 本文を信用できないときは掃除しない。
+            // 読み込みに失敗した起動（entries=[]）で走らせると「参照ゼロ」と誤判定して
+            // 端末内の画像を全部消してしまう（壊れた本文の控えから戻しても画像は戻らない）
+            if (storageLoadFailed || appLocked) return;
+            // 同期・取り込みの最中も待つ。受け取った画像を、それを使う本文が
+            // entries に入るより先に消してしまうため
+            if (syncInFlight > 0) return;
             try {
                 const used = new Set(pendingImageIds);
                 entries.forEach(e => contentImageIds(e.content).forEach(id => used.add(id)));
                 // 編集中で未保存のぶんも守る
                 const ed = document.getElementById('contentEditor');
                 if (ed) contentImageIds(ed.innerHTML).forEach(id => used.add(id));
+                // 他のタブが保存したぶんも数える。こちらの古い entries だけを見ると、
+                // 隣のタブがいま貼ったばかりの画像を消してしまう
+                const stored = storedImageIds();
+                if (stored === null && !(encEnabled && cryptoKey)) return;   // 読めない＝判断できない
+                (stored || []).forEach(id => used.add(id));
+                const cut = Date.now() - GC_GRACE_MS;
                 const keys = await imgKeys();
-                for (const k of keys) if (!used.has(k)) await imgDelete(k);
+                for (const k of keys) {
+                    if (used.has(k)) continue;
+                    // 貼った直後のものは、他のタブがまだ保存し終えていない可能性がある
+                    const t = imgIdTime(k);
+                    if (t && t > cut) continue;
+                    await imgDelete(k);
+                }
             } catch (e) { console.warn('[diary] gcImages', e); }
         }
 
@@ -2105,7 +2400,10 @@ function rteNormalize(editor) {
     changed = false;
     const els = Array.from(editor.querySelectorAll('strong,em,s,b,i,u,a'));
     for (const el of els) {
-      if (!el.textContent) { el.remove(); changed = true; continue; }
+      // 中身が本当に空の飾りだけを畳む。textContent だけで判断すると、
+      // 画像1枚を囲んだリンク（textContent は空）を中身ごと消してしまい、
+      // 「画像を選んでリンクにしたら写真が消えた」ことになる
+      if (!el.textContent && !el.firstElementChild) { el.remove(); changed = true; continue; }
       const next = el.nextSibling;
       if (next && next.nodeType === 1 && next.tagName === el.tagName && inlineSet.has(el.tagName)) {
         while (next.firstChild) el.appendChild(next.firstChild);
@@ -2275,8 +2573,9 @@ function anchorAt(node) {
 function rteCreateLink() {
   const editor = rteEditor();
   if (!editor) return;
-  editor.focus();
-  const range = rteGetRange();
+  // カーソルが本文の外にあっても、末尾に置いて必ず開けるようにする
+  // （ボタンを押したのに何も起きない、が一番わかりにくい）
+  const range = rteGetRange() || rteEnsureRangeInEditor(editor);
   if (!range) return;
   linkEditRange = range.cloneRange();
   linkEditAnchor = anchorAt(range.startContainer) || (!range.collapsed ? anchorAt(range.endContainer) : null);
@@ -2328,7 +2627,10 @@ function submitLink() {
     linkEditAnchor.setAttribute('href', url);
     linkEditAnchor.setAttribute('target', '_blank');
     linkEditAnchor.setAttribute('rel', 'noopener noreferrer');
-    linkEditAnchor.textContent = text || url;
+    // 画像などを含むリンクは中身を文字で置き換えない（写真が消えてしまう）。
+    // 表示テキストを空のまま OK したときは、いまの中身をそのまま残す
+    if (!linkEditAnchor.firstElementChild) linkEditAnchor.textContent = text || url;
+    else if (text) linkEditAnchor.textContent = text;
   } else {
     const range = linkEditRange;
     if (!range) return;
@@ -2368,10 +2670,45 @@ function removeLinkAtCursor() {
 }
 
 
-function insertHtmlAtCursor(html) {
+/** 本文の中に必ず差し込めるカーソル位置を用意する。
+ *  ツールバーのボタンを押すと、選択範囲は「一覧で開いた日記のタイトル」など
+ *  エディタの外に残ったままになる。そこへ差し込むと、画像が一覧のDOMへ入って
+ *  本文には何も残らない（それでも「追加しました」と言ってしまう）。
+ *  範囲が取れない・外にあるときは本文の末尾を使う。 */
+function rteEnsureRangeInEditor(editor) {
+  if (!editor) return null;
+  // focus() すると空のエディタでは先頭にカーソルが立つので、
+  // 「もともと本文のどこにいたか」は focus の前に控えておく
+  const sel0 = window.getSelection();
+  let keep = null;
+  if (sel0 && sel0.rangeCount) {
+    const r0 = sel0.getRangeAt(0);
+    if (editor.contains(r0.commonAncestorContainer)) keep = r0.cloneRange();
+  }
+  try { editor.focus({ preventScroll: true }); } catch (e) { editor.focus(); }
   const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0) return;
-  const range = sel.getRangeAt(0);
+  if (keep) {
+    try { sel.removeAllRanges(); sel.addRange(keep); } catch (e) {}
+    return keep;
+  }
+  const r = editor.ownerDocument.createRange();
+  r.selectNodeContents(editor);
+  r.collapse(false);   // 本文の末尾へ
+  if (sel) { sel.removeAllRanges(); sel.addRange(r); }
+  return r;
+}
+
+/** 差し込めたら true。呼び出し側が「入っていないのに成功と言う」のを防ぐ */
+function insertHtmlAtCursor(html) {
+  const editor = rteEditor();
+  const sel = window.getSelection();
+  let range = null;
+  if (sel && sel.rangeCount) {
+    const r = sel.getRangeAt(0);
+    if (!editor || editor.contains(r.commonAncestorContainer)) range = r;
+  }
+  if (!range) range = rteEnsureRangeInEditor(editor);
+  if (!range) return false;
   range.deleteContents();
 
   const tpl = document.createElement('template');
@@ -2379,13 +2716,14 @@ function insertHtmlAtCursor(html) {
   const node = tpl.content;
 
   range.insertNode(node);
-  sel.collapseToEnd();
+  if (sel) sel.collapseToEnd();
+  return true;
 }
 
 function insertTable(rows, cols) {
   const editor = document.getElementById('contentEditor');
   if (!editor) return;
-  editor.focus();
+  rteEnsureRangeInEditor(editor);   // 本文の外に差し込まないように
 
   let html = '<table><tbody>';
   for (let r = 0; r < rows; r++) {
@@ -2446,13 +2784,28 @@ function insertTablePrompt() {
         }
 
         async function pickSyncFolderA() {
+            let picked = null;
             try {
-                syncFolderHandleA = await window.showDirectoryPicker({ id: 'diary-sync-folder', mode: 'readwrite' });
-                await saveHandle('syncHandle', syncFolderHandleA);
-                localStorage.setItem('diarySyncFolderName', syncFolderHandleA.name);
-                updateSyncUI(true);
-                showToast(`同期フォルダ: ${syncFolderHandleA.name}`, 'success');
-            } catch (err) {}
+                picked = await window.showDirectoryPicker({ id: 'diary-sync-folder', mode: 'readwrite' });
+            } catch (err) {
+                // 利用者が選択をやめただけなら何も言わない
+                if (!(err && (err.name === 'AbortError' || err.name === 'NotAllowedError'))) {
+                    console.error(err);
+                    showToast('フォルダを選べませんでした', 'error');
+                }
+                return;
+            }
+            syncFolderHandleA = picked;
+            localStorage.setItem('diarySyncFolderName', picked.name);
+            updateSyncUI(true);
+            try {
+                await saveHandle('syncHandle', picked);
+                showToast(`同期フォルダ: ${picked.name}`, 'success');
+            } catch (err) {
+                // 握り潰すと「選んだのに何も起きない」になる。覚えられない理由を必ず伝える
+                console.error(err);
+                showToast('フォルダは使えますが、次回以降のために覚えておけませんでした。ページを開くたびに選び直しが必要です', 'warning');
+            }
         }
 
         async function checkSyncHandleA() {
@@ -2511,20 +2864,23 @@ function insertTablePrompt() {
             }
             // 同期は固定ファイル名に上書き（毎回新規ファイルを作らない）：#8
             // 暗号化が有効なら同期データも暗号化（平文での流出を防ぐ）
-            let filename, text;
+            let filename, text, missing = 0;
             if (format === 'json') {
                 filename = 'diary.json';
                 text = JSON.stringify(await buildSyncObject(), null, 2);
+                missing = buildSyncObject.lastMissing || 0;
             } else {
                 filename = 'diary.md';
-                text = buildExportPayload('md').text;
+                text = (await buildExportPayload('md')).text;
             }
             try {
                 const fileHandle = await syncFolderHandleA.getFileHandle(filename, { create: true });
                 const writable = await fileHandle.createWritable();
                 await writable.write(text);
                 await writable.close();
-                if (format === 'json') markBackupDone();
+                // 画像が欠けた控えを「バックアップ済み」にしない（督促が消えてしまう）
+                if (format === 'json' && !missing) markBackupDone();
+                if (missing) driveWarn('folderImgMissing', `画像${missing}枚を書き出せませんでした。同期フォルダの控えからは写真が戻りません`, quiet);
                 if(!quiet) showToast(`保存完了: ${filename}`, 'success');
                 const badge = document.getElementById('syncStatus');
                 if (badge) { badge.style.opacity = '0.5'; setTimeout(() => badge.style.opacity = '1', 200); }
@@ -2536,14 +2892,18 @@ function insertTablePrompt() {
             }
         }
 
-        function buildExportPayload(format) {
+        async function buildExportPayload(format) {
             const dateStr = localStampStr();
             const entriesData = JSON.parse(JSON.stringify(entries));
             if (format === 'json') {
+                // 画像と墓標も入れる。入れないと、このファイルから戻したときに
+                // 写真だけ消え、削除した日記が同期で復活する
+                const got = await collectImagesFor(entriesData);
                 return {
                     filename: `diary_backup_${dateStr}.json`,
                     mime: 'application/json',
-                    text: JSON.stringify({ exportDate: new Date().toISOString(), entries: entriesData }, null, 2),
+                    missing: got.missing,
+                    text: JSON.stringify({ exportDate: new Date().toISOString(), entries: entriesData, deleted: loadTombstones(), images: got.images }, null, 2),
                 };
             }
             const sorted = entriesData.sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -2562,21 +2922,36 @@ function insertTablePrompt() {
         // deleted（墓標）も一緒に運ぶ。これが無いと、他端末に残った日記が
         // 同期のたびに復活する。
         /** 本文で使っている画像を data URL にして書き出す。
-         *  これが無いと、バックアップから戻したときに本文の画像だけ消える。 */
-        async function collectImagesFor(list) {
+         *  これが無いと、バックアップから戻したときに本文の画像だけ消える。
+         *  fallback には「相手（Drive/取り込み元）が持っていた画像」を渡す。
+         *  こちらで出せなかったぶんは相手のものをそのまま持ち越す。持ち越さないと、
+         *  1枚読めなかっただけで Drive 側からその画像が消え、他端末からも失われる。
+         *  返り値: { images, missing }（missing はどこからも用意できなかった枚数） */
+        async function collectImagesFor(list, fallback) {
             const ids = new Set();
             (list || []).forEach(e => contentImageIds(e.content).forEach(id => ids.add(id)));
+            const spare = new Map();
+            (fallback || []).forEach(f => { if (f && f.id && f.dataUrl) spare.set(f.id, f); });
             const out = [];
+            let missing = 0;
             for (const id of ids) {
                 try {
+                    const hit = imgDataUrlCache.get(id);
+                    if (hit) { out.push({ id, type: hit.type, dataUrl: hit.dataUrl }); continue; }
                     const rec = await imgGet(id);
-                    if (!rec) continue;
-                    const blob = await imgDecode(rec);          // 暗号化してあっても平文で書き出す
-                    if (!blob) continue;                        // （書き出し全体を後で暗号化するため）
-                    out.push({ id, type: blob.type || 'image/jpeg', dataUrl: await blobToDataUrl(blob) });
-                } catch (e) { /* ロック中などは入れられない。呼び出し側が止めている */ }
+                    const blob = rec ? await imgDecode(rec) : null;   // 暗号化してあっても平文で書き出す
+                    if (!blob) throw new Error('NOIMG');              // （書き出し全体を後で暗号化するため）
+                    const type = blob.type || 'image/jpeg';
+                    const dataUrl = await blobToDataUrl(blob);
+                    imgDataUrlCache.set(id, { type, dataUrl });
+                    out.push({ id, type, dataUrl });
+                } catch (e) {
+                    const sp = spare.get(id);
+                    if (sp) { out.push({ id, type: sp.type || 'image/jpeg', dataUrl: sp.dataUrl }); continue; }
+                    missing++;
+                }
             }
-            return out;
+            return { images: out, missing };
         }
         function blobToDataUrl(blob) {
             return new Promise((res, rej) => {
@@ -2586,32 +2961,53 @@ function insertTablePrompt() {
                 fr.readAsDataURL(blob);
             });
         }
-        /** 取り込んだ画像を端末へ戻す */
+        /** 取り込んだ画像を端末へ戻す。返り値: 戻せなかった枚数
+         *  （0以外なら、その状態で Drive を上書きしてはいけない）。 */
         async function restoreImages(list) {
+            let failed = 0;
             for (const f of (list || [])) {
                 if (!f || !DID_RE.test(f.id || '') || !f.dataUrl) continue;
                 try {
                     const blob = await (await fetch(f.dataUrl)).blob();
                     const rec = await imgEncode(blob);
                     await imgPut({ id: f.id, ...rec, size: blob.size });
-                } catch (e) { console.warn('[diary] 画像を戻せませんでした', f.id, e); }
+                } catch (e) { console.warn('[diary] 画像を戻せませんでした', f.id, e); failed++; }
             }
+            return failed;
         }
 
-        async function buildSyncObject(tombs) {
+        /** 同期/バックアップ用のオブジェクト。暗号化が有効なら暗号化ブロブを返す。
+         *  fallbackImages: 相手が持っていた画像（こちらで出せないぶんの持ち越し用）
+         *  戻せなかった枚数は buildSyncObject.lastMissing に入れる（呼び出し側の判断用） */
+        async function buildSyncObject(tombs, fallbackImages) {
             const entriesData = JSON.parse(JSON.stringify(entries));
             // 本文の画像も一緒に持っていく。暗号化がONなら、この平文オブジェクトごと
             // 暗号化されるので、画像もまとめて包まれる。
-            const images = await collectImagesFor(entriesData);
-            const plainObj = { exportDate: new Date().toISOString(), entries: entriesData, deleted: tombs || loadTombstones(), images };
+            const got = await collectImagesFor(entriesData, fallbackImages);
+            buildSyncObject.lastMissing = got.missing;
+            const plainObj = { exportDate: new Date().toISOString(), entries: entriesData, deleted: tombs || loadTombstones(), images: got.images };
             if (encEnabled && cryptoKey && encMeta) {
                 return await ENC.encryptString(JSON.stringify(plainObj), cryptoKey, ENC.unb64(encMeta.salt), encMeta.iter);
             }
             return plainObj;
         }
 
-        function exportJSON() { const p = buildExportPayload('json'); downloadFile(p.text, p.filename, p.mime); markBackupDone(); }
-        function exportMarkdown() { const p = buildExportPayload('md'); downloadFile(p.text, p.filename, p.mime); }
+        /* JSONの書き出しは「復元可能」と名乗る以上、画像と墓標まで入れる。
+           以前は entries だけだったので、このファイルから戻すと写真が全部
+           「画像が見つかりません」になり、しかも markBackupDone で督促が消えていた。 */
+        async function exportJSON() {
+            if (appLocked) { openUnlockModal(); return; }
+            const p = await buildExportPayload('json');
+            downloadFile(p.text, p.filename, p.mime);
+            // 画像を入れられなかったバックアップで「済んだこと」にしない
+            if (p.missing) showToast(`画像${p.missing}枚を書き出せませんでした。このファイルからは写真が戻りません`, 'error');
+            else markBackupDone();
+        }
+        async function exportMarkdown() {
+            if (appLocked) { openUnlockModal(); return; }
+            const p = await buildExportPayload('md');
+            downloadFile(p.text, p.filename, p.mime);
+        }
         function downloadFile(content, filename, mimeType) {
             const blob = new Blob([content], { type: mimeType });
             const url = URL.createObjectURL(blob);
@@ -2637,6 +3033,10 @@ function insertTablePrompt() {
                 const obj = await buildSyncObject(); // 暗号化が有効なら暗号化ブロブ
                 text = JSON.stringify(obj, null, 2);
                 filename = `diary_backup_${localDateStr()}.json`;
+                // 写真が欠けたバックアップを「取れた」ことにしない
+                if (buildSyncObject.lastMissing) {
+                    showToast(`画像${buildSyncObject.lastMissing}枚を書き出せませんでした。このファイルからは写真が戻りません`, 'error');
+                }
             } catch (err) {
                 console.error(err);
                 showToast('バックアップの作成に失敗しました', 'error');
@@ -2701,11 +3101,20 @@ function insertTablePrompt() {
             banner.style.display = 'flex';
         }
         function importDataFrom(fileInputId, closeModalId) {
+            // ロック中の取り込みは丸ごと止める。以前はここを素通りしていたため、
+            // 本文は保存できないのに画像だけ「暗号化されないまま」端末に書かれ、
+            // 一覧には再読み込みで消える日記が並んでいた
+            if (appLocked || (encEnabled && !cryptoKey)) {
+                showToast('ロックを解除してから取り込んでください', 'error');
+                openUnlockModal();
+                return;
+            }
             const fileInput = document.getElementById(fileInputId);
             const file = fileInput && fileInput.files ? fileInput.files[0] : null;
             if (!file) { showToast('インポートするJSONを選択してください', 'error'); return; }
             const reader = new FileReader();
             reader.onload = async (e) => {
+                syncInFlight++;   // 取り込みが終わるまで掃除を止める
                 try {
                     let data = JSON.parse(e.target.result);
                     if (isEncBlob(data)) {
@@ -2736,7 +3145,8 @@ function insertTablePrompt() {
                     ).filter(t => !fileIds.has(String(t.id)));
                     saveTombstones(tombsAfterImport);
                     // 本文の画像も端末へ戻す（これが無いと文章だけ戻って画像が欠ける）
-                    if (Array.isArray(data.images) && data.images.length) await restoreImages(data.images);
+                    let imgFailed = 0;
+                    if (Array.isArray(data.images) && data.images.length) imgFailed = await restoreImages(data.images);
                     const d = dedupeEntriesByDate(entries);
                     entries = d.entries;
                     if (currentEntry) {
@@ -2749,10 +3159,14 @@ function insertTablePrompt() {
                     // 保存できていなければ「完了」と言わない（再読込で消えるため）
                     if (!ok) return;
                     showToast(`インポート完了: ${imported}件` + (d.merged ? `（同じ日付${d.merged}件を統合）` : ''), 'success');
+                    // 黙って欠けさせない。容量不足などで戻せなかった画像は必ず伝える
+                    if (imgFailed) showToast(`画像${imgFailed}枚を端末に戻せませんでした。端末の空き容量を確かめて、もう一度取り込んでください`, 'error');
                     if (closeModalId) closeModal(closeModalId);
                 } catch (err) {
                     console.error(err);
                     showToast(err && err.message === 'cancelled' ? 'ロック解除をキャンセルしました' : 'インポートに失敗しました', err && err.message === 'cancelled' ? 'warning' : 'error');
+                } finally {
+                    syncInFlight--;
                 }
             };
             reader.readAsText(file);
@@ -2779,6 +3193,16 @@ function insertTablePrompt() {
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        /** 属性値に入れる文字列用。
+         *  escapeHtml はテキストノードの直列化なので " と ' を変換しない。
+         *  data-tag="…" のような使い方をすると属性を突き破られ、
+         *  取り込んだ日記のタグ名だけで onmouseover などを差し込めてしまう。 */
+        function escapeAttr(text) {
+            return String(text == null ? '' : text).replace(/[&<>"']/g, c => (
+                { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+            ));
         }
 
         // 取り込んだHTMLを安全化（許可属性のみ・危険タグ/イベント/スキームを除去）：#5
@@ -2953,8 +3377,25 @@ function insertTablePrompt() {
             if (p1 !== p2) { showToast('確認用パスフレーズが一致しません', 'error'); return; }
             const wasEnabled = encEnabled, prevKey = cryptoKey, prevMeta = encMeta;
             try {
+                // ★手順が肝心。鍵(cryptoKey)とメタ(encMeta)が食い違っている時間を作らない。
+                //   以前は「先に新しい鍵とsaltへ差し替え → そのあと古い鍵に戻して画像を復号」
+                //   としていたため、その最中に自動保存(0.8秒)や進行中のDrive同期の
+                //   flushPendingEditsForSync が割り込むと、
+                //   「新しいsaltを名乗るのに古い鍵で暗号化した本文」が保存され、
+                //   新旧どちらのパスフレーズでも二度と開けなくなっていた。
+                //   → 復号は差し替えの“前”に全部済ませ、差し替えは await を挟まず一息で行う。
+                let plains = null;
+                if (wasEnabled && prevKey) {
+                    const read = await imgReadAllPlain();
+                    if (read.failed > 0) {
+                        // 読めない画像があるまま鍵を変えると、その画像は永久に開けなくなる
+                        if (!confirm(`画像${read.failed}枚を読み出せませんでした。このままパスフレーズを変更すると、その画像は開けなくなります。続けますか？`)) return;
+                    }
+                    plains = read.plains;
+                }
                 const salt = crypto.getRandomValues(new Uint8Array(16));
                 const key = await ENC.deriveKey(p1, salt, PBKDF2_ITER);
+                // ここから下は await を挟まずに差し替える（割り込みの隙を作らない）
                 cryptoKey = key;
                 encEnabled = true;
                 encMeta = { salt: ENC.b64(salt), iter: PBKDF2_ITER };
@@ -2964,22 +3405,11 @@ function insertTablePrompt() {
                 const f2 = document.getElementById('encNewPass2'); if (f2) f2.value = '';
                 // 本文だけ暗号化して画像が素のまま端末に残ると、鍵をかけた意味がない。
                 // 鍵が変わったときも古い鍵の画像は開けなくなるので、必ず包み直す。
-                if (prevKey && prevKey !== key) {
-                    const restore = cryptoKey; cryptoKey = prevKey;
-                    const rec = await (async () => { try { return await imgKeys(); } catch (e) { return []; } })();
-                    const plains = [];
-                    for (const k of rec) {
-                        try { const r0 = await imgGet(k); const b = await imgDecode(r0); if (b) plains.push({ id: k, blob: b, w: r0.w, h: r0.h }); } catch (e) {}
-                    }
-                    cryptoKey = restore;
-                    for (const pl of plains) {
-                        try { const nx = await imgEncode(pl.blob); await imgPut({ id: pl.id, ...nx, w: pl.w, h: pl.h, size: pl.blob.size }); } catch (e) {}
-                    }
-                } else {
-                    await imgRewrapAll();
-                }
+                const failed = plains ? await imgWriteAllPlain(plains) : await imgRewrapAll();
                 updateEncUI();
                 showToast(wasEnabled ? 'パスフレーズを変更しました' : '暗号化を有効にしました', 'success');
+                // 握り潰さない。包み直せなかった画像は開けなくなっているので必ず伝える
+                if (failed) showToast(`画像${failed}枚を新しいパスフレーズで保存し直せませんでした。設定からもう一度お試しください`, 'error');
             } catch (err) {
                 cryptoKey = prevKey; encEnabled = wasEnabled; encMeta = prevMeta;
                 console.error(err);
@@ -2992,24 +3422,20 @@ function insertTablePrompt() {
             if (!cryptoKey) { showToast('先にロックを解除してください', 'error'); return; }
             if (!confirm('暗号化を解除して平文保存に戻しますか？')) return;
             const prevKey = cryptoKey, prevMeta = encMeta;
+            // 画像の包みは、鍵を手放す“前”に外しておく。あとから外そうとして
+            // 一時的に鍵を戻すと、その隙に走った保存や貼り付けが、捨てる直前の鍵で
+            // 暗号化されてしまう（applyPassphrase と同じ理由）。
+            const read = await imgReadAllPlain();
+            if (read.failed > 0 &&
+                !confirm(`画像${read.failed}枚を読み出せませんでした。このまま解除すると、その画像は開けなくなります。続けますか？`)) return;
             encEnabled = false; cryptoKey = null; encMeta = null;
             const ok = await saveEntriesToStorage();
             if (!ok) { encEnabled = true; cryptoKey = prevKey; encMeta = prevMeta; showToast('解除に失敗しました', 'error'); return; }
             // Drive上は暗号文のまま残るので、そのままだと以後の自動同期が毎回
             // 復号できずに止まる。解除した鍵を覚えておき、Drive側も平文で作り直す（B-3）
             driveRemoteKey = prevKey;
-            // 画像の包みも外す。外さないと、鍵を捨てたあとに読めない画像だけが残る。
-            const kk = cryptoKey; cryptoKey = prevKey; encEnabled = true;
-            const plains = [];
-            try {
-                for (const k of await imgKeys()) {
-                    try { const r0 = await imgGet(k); const b = await imgDecode(r0); if (b) plains.push({ id: k, blob: b, w: r0.w, h: r0.h }); } catch (e) {}
-                }
-            } catch (e) {}
-            encEnabled = false; cryptoKey = kk;
-            for (const pl of plains) {
-                try { const nx = await imgEncode(pl.blob); await imgPut({ id: pl.id, ...nx, w: pl.w, h: pl.h, size: pl.blob.size }); } catch (e) {}
-            }
+            const failed = await imgWriteAllPlain(read.plains);
+            if (failed) showToast(`画像${failed}枚の暗号化を解除できませんでした。設定からもう一度お試しください`, 'error');
             updateEncUI();
             showToast('暗号化を解除しました（平文保存）', 'success');
             if (autoSyncDriveEnabled) {
@@ -3335,6 +3761,7 @@ function setDriveSyncProblem(msg) {
 }
 
 async function drivePullAndMerge(quiet = false) {
+  syncInFlight++;   // 取り込み中は掃除を止める（受け取った画像を先に消してしまうため）
   try {
     if (quiet && !driveAccessToken && !sharedTokenGet()) return; // 静かな取り込みは認証を求めない
     const blocked = syncBlockedReason();
@@ -3365,7 +3792,9 @@ async function drivePullAndMerge(quiet = false) {
     const tombs = mergeTombs(loadTombstones(), Array.isArray(data.deleted) ? data.deleted : []);
     saveTombstones(tombs);
     // 他端末で貼った画像も受け取る（これが無いと本文に「画像が見つかりません」が並ぶ）
-    if (Array.isArray(data.images) && data.images.length) await restoreImages(data.images);
+    let imgFailed = 0;
+    if (Array.isArray(data.images) && data.images.length) imgFailed = await restoreImages(data.images);
+    if (imgFailed) driveWarn('imgRestore', `Driveの画像${imgFailed}枚を端末に取り込めませんでした（空き容量をご確認ください）`, quiet);
     const r = mergeEntriesByUpdatedAt(entries, incoming, tombs);
     const d = dedupeEntriesByDate(r.merged);
     entries = d.entries;
@@ -3397,6 +3826,8 @@ async function drivePullAndMerge(quiet = false) {
     }
     if (quiet) return;
     showToast(err && err.message === 'cancelled' ? 'ロック解除をキャンセルしました' : 'Drive 読み込み失敗', err && err.message === 'cancelled' ? 'warning' : 'error');
+  } finally {
+    syncInFlight--;
   }
 }
 
@@ -3454,7 +3885,36 @@ async function driveUploadDiaryObject(obj, hint) {
 let drivePushBusy = false;
 let drivePushPending = false;
 
-async function drivePushAll(quiet = false) {
+/* 自動同期は「打つたび」には走らせない。
+   本文の自動保存は入力が0.8秒止まるたびに走るので、そのたびに全画像を含む
+   ファイルを送ると、写真が増えるほど通信量と待ち時間が膨らむ。
+   静かな同期はまとめて一定間隔にする（手動の「Driveへ保存」は待たせない）。 */
+const DRIVE_QUIET_MIN_INTERVAL_MS = 20000;
+let drivePushQuietTimer = null;
+let drivePushLastAt = 0;
+
+function drivePushAll(quiet = false) {
+  if (quiet) {
+    const wait = Math.max(0, DRIVE_QUIET_MIN_INTERVAL_MS - (Date.now() - drivePushLastAt));
+    if (drivePushQuietTimer) clearTimeout(drivePushQuietTimer);
+    drivePushQuietTimer = setTimeout(() => { drivePushQuietTimer = null; drivePushRun(true); }, wait);
+    return Promise.resolve();
+  }
+  // 手動で押したときは、待たせている自動ぶんも一緒に片付ける
+  if (drivePushQuietTimer) { clearTimeout(drivePushQuietTimer); drivePushQuietTimer = null; }
+  return drivePushRun(false);
+}
+/** 予約している自動同期をいますぐ流す（タブを閉じる・隠れるとき用） */
+function drivePushFlushQuiet() {
+  if (!drivePushQuietTimer) return;
+  clearTimeout(drivePushQuietTimer); drivePushQuietTimer = null;
+  drivePushRun(true);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') drivePushFlushQuiet();
+});
+
+async function drivePushRun(quiet = false) {
   if (drivePushBusy) {
     // 走行中の要求は捨てず、終わってからもう一度だけ流す
     drivePushPending = true;
@@ -3466,11 +3926,13 @@ async function drivePushAll(quiet = false) {
     await drivePushAllOnce(quiet);
   } finally {
     drivePushBusy = false;
-    if (drivePushPending) { drivePushPending = false; drivePushAll(true); }
+    drivePushLastAt = Date.now();
+    if (drivePushPending) { drivePushPending = false; drivePushRun(true); }
   }
 }
 
 async function drivePushAllOnce(quiet) {
+  syncInFlight++;   // 送信中は掃除を止める（相手から受け取った画像を消さないため）
   try {
     if (quiet && !driveAccessToken && !sharedTokenGet()) {
       // 自動同期はユーザー操作なしで認証ポップアップを開けない（ブロックされる）ため、
@@ -3523,7 +3985,16 @@ async function drivePushAllOnce(quiet) {
     saveTombstones(tombs);
     // 相手が持っていた画像を先に取り込む。取り込まずに書き戻すと、
     // マージで残った相手の日記から画像だけが失われる。
-    if (Array.isArray(remoteImages) && remoteImages.length) await restoreImages(remoteImages);
+    if (Array.isArray(remoteImages) && remoteImages.length) {
+      const failed = await restoreImages(remoteImages);
+      if (failed) {
+        // 受け取れていないのに書き戻すと、Drive側からその画像が消え、
+        // 他の端末からも失われる。今回は書かずに次の機会へ回す
+        driveWarn('imgRestore', `Driveの画像${failed}枚を端末に取り込めませんでした。取りこぼしを防ぐため、今回のDriveへの保存は見送りました（空き容量をご確認ください）`, quiet);
+        setDriveSyncProblem('Driveの画像を端末に取り込めないため、Driveへの保存を見送っています。空き容量をご確認ください。');
+        return;
+      }
+    }
     const before = JSON.stringify(entries);
     const r = mergeEntriesByUpdatedAt(entries, remoteEntries, tombs);
     const d = dedupeEntriesByDate(r.merged);
@@ -3540,8 +4011,16 @@ async function drivePushAllOnce(quiet) {
     const emptyByTombstone = entries.length === 0
       && remoteEntries.every(e => tombIds.has(String(e.id)));
 
-    // 4) 同じものをDriveへ書き戻す
-    const obj = await buildSyncObject(tombs); // 暗号化が有効なら暗号化ブロブ
+    // 4) 同じものをDriveへ書き戻す。
+    //    こちらで用意できなかった画像は、Driveにあったぶんをそのまま持ち越す。
+    //    持ち越さないと、1枚読めなかっただけでDrive側から写真が消える
+    const obj = await buildSyncObject(tombs, remoteImages);
+    // ここまで来て足りない画像は、この端末にもDriveにも無いもの。送っても
+    // 失われるものは無いので、同期は止めない（止めると二度と保存できなくなる）。
+    // ただし本文が画像を指しているのに実体が無い、という事実は伝える
+    if (buildSyncObject.lastMissing) {
+      driveWarn('imgMissing', `本文で使っている画像${buildSyncObject.lastMissing}枚が見つかりません（バックアップから戻すと復活することがあります）`, quiet);
+    }
     await driveUploadDiaryObject(obj, {
       count: entries.length, fileId, remote,
       allowEmpty: emptyByTombstone || remoteBroken
@@ -3569,6 +4048,8 @@ async function drivePushAllOnce(quiet) {
     } else if (!quiet) {
       showToast('Drive 保存失敗', 'error');
     }
+  } finally {
+    syncInFlight--;
   }
 }
 
@@ -3593,7 +4074,11 @@ async function driveRebuildRemote(quiet = false) {
     const fileId = await driveFindDiaryFileId();
     const tombs = loadTombstones();
     const obj = await buildSyncObject(tombs);
-    // 利用者が明示的に「作り直す」と言っているので、空でも止めない
+    // 利用者が明示的に「作り直す」と言っているので、空でも止めない。
+    // ただし画像が欠けたまま作り直すと他端末の写真まで消えるので、それは伝える
+    if (buildSyncObject.lastMissing && !quiet) {
+      if (!confirm(`本文で使っている画像${buildSyncObject.lastMissing}枚がこの端末で見つかりません。このまま作り直すと、その画像はDriveからも失われます。続けますか？`)) return false;
+    }
     await driveUploadDiaryObject(obj, { count: entries.length, fileId, allowEmpty: true });
     markBackupDone();
     setDriveSyncProblem(null);
@@ -3745,8 +4230,10 @@ function toggleAutoSyncDrive() {
       phase:status().phase, at:status().at, msg:status().msg}},'*'); }catch(e){}
   }
   function syncNow(){
-    // Drive保存があればそれを使い、無ければ書き出しに落とす
+    // Drive保存があればそれを使い、無ければ書き出しに落とす。
+    // シェルの「今すぐ同期」は利用者の操作なので、自動同期のまとめ待ちには入れない
     try{
+      if(typeof window.drivePushRun==='function') return Promise.resolve(window.drivePushRun(true));
       if(typeof window.drivePushAll==='function') return Promise.resolve(window.drivePushAll(true));
     }catch(e){}
     try{

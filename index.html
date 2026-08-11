@@ -490,10 +490,22 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 
   // ---- combined backup (shell reads same-origin storage of both apps) ----
   function knOpenDB(){ return new Promise(function(res,rej){ var r=indexedDB.open('kininari',1); r.onupgradeneeded=function(){ try{ if(!r.result.objectStoreNames.contains('files')) r.result.createObjectStore('files',{keyPath:'id'}); }catch(e){} }; r.onsuccess=function(){ res(r.result); }; r.onerror=function(){ rej(r.error); }; }); }
-  /* 日記帳の本文に貼った画像。日記帳は自分のDB(DiaryDB/images)に置いているので、
-     ここで一緒に書き出さないと、まとめて取り込んだときに文章だけ戻って画像が欠ける。
-     バージョンは日記帳側と必ず揃えること（低いと onupgradeneeded で壊す）。 */
-  function knOpenDiaryDB(){ return new Promise(function(res,rej){ var r=indexedDB.open('DiaryDB',2); r.onupgradeneeded=function(){ try{ var db=r.result; if(!db.objectStoreNames.contains('handles')) db.createObjectStore('handles'); if(!db.objectStoreNames.contains('images')) db.createObjectStore('images',{keyPath:'id'}); }catch(e){} }; r.onsuccess=function(){ res(r.result); }; r.onerror=function(){ rej(r.error); }; }); }
+  /* 日記帳の本文に貼った画像。日記帳は専用のDB(DiaryImagesDB/images, version 1)に
+     置いているので、ここで一緒に書き出さないと、まとめて取り込んだときに
+     文章だけ戻って画像が欠ける。
+     バージョンは日記帳側と必ず揃えること。食い違うと、低い側は VersionError で
+     開けず、高い側は onupgradeneeded で空のストアを作ってしまう。 */
+  function knOpenDiaryDB(){ return new Promise(function(res,rej){
+    var done=false, t=setTimeout(function(){ if(!done){done=true; rej(new Error('IDB_TIMEOUT'));} },8000);
+    var r=indexedDB.open('DiaryImagesDB',1);
+    r.onupgradeneeded=function(){ try{ var db=r.result; if(!db.objectStoreNames.contains('images')) db.createObjectStore('images',{keyPath:'id'}); }catch(e){} };
+    r.onsuccess=function(){ if(done)return; done=true; clearTimeout(t);
+      try{ r.result.onversionchange=function(){ try{ r.result.close(); }catch(e){} }; }catch(e){}
+      res(r.result); };
+    r.onerror=function(){ if(done)return; done=true; clearTimeout(t); rej(r.error); };
+    // blocked を拾わないと onsuccess も onerror も来ず、永久に待ち続ける
+    r.onblocked=function(){ if(done)return; done=true; clearTimeout(t); rej(new Error('IDB_BLOCKED')); };
+  }); }
   function knDiaryImgAll(db){ return new Promise(function(res){ try{ var tx=db.transaction('images','readonly'); var rq=tx.objectStore('images').getAll(); rq.onsuccess=function(){ res(rq.result||[]); }; rq.onerror=function(){ res([]); }; }catch(e){ res([]); } }); }
   function knDiaryImgPut(db,rec){ return new Promise(function(res){ try{ var tx=db.transaction('images','readwrite'); tx.objectStore('images').put(rec); tx.oncomplete=function(){res(true);}; tx.onerror=function(){res(false);}; }catch(e){ res(false);} }); }
   function knIdbAll(db){ return new Promise(function(res){ try{ var tx=db.transaction('files','readonly'); var rq=tx.objectStore('files').getAll(); rq.onsuccess=function(){ res(rq.result||[]); }; rq.onerror=function(){ res([]); }; }catch(e){ res([]); } }); }
