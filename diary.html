@@ -137,6 +137,8 @@
         .editor-footer { display: flex; justify-content: space-between; align-items: center; padding: var(--space-12); border-top: 1px solid var(--color-border); background-color: rgba(94, 82, 64, 0.05); flex-wrap: wrap; gap: var(--space-12); }
         .char-count { font-size: 12px; color: var(--color-text-secondary); }
         .footer-actions { display: flex; gap: var(--space-8); flex-wrap: wrap; }
+        .diary-img { max-width: 100%; height: auto; border-radius: var(--radius-base); display: block; margin: var(--space-8) 0; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+        .img-missing { display: inline-block; padding: var(--space-8) var(--space-12); margin: var(--space-8) 0; border: 1px dashed var(--color-border); border-radius: var(--radius-base); font-size: 12px; color: var(--color-text-secondary); background: rgba(0,0,0,.03); }
         .tags-section { padding: var(--space-12); border-top: 1px solid var(--color-border); border-bottom: 1px solid var(--color-border); background-color: rgba(94, 82, 64, 0.03); }
         .tags-label { font-size: 13px; font-weight: 600; margin-bottom: var(--space-12); color: var(--color-text); }
         .tags-display { display: flex; flex-wrap: wrap; gap: var(--space-8); align-items: center; min-height: 28px; margin-bottom: var(--space-12); }
@@ -194,8 +196,13 @@
             /* エディタを潰さず、しっかり書ける高さを確保（縦並び時はflexで奪い合わない） */
             .editor-section { flex: none; order: 1; }
             .editor-content { flex: none; min-height: max(60vh, 360px); overflow-y: visible; }
-            /* 縦並びでは本文エディタを上に、カレンダー/リストを下に */
-            .sidebar { order: 2; }
+            /* 縦並びでは、探す欄のあるサイドバーを先に出す。本文エディタが上だと
+               タグに届くまで1画面ぶんスクロールが要り、検索の入口が埋もれる */
+            .sidebar { order: 1; }
+            .editor-section { order: 2; }
+            /* 指で押しやすい大きさにする */
+            .tag-filter-item { padding: var(--space-8) var(--space-12); font-size: 13px; }
+            .entry-tag { font-size: 11.5px; padding: 3px 9px; }
         }
 
         /* --- アクセシビリティ・追加UI --- */
@@ -268,30 +275,29 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
 
         <div class="main">
             <div class="sidebar">
-                <div class="stats-section">
-                    <div class="stats-grid">
-                        <div class="stat-item">
-                            <div class="stat-value" id="totalEntries">0</div>
-                            <div class="stat-label">総投稿数</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-value" id="totalChars">0</div>
-                            <div class="stat-label">総文字数</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-value" id="thisMonthEntries">0</div>
-                            <div class="stat-label">今月投稿</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-value" id="weeklyAvg">0</div>
-                            <div class="stat-label">週平均投稿</div>
-                        </div>
-                    </div>
-                </div>
-
+                <!-- 探すためのものを画面の上に置く。以前は統計と空のエディタが上を
+                     占めていて、スマホではタグに届くまで2画面ぶんスクロールが要り、
+                     機能があっても事実上使えなかった。 -->
                 <div class="view-tabs" role="tablist" aria-label="表示切替">
                     <button class="view-tab" type="button" role="tab" data-view="list" aria-selected="false" onclick="switchView('list')">📋 リスト</button>
                     <button class="view-tab active" type="button" role="tab" data-view="calendar" aria-selected="true" onclick="switchView('calendar')">📅 カレンダー</button>
+                </div>
+
+                <div class="find-box">
+                    <div class="search-box">
+                        <input type="text" id="searchInput" placeholder="🔍 タイトル/本文検索..." onkeyup="filterEntries()">
+                    </div>
+                    <div class="tag-area" id="tagArea">
+                        <div class="tag-area-head">
+                            <span class="filter-label">タグで探す</span>
+                            <span class="tag-tools">
+                                <button type="button" id="tagModeBtn" class="tag-mode" onclick="toggleTagMode()" title="複数選んだときの絞り込み方">どれか</button>
+                                <button type="button" id="tagClearBtn" class="tag-clear" onclick="clearTagFilter()">解除</button>
+                            </span>
+                        </div>
+                        <input type="text" id="tagSearchInput" class="tag-search" placeholder="タグ名で絞り込む" oninput="renderTagFilter()">
+                        <div class="tag-filter-list" id="tagFilterList"></div>
+                    </div>
                 </div>
 
                 <div id="calendarView" class="calendar-container active">
@@ -313,16 +319,31 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
                 </div>
 
                 <div id="listView" class="list-container">
-                    <div class="search-box">
-                        <input type="text" id="searchInput" placeholder="🔍 タイトル/本文検索..." onkeyup="filterEntries()">
-                    </div>
-                    <div class="filter-section">
-                        <label class="filter-label">タグフィルタ</label>
-                        <div class="tag-filter-list" id="tagFilterList"></div>
-                    </div>
-                    <h2>最近の投稿</h2>
+                    <h2 id="listHeading">最近の投稿</h2>
                     <ul class="entries-list" id="entriesList"></ul>
                 </div>
+
+                <details class="stats-box" id="statsBox">
+                    <summary>統計</summary>
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <div class="stat-value" id="totalEntries">0</div>
+                            <div class="stat-label">総投稿数</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="totalChars">0</div>
+                            <div class="stat-label">総文字数</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="thisMonthEntries">0</div>
+                            <div class="stat-label">今月投稿</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="weeklyAvg">0</div>
+                            <div class="stat-label">週平均投稿</div>
+                        </div>
+                    </div>
+                </details>
             </div>
 
             <div class="editor-section" id="editorSection">
@@ -502,17 +523,55 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
     <script>
         const DB_NAME = 'DiaryDB';
         const STORE_NAME = 'handles';
+        // 本文に貼った画像の置き場。実体はここに置き、本文には id だけを残す。
+        // 本文（＝localStorage）に data: URL を入れると、6つのアプリで分け合っている
+        // 5MBを一気に食い潰して、日記そのものが保存できなくなる。
+        const IMG_STORE = 'images';
         const dbPromise = new Promise((resolve, reject) => {
-            const request = indexedDB.open(DB_NAME, 1);
+            const request = indexedDB.open(DB_NAME, 2);
             request.onupgradeneeded = (e) => {
                 const db = e.target.result;
                 if (!db.objectStoreNames.contains(STORE_NAME)) {
                     db.createObjectStore(STORE_NAME);
                 }
+                if (!db.objectStoreNames.contains(IMG_STORE)) {
+                    db.createObjectStore(IMG_STORE, { keyPath: 'id' });
+                }
             };
             request.onsuccess = () => resolve(request.result);
             request.onerror = () => reject(request.error);
         });
+
+        /* ── 画像の出し入れ ───────────────────────────────── */
+        function imgTx(mode) {
+            return dbPromise.then(db => db.transaction(IMG_STORE, mode).objectStore(IMG_STORE));
+        }
+        function imgPut(rec) {
+            return imgTx('readwrite').then(st => new Promise((res, rej) => {
+                const r = st.put(rec); r.onsuccess = () => res(true); r.onerror = () => rej(r.error);
+            }));
+        }
+        function imgGet(id) {
+            return imgTx('readonly').then(st => new Promise((res) => {
+                const r = st.get(id); r.onsuccess = () => res(r.result || null); r.onerror = () => res(null);
+            }));
+        }
+        function imgKeys() {
+            return imgTx('readonly').then(st => new Promise((res) => {
+                const r = st.getAllKeys(); r.onsuccess = () => res(r.result || []); r.onerror = () => res([]);
+            }));
+        }
+        function imgDelete(id) {
+            return imgTx('readwrite').then(st => new Promise((res) => {
+                const r = st.delete(id); r.onsuccess = () => res(true); r.onerror = () => res(false);
+            }));
+        }
+        function imgId() {
+            return 'i' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        }
+        // まだ日記に保存されていない画像（貼った直後〜保存を押すまで）。
+        // 掃除の対象から外さないと、保存前に実体だけ消えて表示できなくなる。
+        const pendingImageIds = new Set();
 
         async function saveHandle(key, handle) {
             const db = await dbPromise;
@@ -538,7 +597,8 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
 
         let entries = [];
         let currentEntry = null;
-        let currentFilters = { tags: [], searchText: '' };
+        // tagMode: 'or'（どれかを含む）/ 'and'（すべて含む）。既定は従来どおり or
+        let currentFilters = { tags: [], searchText: '', tagMode: 'or' };
         let autoSyncAEnabled = false;
         let syncFolderHandleA = null;
         let currentView = 'calendar';
@@ -604,6 +664,74 @@ const ENC = {
 };
 
 function isEncBlob(o) { return o && typeof o === 'object' && o.__enc__ === 1 && o.ct && o.iv && o.salt; }
+
+/* ── 画像の暗号化 ─────────────────────────────────────────
+   本文だけ暗号化して画像を素のまま端末に置いたら、鍵をかけた意味がない。
+   暗号化がONのときは、画像の中身も同じ鍵で包んで保存する。 */
+async function imgEncode(blob) {
+  const type = blob.type || 'image/jpeg';
+  if (!(encEnabled && cryptoKey)) return { enc: 0, type, data: blob };
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, cryptoKey, await blob.arrayBuffer());
+  return { enc: 1, type, iv: ENC.b64(iv), data: ct };
+}
+async function imgDecode(rec) {
+  if (!rec || !rec.data) return null;
+  if (!rec.enc) return rec.data instanceof Blob ? rec.data : new Blob([rec.data], { type: rec.type || 'image/jpeg' });
+  if (!cryptoKey) throw new Error('LOCKED');
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ENC.unb64(rec.iv) }, cryptoKey, rec.data);
+  return new Blob([pt], { type: rec.type || 'image/jpeg' });
+}
+/** 暗号化のON/OFFを切り替えたとき、保存済みの画像も包み直す。
+ *  片方だけ残すと、次に開いたときに読めない画像ができる。 */
+async function imgRewrapAll() {
+  try {
+    const keys = await imgKeys();
+    for (const k of keys) {
+      const rec = await imgGet(k);
+      if (!rec) continue;
+      const want = (encEnabled && cryptoKey) ? 1 : 0;
+      if ((rec.enc ? 1 : 0) === want) continue;
+      let plain;
+      try { plain = await imgDecode(rec); } catch (e) { continue; }   // 読めないものは触らない
+      if (!plain) continue;
+      const next = await imgEncode(plain);
+      await imgPut({ id: rec.id, ...next, w: rec.w, h: rec.h, size: rec.size });
+    }
+  } catch (e) { console.warn('[diary] imgRewrapAll', e); }
+}
+
+/* ── 貼り付けた画像を縮めてから保存する ─────────────────────
+   スマホの写真は1枚4000pxを超える。そのまま持つと同期のたびに何MBも往復し、
+   端末の容量も食う。長辺1280px・JPEGに落として保存する。 */
+const IMG_MAX_EDGE = 1280;
+const IMG_QUALITY = 0.72;
+function downscaleImageFile(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const im = new Image();
+    im.onload = () => {
+      try {
+        const w0 = im.naturalWidth || im.width, h0 = im.naturalHeight || im.height;
+        if (!w0 || !h0) { URL.revokeObjectURL(url); return resolve(null); }
+        const sc = Math.min(1, IMG_MAX_EDGE / Math.max(w0, h0));
+        const w = Math.max(1, Math.round(w0 * sc)), h = Math.max(1, Math.round(h0 * sc));
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        const cx = cv.getContext('2d');
+        // 透過画像を白地に敷く（JPEGは透過を持てないため、黒く潰れるのを防ぐ）
+        cx.fillStyle = '#ffffff'; cx.fillRect(0, 0, w, h);
+        cx.drawImage(im, 0, 0, w, h);
+        cv.toBlob((b) => {
+          URL.revokeObjectURL(url);
+          resolve(b ? { blob: b, w, h } : null);
+        }, 'image/jpeg', IMG_QUALITY);
+      } catch (e) { URL.revokeObjectURL(url); resolve(null); }
+    };
+    im.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    im.src = url;
+  });
+}
 
 // 手動の取り込みで「効いた鍵」を覚えておく置き場。暗号化を解除しても Drive 上は
 // 暗号文のまま残るため、これが無いと以後の書き戻しが毎回 REMOTE_LOCKED で止まり、
@@ -763,6 +891,13 @@ window.addEventListener('beforeunload', (e) => {
                 console.error('初期描画に失敗:', err);
             }
             if (status === 'locked') openUnlockModal();
+            // 旧版が本文に埋めた data: URL の画像を端末内の保存先へ移す（初回だけ）。
+            // ロック中は本文を持っていないので、解除したあとに回す。
+            if (status !== 'locked') {
+                migrateInlineImages()
+                    .then(() => gcImages())
+                    .catch(err => console.warn('[diary] 画像の移行', err));
+            }
             // 先に他端末の分を取り込む。取り込まないまま保存すると、こちらの
             // 全件書き出しで相手の日記を消してしまう（#2）
             if (autoSyncDriveEnabled) drivePullAndMerge(true).catch(() => {});
@@ -773,6 +908,41 @@ window.addEventListener('beforeunload', (e) => {
         }
 
         // contentFormat を確定するマイグレーション（#6）。変更があれば true。保存は呼び出し側。
+        /** 旧版で本文に直接埋まってしまった <img src="data:…"> を IndexedDB へ逃がす。
+         *  そのままだと localStorage を圧迫し続けるうえ、サニタイズで消えて
+         *  「容量だけ食っている見えない画像」になる。 */
+        async function migrateInlineImages() {
+            let moved = 0;
+            for (const e of entries) {
+                const html = String((e && e.content) || '');
+                if (!/<img[^>]+src\s*=\s*["']data:image\//i.test(html)) continue;
+                const tpl = document.createElement('template');
+                tpl.innerHTML = html;
+                const imgs = Array.from(tpl.content.querySelectorAll('img'));
+                let changed = false;
+                for (const el of imgs) {
+                    const src = el.getAttribute('src') || '';
+                    if (!/^data:image\//i.test(src)) continue;
+                    try {
+                        const blob = await (await fetch(src)).blob();
+                        const small = await downscaleImageFile(blob) || { blob, w: 0, h: 0 };
+                        const id = imgId();
+                        const rec = await imgEncode(small.blob);
+                        await imgPut({ id, ...rec, w: small.w, h: small.h, size: small.blob.size });
+                        Array.from(el.attributes).forEach(a => el.removeAttribute(a.name));
+                        el.setAttribute('data-did', id);
+                        changed = true; moved++;
+                    } catch (err) { el.remove(); changed = true; }
+                }
+                if (changed) { e.content = tpl.innerHTML; e.contentFormat = 'html'; }
+            }
+            if (moved) {
+                const ok = await saveEntriesToStorage();
+                if (ok) showToast(`本文の画像${moved}枚を端末内の保存先へ移しました`, 'success');
+            }
+            return moved;
+        }
+
         function migrateContentFormat() {
             let migrated = false;
             entries.forEach(e => {
@@ -952,18 +1122,41 @@ window.addEventListener('beforeunload', (e) => {
             sorted.forEach(entry => {
                 const li = document.createElement('li');
                 li.className = 'entry-item' + (currentEntry?.id === entry.id ? ' active' : '');
-                li.innerHTML = `<div class="entry-date">${formatDate(entry.date)}</div><div class="entry-title">${escapeHtml(entry.title)}</div>`;
+                const et = entry.tags || [];
+                const hasImg = /data-did="/.test(entry.content || '');
+                const tagHtml = et.length
+                    ? `<div class="entry-tags">${et.map(t => `<span class="entry-tag" data-tag="${escapeHtml(t)}">${escapeHtml(t)}</span>`).join('')}</div>`
+                    : '';
+                li.innerHTML = `<div class="entry-date">${formatDate(entry.date)}${hasImg ? ' <span class="entry-imgmark" title="画像あり">🖼️</span>' : ''}</div>`
+                    + `<div class="entry-title">${escapeHtml(entry.title)}</div>${tagHtml}`;
                 // 一覧からの切り替えも selectDate と同じ扱いにする。素通りさせると
                 // renderEditor が isDirty を落とし、予約中の自動保存が空振りして
                 // 打ちかけの文章が消える（#3）
-                li.onclick = async () => {
+                li.onclick = async (ev) => {
+                    // 一覧のタグを押したときは、日記を開くのではなく絞り込みに使う
+                    const chip = ev.target.closest && ev.target.closest('.entry-tag');
+                    if (chip) { ev.stopPropagation(); toggleTagFilter(chip.dataset.tag); return; }
                     if (!(await ensureSavedOrConfirmLoseChanges('切り替え'))) return;
                     loadEntry(entry);
                 };
                 list.appendChild(li);
             });
             if (sorted.length === 0) { list.innerHTML = '<li style="padding: var(--space-12); color: var(--color-text-secondary); text-align: center; font-size: 12px;">該当する日記なし</li>'; }
+            // 何で絞り込んでいるかを見出しに出す。出さないと「なぜ件数が少ないのか」が分からない
+            const head = document.getElementById('listHeading');
+            if (head) {
+                const sel = currentFilters.tags;
+                head.textContent = sel.length
+                    ? `${sel.map(t => '#' + t).join(currentFilters.tagMode === 'and' ? ' かつ ' : ' / ')} — ${sorted.length}件`
+                    : (currentFilters.searchText ? `検索結果 — ${sorted.length}件` : '最近の投稿');
+            }
             renderTagFilter();
+        }
+        function scrollToList() {
+            try {
+                const el = document.getElementById('listHeading');
+                if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+            } catch (e) {}
         }
 
         // 検索用の平文。content は innerHTML なので、そのまま照合すると
@@ -995,7 +1188,10 @@ window.addEventListener('beforeunload', (e) => {
             return entries.filter(entry => {
                 const q = currentFilters.searchText.toLowerCase();
                 const matchesSearch = q === '' || (entry.title || '').toLowerCase().includes(q) || entryPlainText(entry).toLowerCase().includes(q);
-                const matchesTags = currentFilters.tags.length === 0 || currentFilters.tags.some(tag => (entry.tags || []).includes(tag));
+                const et = entry.tags || [];
+                const sel = currentFilters.tags;
+                const matchesTags = sel.length === 0 ||
+                    (currentFilters.tagMode === 'and' ? sel.every(t => et.includes(t)) : sel.some(t => et.includes(t)));
                 return matchesSearch && matchesTags;
             });
         }
@@ -1008,22 +1204,74 @@ window.addEventListener('beforeunload', (e) => {
         function toggleTagFilter(tag) {
             const idx = currentFilters.tags.indexOf(tag);
             if (idx > -1) { currentFilters.tags.splice(idx, 1); } else { currentFilters.tags.push(tag); }
+            // タグを選んだのに一覧が見えていない（カレンダー表示）のでは意味がないので、
+            // その場でリストへ切り替えて結果の先頭まで運ぶ
+            if (currentFilters.tags.length && currentView !== 'list') { switchView('list'); scrollToList(); }
+            else if (currentFilters.tags.length) scrollToList();
             renderEntriesList();
         }
 
+        /** タグごとの件数。どのタグに何件あるか分からないと選びようがない。 */
+        function tagCounts() {
+            const m = new Map();
+            entries.forEach(e => (e.tags || []).forEach(t => m.set(t, (m.get(t) || 0) + 1)));
+            return m;
+        }
         function renderTagFilter() {
             const list = document.getElementById('tagFilterList');
-            if (!list) return;
-            const allTags = [...new Set(entries.flatMap(e => e.tags || []))].sort();
+            const area = document.getElementById('tagArea');
+            if (!list || !area) return;
+            const counts = tagCounts();
+            // タグを1つも使っていないうちは、この欄自体を出さない
+            if (counts.size === 0) { area.style.display = 'none'; list.innerHTML = ''; return; }
+            area.style.display = '';
+
+            // 絞り込み欄は、タグが増えて探しにくくなってから出す
+            const q = (document.getElementById('tagSearchInput') || {}).value || '';
+            const searchBox = document.getElementById('tagSearchInput');
+            if (searchBox) searchBox.style.display = counts.size > 10 ? '' : 'none';
+
+            const sel = currentFilters.tags;
+            const clearBtn = document.getElementById('tagClearBtn');
+            if (clearBtn) clearBtn.style.display = sel.length ? '' : 'none';
+            const modeBtn = document.getElementById('tagModeBtn');
+            if (modeBtn) {
+                modeBtn.style.display = sel.length > 1 ? '' : 'none';
+                modeBtn.textContent = currentFilters.tagMode === 'and' ? 'すべて含む' : 'どれか';
+            }
+
+            // 選んでいるものを先に、あとは件数の多い順。多いタグほど探す入口になりやすい
+            const qq = q.trim().toLowerCase();
+            const tags = [...counts.keys()]
+                .filter(t => !qq || t.toLowerCase().includes(qq))
+                .sort((a, b) => {
+                    const sa = sel.includes(a) ? 0 : 1, sb = sel.includes(b) ? 0 : 1;
+                    if (sa !== sb) return sa - sb;
+                    const d = counts.get(b) - counts.get(a);
+                    return d || a.localeCompare(b, 'ja');
+                });
+
             list.innerHTML = '';
-            allTags.forEach(tag => {
-                const isActive = currentFilters.tags.includes(tag);
+            if (!tags.length) {
+                list.innerHTML = '<div class="tag-empty">見つかりません</div>';
+                return;
+            }
+            tags.forEach(tag => {
+                const isActive = sel.includes(tag);
                 const div = document.createElement('div');
                 div.className = 'tag-filter-item' + (isActive ? ' active' : '');
-                div.innerHTML = `${escapeHtml(tag)} ${isActive ? '✕' : ''}`;
+                div.innerHTML = `${escapeHtml(tag)}<span class="tag-count">${counts.get(tag)}</span>${isActive ? '<span class="tag-x">✕</span>' : ''}`;
                 div.onclick = () => toggleTagFilter(tag);
                 list.appendChild(div);
             });
+        }
+        function toggleTagMode() {
+            currentFilters.tagMode = currentFilters.tagMode === 'and' ? 'or' : 'and';
+            renderEntriesList();
+        }
+        function clearTagFilter() {
+            currentFilters.tags = [];
+            renderEntriesList();
         }
 
         function loadEntry(entry) {
@@ -1092,6 +1340,7 @@ function renderEditor() {
       <button type="button" onclick="rteToggleBlock('blockquote')" aria-label="引用">引用</button>
       <button type="button" onclick="insertTablePrompt()" aria-label="表を挿入">表</button>
       <button type="button" onclick="rteCreateLink()" aria-label="リンクを挿入">リンク</button>
+      <button type="button" onclick="pickImages()" aria-label="画像を挿入">🖼️ 画像</button>
     </div>
 
     <div class="editor-content" id="contentEditor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="日記の本文" data-placeholder="ここに入力..."></div>
@@ -1155,10 +1404,25 @@ function renderEditor() {
   } else {
     editor.innerHTML = sanitizeHtml(raw);
   }
+  // 前の描画で作った blob: URL を捨ててから、いまの本文の画像を出す
+  revokeLiveImgUrls();
+  hydrateImages(editor);
+
+  // 写真をドラッグして落とす経路。既定に任せると data: URL が本文に入る。
+  editor.addEventListener('dragover', (ev) => {
+    if (ev.dataTransfer && Array.from(ev.dataTransfer.types || []).includes('Files')) ev.preventDefault();
+  });
+  editor.addEventListener('drop', (ev) => {
+    const fs = ev.dataTransfer && ev.dataTransfer.files;
+    const imgs = fs ? Array.from(fs).filter(f => /^image\//i.test(f.type || '')) : [];
+    if (!imgs.length) return;
+    ev.preventDefault();
+    insertImageFiles(imgs);
+  });
 
   editor.addEventListener('input', () => {
     // 折りたたみ用のゼロ幅スペースは保存対象から除外
-    currentEntry.content = editor.innerHTML.replace(/\u200B/g, '');
+    currentEntry.content = serializeEditor(editor);
     currentEntry.contentFormat = 'html';
     updateCharCount();
     markDirty();
@@ -1172,28 +1436,27 @@ function renderEditor() {
     if (!cd) return;
     const html = cd.getData('text/html');
     const plain = cd.getData('text/plain');
-    // 画像は sanitize が img を落とすため、貼れても次の描画で消える。
-    // ここでブラウザ既定に任せると、text/html が無く text/plain だけある形
-    // （スクショ貼り付けでよくある）で <img src="data:…"> がすり抜け、容量だけ
-    // 食って次の描画で黙って消える。画像が混じっていたら必ず自前で処理する（#7）
-    const hasImage = clipboardHasImage(cd);
+    // 画像はブラウザ既定に任せると <img src="data:…"> が本文に直接入り、
+    // localStorage を一気に食い潰す。必ず自前で受け取って、実体は
+    // IndexedDB へ、本文には id だけを置く。
+    const files = cd.files && cd.files.length ? Array.from(cd.files).filter(f => /^image\//i.test(f.type || '')) : [];
+    const hasImage = files.length > 0 || clipboardHasImage(cd);
     if (hasImage) {
       e.preventDefault();
+      // 元アプリが画像とHTMLを同時に置くことがある（Excel等）。その場合の画像は
+      // 見た目の複製なので、HTML側に img が無ければ文字だけ取り込む。
+      const wantImage = files.length > 0 && (!html || /<img\b/i.test(html));
       const pasted = html ? sanitizeHtml(html)
                    : (plain ? escapeHtml(plain).replace(/\n/g, '<br>') : '');
       if (pasted) insertHtmlAtCursor(pasted);
-      // HTML側に img が無いなら、その画像は元アプリが付けた見た目の複製（Excel等）で
-      // 何も失っていない。毎回警告すると誤報になるので黙って捨てる
-      if (!html || /<img\b/i.test(html)) {
-        showToast(pasted ? '画像は貼り付けできないため、文字だけ取り込みました' : '画像は日記に貼り付けできません', 'warning');
-      }
+      if (wantImage) { insertImageFiles(files); return; }
       if (!pasted) return;
     } else {
       if (!html) return; // プレーンテキストはブラウザ既定のままでよい
       e.preventDefault();
       insertHtmlAtCursor(sanitizeHtml(html));
     }
-    currentEntry.content = editor.innerHTML.replace(/\u200B/g, '');
+    currentEntry.content = serializeEditor(editor);
     currentEntry.contentFormat = 'html';
     updateCharCount();
     markDirty();
@@ -1264,6 +1527,11 @@ function renderEditor() {
             updateBackupReminder();
         }
 
+       /** 保存できた画像は「未保存」の札を外す。付けっぱなしだと、
+        *  差し替えて使わなくなった画像がいつまでも掃除されない。 */
+       function clearPendingImagesFor(entry) {
+           try { contentImageIds(entry && entry.content).forEach(id => pendingImageIds.delete(id)); } catch (e) {}
+       }
        async function saveEntry(quiet = false) {
   if (!currentEntry) return true;
 
@@ -1280,6 +1548,7 @@ function renderEditor() {
   renderEntriesList();
 
   isDirty = false;
+  clearPendingImagesFor(currentEntry);
   lastSavedAt = new Date(currentEntry.updatedAt).toLocaleTimeString('ja-JP');
   updateSaveStatus();
 
@@ -1310,6 +1579,8 @@ function renderEditor() {
             renderEntriesList();
             renderEditor();
             if (!ok) return; // saveEntriesToStorage がエラーを表示済み
+            // その日記だけが使っていた画像は、もう誰も参照しないので捨てる
+            gcImages();
             showToast('削除しました', 'success');
             // 削除も保存と同じ経路で同期する。しないと削除が他端末へ伝わらない
             if (autoSyncAEnabled && syncFolderHandleA) exportToSyncFolderA('json', true);
@@ -1359,11 +1630,126 @@ function renderEditor() {
             showToast(`タグ「${tag}」を削除しました`, 'success');
         }
 
+        /* ── エディタの中身を「保存する形」に直す ─────────────────
+           画面上の <img> には表示用の blob: URL が入っている。これをそのまま
+           保存すると、次に開いたとき（URLは無効になっている）画像が出ない。
+           保存するのは data-did（端末内の画像のid）だけにする。 */
+        function serializeEditor(editor) {
+            if (!editor) return '';
+            const tmp = document.createElement('div');
+            tmp.innerHTML = editor.innerHTML;
+            tmp.querySelectorAll('img').forEach(el => {
+                const did = el.getAttribute('data-did') || '';
+                const alt = el.getAttribute('alt') || '';
+                if (!DID_RE.test(did)) { el.remove(); return; }
+                Array.from(el.attributes).forEach(a => el.removeAttribute(a.name));
+                el.setAttribute('data-did', did);
+                if (alt) el.setAttribute('alt', alt);
+            });
+            return tmp.innerHTML.replace(/\u200B/g, '');
+        }
+
+        /* ── 画像の表示 ───────────────────────────────────
+           data-did から実体を読み出して blob: URL を貼る。作ったURLは
+           次の描画で必ず捨てる（貯めるとメモリを食い続ける）。 */
+        let liveImgUrls = [];
+        function revokeLiveImgUrls() {
+            liveImgUrls.forEach(u => { try { URL.revokeObjectURL(u); } catch (e) {} });
+            liveImgUrls = [];
+        }
+        function imgPlaceholder(el, text) {
+            const box = document.createElement('span');
+            box.className = 'img-missing';
+            box.textContent = text;
+            el.replaceWith(box);
+        }
+        async function hydrateImages(root) {
+            if (!root) return;
+            const els = Array.from(root.querySelectorAll('img[data-did]'));
+            for (const el of els) {
+                const did = el.getAttribute('data-did');
+                if (!DID_RE.test(did)) { el.remove(); continue; }
+                try {
+                    const rec = await imgGet(did);
+                    if (!rec) { imgPlaceholder(el, '🖼️ 画像が見つかりません'); continue; }
+                    const blob = await imgDecode(rec);
+                    if (!blob) { imgPlaceholder(el, '🖼️ 画像を読めません'); continue; }
+                    const u = URL.createObjectURL(blob);
+                    liveImgUrls.push(u);
+                    el.src = u;
+                    el.classList.add('diary-img');
+                } catch (e) {
+                    imgPlaceholder(el, String(e && e.message) === 'LOCKED'
+                        ? '🔒 ロックを解除すると表示されます' : '🖼️ 画像を読めません');
+                }
+            }
+        }
+
+        /* ── 画像を貼る ───────────────────────────────────── */
+        async function insertImageFiles(files) {
+            const list = Array.from(files || []).filter(f => f && /^image\//i.test(f.type || ''));
+            if (!list.length) return 0;
+            if (appLocked) { showToast('ロックを解除してから貼り付けてください', 'error'); return 0; }
+            const editor = document.getElementById('contentEditor');
+            if (!editor || !currentEntry) { showToast('先に日記を開いてください', 'error'); return 0; }
+            let added = 0, failed = 0;
+            showToast(list.length > 1 ? `画像を${list.length}枚取り込んでいます…` : '画像を取り込んでいます…', 'info');
+            for (const f of list) {
+                try {
+                    const small = await downscaleImageFile(f);
+                    if (!small) { failed++; continue; }
+                    const id = imgId();
+                    const rec = await imgEncode(small.blob);
+                    await imgPut({ id, ...rec, w: small.w, h: small.h, size: small.blob.size });
+                    pendingImageIds.add(id);
+                    const html = `<img data-did="${id}" alt="">`;
+                    insertHtmlAtCursor(html);
+                    added++;
+                } catch (e) {
+                    console.warn('[diary] 画像の取り込みに失敗', e);
+                    failed++;
+                }
+            }
+            if (added) {
+                await hydrateImages(editor);
+                syncEditorContent();
+            }
+            if (failed) showToast(`画像を${failed}枚取り込めませんでした（容量不足かもしれません）`, 'error');
+            else if (added) showToast(`画像を${added}枚追加しました`, 'success');
+            return added;
+        }
+        function pickImages() {
+            const inp = document.createElement('input');
+            inp.type = 'file'; inp.accept = 'image/*'; inp.multiple = true;
+            inp.onchange = () => { insertImageFiles(inp.files); };
+            inp.click();
+        }
+
+        /* ── どの日記からも参照されなくなった画像を捨てる ───────────── */
+        function contentImageIds(html) {
+            const out = [];
+            const re = /data-did="([^"]+)"/g;
+            let m;
+            while ((m = re.exec(String(html || '')))) { if (DID_RE.test(m[1])) out.push(m[1]); }
+            return out;
+        }
+        async function gcImages() {
+            try {
+                const used = new Set(pendingImageIds);
+                entries.forEach(e => contentImageIds(e.content).forEach(id => used.add(id)));
+                // 編集中で未保存のぶんも守る
+                const ed = document.getElementById('contentEditor');
+                if (ed) contentImageIds(ed.innerHTML).forEach(id => used.add(id));
+                const keys = await imgKeys();
+                for (const k of keys) if (!used.has(k)) await imgDelete(k);
+            } catch (e) { console.warn('[diary] gcImages', e); }
+        }
+
         // プログラムによる本文変更を一元処理：未保存マーク＋自動保存も必ず行う（#2）
         function syncEditorContent() {
             const editor = document.getElementById('contentEditor');
             if (!editor || !currentEntry) return;
-            currentEntry.content = editor.innerHTML.replace(/\u200B/g, '');
+            currentEntry.content = serializeEditor(editor);
             currentEntry.contentFormat = 'html';
             updateCharCount();
             markDirty();
@@ -1915,9 +2301,49 @@ function insertTablePrompt() {
         // 同期/アップロード用のオブジェクト。暗号化が有効なら暗号化ブロブを返す。
         // deleted（墓標）も一緒に運ぶ。これが無いと、他端末に残った日記が
         // 同期のたびに復活する。
+        /** 本文で使っている画像を data URL にして書き出す。
+         *  これが無いと、バックアップから戻したときに本文の画像だけ消える。 */
+        async function collectImagesFor(list) {
+            const ids = new Set();
+            (list || []).forEach(e => contentImageIds(e.content).forEach(id => ids.add(id)));
+            const out = [];
+            for (const id of ids) {
+                try {
+                    const rec = await imgGet(id);
+                    if (!rec) continue;
+                    const blob = await imgDecode(rec);          // 暗号化してあっても平文で書き出す
+                    if (!blob) continue;                        // （書き出し全体を後で暗号化するため）
+                    out.push({ id, type: blob.type || 'image/jpeg', dataUrl: await blobToDataUrl(blob) });
+                } catch (e) { /* ロック中などは入れられない。呼び出し側が止めている */ }
+            }
+            return out;
+        }
+        function blobToDataUrl(blob) {
+            return new Promise((res, rej) => {
+                const fr = new FileReader();
+                fr.onload = () => res(fr.result);
+                fr.onerror = () => rej(fr.error);
+                fr.readAsDataURL(blob);
+            });
+        }
+        /** 取り込んだ画像を端末へ戻す */
+        async function restoreImages(list) {
+            for (const f of (list || [])) {
+                if (!f || !DID_RE.test(f.id || '') || !f.dataUrl) continue;
+                try {
+                    const blob = await (await fetch(f.dataUrl)).blob();
+                    const rec = await imgEncode(blob);
+                    await imgPut({ id: f.id, ...rec, size: blob.size });
+                } catch (e) { console.warn('[diary] 画像を戻せませんでした', f.id, e); }
+            }
+        }
+
         async function buildSyncObject(tombs) {
             const entriesData = JSON.parse(JSON.stringify(entries));
-            const plainObj = { exportDate: new Date().toISOString(), entries: entriesData, deleted: tombs || loadTombstones() };
+            // 本文の画像も一緒に持っていく。暗号化がONなら、この平文オブジェクトごと
+            // 暗号化されるので、画像もまとめて包まれる。
+            const images = await collectImagesFor(entriesData);
+            const plainObj = { exportDate: new Date().toISOString(), entries: entriesData, deleted: tombs || loadTombstones(), images };
             if (encEnabled && cryptoKey && encMeta) {
                 return await ENC.encryptString(JSON.stringify(plainObj), cryptoKey, ENC.unb64(encMeta.salt), encMeta.iter);
             }
@@ -2049,6 +2475,8 @@ function insertTablePrompt() {
                         Array.isArray(data.deleted) ? data.deleted : []
                     ).filter(t => !fileIds.has(String(t.id)));
                     saveTombstones(tombsAfterImport);
+                    // 本文の画像も端末へ戻す（これが無いと文章だけ戻って画像が欠ける）
+                    if (Array.isArray(data.images) && data.images.length) await restoreImages(data.images);
                     const d = dedupeEntriesByDate(entries);
                     entries = d.entries;
                     if (currentEntry) {
@@ -2094,15 +2522,28 @@ function insertTablePrompt() {
         }
 
         // 取り込んだHTMLを安全化（許可属性のみ・危険タグ/イベント/スキームを除去）：#5
-        const SANITIZE_ALLOWED_ATTR = new Set(['href', 'target', 'rel']);
-        const SANITIZE_DANGEROUS_TAGS = 'script,style,iframe,object,embed,link,meta,base,form,input,textarea,button,select,option,svg,math,noscript,title,frame,frameset,applet,audio,video,source,track,img,picture,canvas';
+        const SANITIZE_ALLOWED_ATTR = new Set(['href', 'target', 'rel', 'data-did', 'alt']);
+        const SANITIZE_DANGEROUS_TAGS = 'script,style,iframe,object,embed,link,meta,base,form,input,textarea,button,select,option,svg,math,noscript,title,frame,frameset,applet,audio,video,source,track,picture,canvas';
+        const DID_RE = /^i[a-z0-9]{4,32}$/;
         function sanitizeHtml(dirty) {
             // <template> はパース時にスクリプト実行・リソース読込をしない安全なコンテナ
             const tpl = document.createElement('template');
             tpl.innerHTML = String(dirty == null ? '' : dirty);
             const root = tpl.content;
             root.querySelectorAll(SANITIZE_DANGEROUS_TAGS).forEach(el => el.remove());
+            // 画像は「端末内に保存したもの」だけ許す。src は必ず捨てる。
+            // 外部URLを残すと開くたびに通信が起きるし、data: URL を残すと
+            // 本文ごと localStorage に入って容量を食い潰す。
+            root.querySelectorAll('img').forEach(el => {
+                const did = el.getAttribute('data-did') || '';
+                if (!DID_RE.test(did)) { el.remove(); return; }
+                const alt = el.getAttribute('alt') || '';
+                Array.from(el.attributes).forEach(a => el.removeAttribute(a.name));
+                el.setAttribute('data-did', did);
+                if (alt) el.setAttribute('alt', alt);
+            });
             root.querySelectorAll('*').forEach(el => {
+                if (el.tagName === 'IMG') return;   // 上で処理済み
                 Array.from(el.attributes).forEach(attr => {
                     const name = attr.name.toLowerCase();
                     if (name.startsWith('on') || !SANITIZE_ALLOWED_ATTR.has(name)) {
@@ -2225,6 +2666,7 @@ function insertTablePrompt() {
                 appLocked = false;
                 pendingUnlockBlob = null;
                 if (migrateContentFormat()) { await saveEntriesToStorage(); }
+                migrateInlineImages().then(() => gcImages()).catch(() => {});
                 closeModal('unlockModal');
                 updateEncUI();
                 updateStats();
@@ -2260,6 +2702,22 @@ function insertTablePrompt() {
                 if (!ok) { cryptoKey = prevKey; encEnabled = wasEnabled; encMeta = prevMeta; return; }
                 const f1 = document.getElementById('encNewPass'); if (f1) f1.value = '';
                 const f2 = document.getElementById('encNewPass2'); if (f2) f2.value = '';
+                // 本文だけ暗号化して画像が素のまま端末に残ると、鍵をかけた意味がない。
+                // 鍵が変わったときも古い鍵の画像は開けなくなるので、必ず包み直す。
+                if (prevKey && prevKey !== key) {
+                    const restore = cryptoKey; cryptoKey = prevKey;
+                    const rec = await (async () => { try { return await imgKeys(); } catch (e) { return []; } })();
+                    const plains = [];
+                    for (const k of rec) {
+                        try { const r0 = await imgGet(k); const b = await imgDecode(r0); if (b) plains.push({ id: k, blob: b, w: r0.w, h: r0.h }); } catch (e) {}
+                    }
+                    cryptoKey = restore;
+                    for (const pl of plains) {
+                        try { const nx = await imgEncode(pl.blob); await imgPut({ id: pl.id, ...nx, w: pl.w, h: pl.h, size: pl.blob.size }); } catch (e) {}
+                    }
+                } else {
+                    await imgRewrapAll();
+                }
                 updateEncUI();
                 showToast(wasEnabled ? 'パスフレーズを変更しました' : '暗号化を有効にしました', 'success');
             } catch (err) {
@@ -2280,6 +2738,18 @@ function insertTablePrompt() {
             // Drive上は暗号文のまま残るので、そのままだと以後の自動同期が毎回
             // 復号できずに止まる。解除した鍵を覚えておき、Drive側も平文で作り直す（B-3）
             driveRemoteKey = prevKey;
+            // 画像の包みも外す。外さないと、鍵を捨てたあとに読めない画像だけが残る。
+            const kk = cryptoKey; cryptoKey = prevKey; encEnabled = true;
+            const plains = [];
+            try {
+                for (const k of await imgKeys()) {
+                    try { const r0 = await imgGet(k); const b = await imgDecode(r0); if (b) plains.push({ id: k, blob: b, w: r0.w, h: r0.h }); } catch (e) {}
+                }
+            } catch (e) {}
+            encEnabled = false; cryptoKey = kk;
+            for (const pl of plains) {
+                try { const nx = await imgEncode(pl.blob); await imgPut({ id: pl.id, ...nx, w: pl.w, h: pl.h, size: pl.blob.size }); } catch (e) {}
+            }
             updateEncUI();
             showToast('暗号化を解除しました（平文保存）', 'success');
             if (autoSyncDriveEnabled) {
@@ -2610,6 +3080,8 @@ async function drivePullAndMerge(quiet = false) {
     const incoming = data.entries.map(normalizeImportedEntry);
     const tombs = mergeTombs(loadTombstones(), Array.isArray(data.deleted) ? data.deleted : []);
     saveTombstones(tombs);
+    // 他端末で貼った画像も受け取る（これが無いと本文に「画像が見つかりません」が並ぶ）
+    if (Array.isArray(data.images) && data.images.length) await restoreImages(data.images);
     const r = mergeEntriesByUpdatedAt(entries, incoming, tombs);
     const d = dedupeEntriesByDate(r.merged);
     entries = d.entries;
@@ -2736,7 +3208,7 @@ async function drivePushAllOnce(quiet) {
 
     // 1) いまDriveにあるものを読む
     const fileId = await driveFindDiaryFileId();
-    let remote = null, remoteEntries = [], remoteTombs = [], remoteBroken = false;
+    let remote = null, remoteEntries = [], remoteTombs = [], remoteImages = [], remoteBroken = false;
     if (fileId) {
       let rawRemote = null;
       try {
@@ -2753,6 +3225,7 @@ async function drivePushAllOnce(quiet) {
         remote = await decodeRemoteSyncPayload(rawRemote); // 開けなければ例外
         if (remote && Array.isArray(remote.entries)) remoteEntries = remote.entries.map(normalizeImportedEntry);
         if (remote && Array.isArray(remote.deleted)) remoteTombs = remote.deleted;
+        if (remote && Array.isArray(remote.images)) remoteImages = remote.images;
       }
     }
     // 通信の往復中に打った分も確定させてからマージする
@@ -2764,6 +3237,9 @@ async function drivePushAllOnce(quiet) {
     // 2) マージ（新しい方が勝つ＋墓標で削除を反映）
     const tombs = mergeTombs(loadTombstones(), remoteTombs);
     saveTombstones(tombs);
+    // 相手が持っていた画像を先に取り込む。取り込まずに書き戻すと、
+    // マージで残った相手の日記から画像だけが失われる。
+    if (Array.isArray(remoteImages) && remoteImages.length) await restoreImages(remoteImages);
     const before = JSON.stringify(entries);
     const r = mergeEntriesByUpdatedAt(entries, remoteEntries, tombs);
     const d = dedupeEntriesByDate(r.merged);

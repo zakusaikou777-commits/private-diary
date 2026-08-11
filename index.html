@@ -490,9 +490,17 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 
   // ---- combined backup (shell reads same-origin storage of both apps) ----
   function knOpenDB(){ return new Promise(function(res,rej){ var r=indexedDB.open('kininari',1); r.onupgradeneeded=function(){ try{ if(!r.result.objectStoreNames.contains('files')) r.result.createObjectStore('files',{keyPath:'id'}); }catch(e){} }; r.onsuccess=function(){ res(r.result); }; r.onerror=function(){ rej(r.error); }; }); }
+  /* 日記帳の本文に貼った画像。日記帳は自分のDB(DiaryDB/images)に置いているので、
+     ここで一緒に書き出さないと、まとめて取り込んだときに文章だけ戻って画像が欠ける。
+     バージョンは日記帳側と必ず揃えること（低いと onupgradeneeded で壊す）。 */
+  function knOpenDiaryDB(){ return new Promise(function(res,rej){ var r=indexedDB.open('DiaryDB',2); r.onupgradeneeded=function(){ try{ var db=r.result; if(!db.objectStoreNames.contains('handles')) db.createObjectStore('handles'); if(!db.objectStoreNames.contains('images')) db.createObjectStore('images',{keyPath:'id'}); }catch(e){} }; r.onsuccess=function(){ res(r.result); }; r.onerror=function(){ rej(r.error); }; }); }
+  function knDiaryImgAll(db){ return new Promise(function(res){ try{ var tx=db.transaction('images','readonly'); var rq=tx.objectStore('images').getAll(); rq.onsuccess=function(){ res(rq.result||[]); }; rq.onerror=function(){ res([]); }; }catch(e){ res([]); } }); }
+  function knDiaryImgPut(db,rec){ return new Promise(function(res){ try{ var tx=db.transaction('images','readwrite'); tx.objectStore('images').put(rec); tx.oncomplete=function(){res(true);}; tx.onerror=function(){res(false);}; }catch(e){ res(false);} }); }
   function knIdbAll(db){ return new Promise(function(res){ try{ var tx=db.transaction('files','readonly'); var rq=tx.objectStore('files').getAll(); rq.onsuccess=function(){ res(rq.result||[]); }; rq.onerror=function(){ res([]); }; }catch(e){ res([]); } }); }
   function knIdbPut(db,rec){ return new Promise(function(res){ try{ var tx=db.transaction('files','readwrite'); tx.objectStore('files').put(rec); tx.oncomplete=function(){res(true);}; tx.onerror=function(){res(false);}; }catch(e){ res(false);} }); }
   function blobToDataURL(b){ return new Promise(function(res,rej){ var fr=new FileReader(); fr.onload=function(){res(fr.result);}; fr.onerror=function(){rej(fr.error);}; fr.readAsDataURL(b); }); }
+  function knBufToB64(buf){ return new Promise(function(res,rej){ var fr=new FileReader(); fr.onload=function(){ res(String(fr.result).split(',')[1]||''); }; fr.onerror=function(){rej(fr.error);}; fr.readAsDataURL(new Blob([buf])); }); }
+  function knB64ToBuf(b64){ var bin=atob(b64||''); var u=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) u[i]=bin.charCodeAt(i); return u.buffer; }
   function knMsg(t,ok){ var el=document.getElementById('knMsg'); if(!el) return; el.textContent=t||''; el.className='knmodal-msg'+(ok===true?' ok':(ok===false?' err':'')); }
   function knModalOpen(v){
     document.getElementById('knModal').classList.toggle('open', !!v);
@@ -522,7 +530,20 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     var autogenicCleared = localStorage.getItem('autogenic:clearedAt');
     var files=[];
     try{ var db=await knOpenDB(); var recs=await knIdbAll(db); for(var i=0;i<recs.length;i++){ var r=recs[i]; if(r&&r.blob){ try{ files.push({id:r.id,name:r.name,type:r.type,dataUrl:await blobToDataURL(r.blob)}); }catch(e){} } } }catch(e){}
-    return { app:'nikki-kininari', v:2, exportedAt:new Date().toISOString(), diary:diary, diaryLastBackup:diaryLast, kininari:{ data:kdata, files:files }, anshitsu:anshitsu, anshitsuCleared:anshitsuCleared, bgm:bgm, gdCid:gdCid, autogenic:autogenic, autogenicCfg:autogenicCfg, autogenicCleared:autogenicCleared, tasks:tasks, kininariDel:kininariDel, autogenicScript:autogenicScript };
+    // 日記帳の画像。暗号化してあるものは中身を読めないので、そのままの形で運ぶ
+    var diaryImages=[];
+    try{
+      var ddb=await knOpenDiaryDB(); var drecs=await knDiaryImgAll(ddb);
+      for(var di=0; di<drecs.length; di++){
+        var dr=drecs[di]; if(!dr||!dr.data) continue;
+        try{
+          if(dr.enc){ diaryImages.push({id:dr.id, enc:1, type:dr.type, iv:dr.iv, b64:await knBufToB64(dr.data)}); }
+          else { var bl = (dr.data instanceof Blob) ? dr.data : new Blob([dr.data],{type:dr.type||'image/jpeg'});
+                 diaryImages.push({id:dr.id, enc:0, type:dr.type, dataUrl:await blobToDataURL(bl)}); }
+        }catch(e){}
+      }
+    }catch(e){}
+    return { app:'nikki-kininari', v:2, exportedAt:new Date().toISOString(), diaryImages:diaryImages, diary:diary, diaryLastBackup:diaryLast, kininari:{ data:kdata, files:files }, anshitsu:anshitsu, anshitsuCleared:anshitsuCleared, bgm:bgm, gdCid:gdCid, autogenic:autogenic, autogenicCfg:autogenicCfg, autogenicCleared:autogenicCleared, tasks:tasks, kininariDel:kininariDel, autogenicScript:autogenicScript };
   }
   async function knExport(){
     knMsg('準備中…');
@@ -563,6 +584,18 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
       if(typeof obj.autogenicScript==='string') localStorage.setItem('autogenic:script', obj.autogenicScript);
       if(typeof obj.autogenicCfg==='string') localStorage.setItem('autogenic:cfg', obj.autogenicCfg);
       if(typeof obj.autogenicCleared==='string') localStorage.setItem('autogenic:clearedAt', obj.autogenicCleared);
+      if(Array.isArray(obj.diaryImages) && obj.diaryImages.length){
+        try{
+          var ddb2=await knOpenDiaryDB();
+          for(var k=0;k<obj.diaryImages.length;k++){
+            var im=obj.diaryImages[k]; if(!im||!im.id) continue;
+            try{
+              if(im.enc){ await knDiaryImgPut(ddb2,{id:im.id, enc:1, type:im.type, iv:im.iv, data:knB64ToBuf(im.b64)}); }
+              else if(im.dataUrl){ var b2=await (await fetch(im.dataUrl)).blob(); await knDiaryImgPut(ddb2,{id:im.id, enc:0, type:im.type||b2.type, data:b2, size:b2.size}); }
+            }catch(e){}
+          }
+        }catch(e){}
+      }
       if(obj.kininari){
         if(typeof obj.kininari.data==='string') localStorage.setItem('kininari:data:v2', obj.kininari.data);
         var files=(obj.kininari.files||[]);
