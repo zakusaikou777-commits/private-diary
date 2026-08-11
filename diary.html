@@ -137,6 +137,8 @@
         .editor-footer { display: flex; justify-content: space-between; align-items: center; padding: var(--space-12); border-top: 1px solid var(--color-border); background-color: rgba(94, 82, 64, 0.05); flex-wrap: wrap; gap: var(--space-12); }
         .char-count { font-size: 12px; color: var(--color-text-secondary); }
         .footer-actions { display: flex; gap: var(--space-8); flex-wrap: wrap; }
+        .editor-content a { color: var(--color-primary); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+        .editor-content a:hover { background: rgba(33, 128, 141, 0.10); border-radius: 3px; }
         .diary-img { max-width: 100%; height: auto; border-radius: var(--radius-base); display: block; margin: var(--space-8) 0; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
         .img-missing { display: inline-block; padding: var(--space-8) var(--space-12); margin: var(--space-8) 0; border: 1px dashed var(--color-border); border-radius: var(--radius-base); font-size: 12px; color: var(--color-text-secondary); background: rgba(0,0,0,.03); }
         .tags-section { padding: var(--space-12); border-top: 1px solid var(--color-border); border-bottom: 1px solid var(--color-border); background-color: rgba(94, 82, 64, 0.03); }
@@ -166,6 +168,9 @@
         .toast.error { background-color: var(--color-error); }
         .toast.success { background-color: var(--color-success); }
         .toast.warning { background-color: var(--color-warning); }
+        .toast.info { background-color: var(--color-text-secondary); }
+        /* 失敗の説明は長い。読み切る前に消えないよう、幅と行送りを確保する */
+        .toast { max-width: min(92vw, 460px); white-space: normal; line-height: 1.65; cursor: pointer; }
         @keyframes slideIn { from { transform: translateX(400px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
         .stats-section { background-color: var(--color-surface); border-radius: var(--radius-lg); padding: var(--space-16); border: 1px solid var(--color-border); margin-bottom: var(--space-16); }
         .stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-12); }
@@ -400,6 +405,32 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeModal('securityModal')">閉じる</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="linkModal">
+        <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="linkModalTitle">
+            <div class="modal-header" id="linkModalTitle">🔗 リンク</div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label" for="linkText">表示するテキスト</label>
+                    <input type="text" id="linkText" class="form-input" placeholder="例: 鎌倉の観光案内"
+                           onkeypress="if(event.key==='Enter'){event.preventDefault();document.getElementById('linkUrl').focus();}">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="linkUrl">リンク先URL</label>
+                    <input type="url" id="linkUrl" class="form-input" placeholder="https://" inputmode="url" autocomplete="off"
+                           onkeypress="if(event.key==='Enter'){event.preventDefault();submitLink();}">
+                </div>
+                <p style="margin: 0; font-size: 12px; color: var(--color-text-secondary); line-height: 1.6;">
+                    表示するテキストを空にすると、URLをそのまま表示します。
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" type="button" id="linkRemoveBtn" onclick="removeLinkAtCursor()" style="display:none; margin-right:auto;">リンクを外す</button>
+                <button class="btn btn-secondary" type="button" onclick="closeModal('linkModal')">キャンセル</button>
+                <button class="btn btn-primary" type="button" onclick="submitLink()">OK</button>
             </div>
         </div>
     </div>
@@ -706,14 +737,41 @@ async function imgRewrapAll() {
    端末の容量も食う。長辺1280px・JPEGに落として保存する。 */
 const IMG_MAX_EDGE = 1280;
 const IMG_QUALITY = 0.72;
+// 動くGIFはJPEGにすると1コマ目の静止画になってしまう。小さいものはそのまま残す。
+const GIF_KEEP_MAX = 2 * 1024 * 1024;
+
+/** ブラウザが読めない形式かどうかの当たりを付ける。
+ *  iPhoneの写真そのもの（HEIC）は、Apple以外のブラウザでは復号できない。 */
+function looksUndecodable(file) {
+  const t = String(file.type || '').toLowerCase();
+  const n = String(file.name || '').toLowerCase();
+  if (/hei[cf]/.test(t) || /\.(heic|heif)$/.test(n)) return 'heic';
+  if (/tiff?/.test(t) || /\.tiff?$/.test(n)) return 'tiff';
+  return '';
+}
+
+/** 縮小してJPEGにする。失敗したら理由を返す（呼び出し側で伝えるため）。
+ *  返り値: {blob,w,h,kept?} または {error:'decode'|'encode'} */
 function downscaleImageFile(file) {
   return new Promise((resolve) => {
+    // 動くGIFは触らずそのまま入れる（変換すると動かなくなる）
+    if (/^image\/gif$/i.test(file.type || '') && file.size <= GIF_KEEP_MAX) {
+      const im0 = new Image();
+      const u0 = URL.createObjectURL(file);
+      im0.onload = () => {
+        URL.revokeObjectURL(u0);
+        resolve({ blob: file, w: im0.naturalWidth || 0, h: im0.naturalHeight || 0, kept: true });
+      };
+      im0.onerror = () => { URL.revokeObjectURL(u0); resolve({ error: 'decode' }); };
+      im0.src = u0;
+      return;
+    }
     const url = URL.createObjectURL(file);
     const im = new Image();
     im.onload = () => {
       try {
         const w0 = im.naturalWidth || im.width, h0 = im.naturalHeight || im.height;
-        if (!w0 || !h0) { URL.revokeObjectURL(url); return resolve(null); }
+        if (!w0 || !h0) { URL.revokeObjectURL(url); return resolve({ error: 'decode' }); }
         const sc = Math.min(1, IMG_MAX_EDGE / Math.max(w0, h0));
         const w = Math.max(1, Math.round(w0 * sc)), h = Math.max(1, Math.round(h0 * sc));
         const cv = document.createElement('canvas');
@@ -724,11 +782,11 @@ function downscaleImageFile(file) {
         cx.drawImage(im, 0, 0, w, h);
         cv.toBlob((b) => {
           URL.revokeObjectURL(url);
-          resolve(b ? { blob: b, w, h } : null);
+          resolve(b ? { blob: b, w, h } : { error: 'encode' });
         }, 'image/jpeg', IMG_QUALITY);
-      } catch (e) { URL.revokeObjectURL(url); resolve(null); }
+      } catch (e) { URL.revokeObjectURL(url); resolve({ error: 'encode' }); }
     };
-    im.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    im.onerror = () => { URL.revokeObjectURL(url); resolve({ error: 'decode' }); };
     im.src = url;
   });
 }
@@ -1306,6 +1364,28 @@ function clipboardHasImage(cd) {
   } catch (e) {}
   return false;
 }
+/** クリップボードから画像ファイルを取り出す。
+ *  端末によって files に入る場合と items にしか入らない場合があるので両方見る
+ *  （iOSのSafariは items 経由になることがある）。 */
+function clipboardImageFiles(cd) {
+  const out = [];
+  const seen = new Set();
+  const push = f => {
+    if (!f || !/^image\//i.test(f.type || '')) return;
+    const k = (f.name || '') + ':' + f.size + ':' + f.type;
+    if (seen.has(k)) return;
+    seen.add(k); out.push(f);
+  };
+  try { if (cd.files) Array.prototype.forEach.call(cd.files, push); } catch (e) {}
+  try {
+    if (cd.items) Array.prototype.forEach.call(cd.items, it => {
+      if (it && it.kind === 'file' && /^image\//i.test(it.type || '')) {
+        try { push(it.getAsFile()); } catch (e) {}
+      }
+    });
+  } catch (e) {}
+  return out;
+}
 
 function renderEditor() {
   const section = document.getElementById('editorSection');
@@ -1408,6 +1488,21 @@ function renderEditor() {
   revokeLiveImgUrls();
   hydrateImages(editor);
 
+  // 本文のリンクを押したときは、開くのではなく編集にする。
+  // 編集中に開かれても困るし、スマホだと「リンクを直す」入口がここしか無い。
+  editor.addEventListener('click', (ev) => {
+    const a = ev.target && ev.target.closest ? ev.target.closest('a') : null;
+    if (!a || !editor.contains(a)) return;
+    ev.preventDefault();
+    try {
+      const sel = window.getSelection();
+      const r = editor.ownerDocument.createRange();
+      r.selectNodeContents(a);
+      sel.removeAllRanges(); sel.addRange(r);
+    } catch (e) {}
+    rteCreateLink();
+  });
+
   // 写真をドラッグして落とす経路。既定に任せると data: URL が本文に入る。
   editor.addEventListener('dragover', (ev) => {
     if (ev.dataTransfer && Array.from(ev.dataTransfer.types || []).includes('Files')) ev.preventDefault();
@@ -1439,7 +1534,7 @@ function renderEditor() {
     // 画像はブラウザ既定に任せると <img src="data:…"> が本文に直接入り、
     // localStorage を一気に食い潰す。必ず自前で受け取って、実体は
     // IndexedDB へ、本文には id だけを置く。
-    const files = cd.files && cd.files.length ? Array.from(cd.files).filter(f => /^image\//i.test(f.type || '')) : [];
+    const files = clipboardImageFiles(cd);
     const hasImage = files.length > 0 || clipboardHasImage(cd);
     if (hasImage) {
       e.preventDefault();
@@ -1452,9 +1547,32 @@ function renderEditor() {
       if (wantImage) { insertImageFiles(files); return; }
       if (!pasted) return;
     } else {
-      if (!html) return; // プレーンテキストはブラウザ既定のままでよい
-      e.preventDefault();
-      insertHtmlAtCursor(sanitizeHtml(html));
+      // URLだけを貼ったときは、そのままの文字列ではなくリンクにする。
+      // 文字を選んだ状態で貼ったら、その文字がリンクの見出しになる（Box Notes と同じ感覚）。
+      const asUrl = normalizeUrlInput(plain);
+      if (plain && !/\s/.test(plain.trim()) && urlIsAllowed(asUrl) && /^https?:/i.test(asUrl)) {
+        e.preventDefault();
+        const range = rteGetRange();
+        const label = range && !range.collapsed ? String(range.toString() || '') : '';
+        const a = editor.ownerDocument.createElement('a');
+        a.setAttribute('href', asUrl);
+        a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener noreferrer');
+        a.textContent = label || asUrl;
+        if (range) { range.deleteContents(); range.insertNode(a); }
+        try {
+          const sel2 = window.getSelection();
+          const after = editor.ownerDocument.createRange();
+          after.setStartAfter(a); after.collapse(true);
+          sel2.removeAllRanges(); sel2.addRange(after);
+        } catch (err) {}
+        rteNormalize(editor);
+        if (!label) showToast('リンクにしました。🔗ボタンで表示名を付けられます', 'info');
+      } else {
+        if (!html) return; // ふつうの文章はブラウザ既定のままでよい
+        e.preventDefault();
+        insertHtmlAtCursor(sanitizeHtml(html));
+      }
     }
     currentEntry.content = serializeEditor(editor);
     currentEntry.contentFormat = 'html';
@@ -1686,36 +1804,83 @@ function renderEditor() {
         }
 
         /* ── 画像を貼る ───────────────────────────────────── */
+        /* 「取り込んでいます…」だけ出て何も起きない、が一番困る。
+           必ず結果まで言い切る。失敗したときは理由を分けて伝える。 */
+        function imgFailMessage(reason, n) {
+            const head = n > 1 ? `画像${n}枚を取り込めませんでした` : '画像を取り込めませんでした';
+            switch (reason) {
+                case 'heic':
+                    return `${head}。iPhoneのHEIC形式はこのブラウザで開けません。写真アプリの共有から「ファイルに保存」でJPEGにするか、ツールバーの🖼️画像から選び直してください。`;
+                case 'tiff':
+                    return `${head}。TIFF形式はブラウザで開けません。JPEGかPNGに変換してから貼ってください。`;
+                case 'decode':
+                    return `${head}。この形式は開けないか、ファイルが壊れています（JPEG / PNG / GIF / WebP / AVIF なら貼れます）。`;
+                case 'encode':
+                    return `${head}。変換に失敗しました。画像が大きすぎるかもしれません。`;
+                case 'store':
+                    return `${head}。端末の保存容量が足りません。不要な写真や他サイトのデータを整理してください。`;
+                default:
+                    return `${head}。`;
+            }
+        }
         async function insertImageFiles(files) {
-            const list = Array.from(files || []).filter(f => f && /^image\//i.test(f.type || ''));
-            if (!list.length) return 0;
+            const all = Array.from(files || []);
+            const list = all.filter(f => f && /^image\//i.test(f.type || ''));
+            if (!all.length) return 0;
+            if (!list.length) {
+                showToast('画像ファイルではないため貼り付けできませんでした', 'error');
+                return 0;
+            }
             if (appLocked) { showToast('ロックを解除してから貼り付けてください', 'error'); return 0; }
             const editor = document.getElementById('contentEditor');
             if (!editor || !currentEntry) { showToast('先に日記を開いてください', 'error'); return 0; }
-            let added = 0, failed = 0;
-            showToast(list.length > 1 ? `画像を${list.length}枚取り込んでいます…` : '画像を取り込んでいます…', 'info');
-            for (const f of list) {
-                try {
-                    const small = await downscaleImageFile(f);
-                    if (!small) { failed++; continue; }
-                    const id = imgId();
-                    const rec = await imgEncode(small.blob);
-                    await imgPut({ id, ...rec, w: small.w, h: small.h, size: small.blob.size });
-                    pendingImageIds.add(id);
-                    const html = `<img data-did="${id}" alt="">`;
-                    insertHtmlAtCursor(html);
-                    added++;
-                } catch (e) {
-                    console.warn('[diary] 画像の取り込みに失敗', e);
-                    failed++;
+
+            let added = 0, keptGif = 0;
+            const fails = [];   // 失敗の理由をためる
+            const busy = showBusyToast(list.length > 1 ? `画像を${list.length}枚取り込んでいます…` : '画像を取り込んでいます…');
+            try {
+                for (const f of list) {
+                    // 開けないと分かっている形式は、変換を試す前に理由を確定させる
+                    const known = looksUndecodable(f);
+                    try {
+                        const small = await downscaleImageFile(f);
+                        if (!small || small.error) { fails.push(known || (small && small.error) || 'decode'); continue; }
+                        const id = imgId();
+                        const rec = await imgEncode(small.blob);
+                        try {
+                            await imgPut({ id, ...rec, w: small.w, h: small.h, size: small.blob.size });
+                        } catch (e) {
+                            console.warn('[diary] 画像を保存できません', e);
+                            fails.push('store'); continue;
+                        }
+                        pendingImageIds.add(id);
+                        insertHtmlAtCursor(`<img data-did="${id}" alt="">`);
+                        added++;
+                        if (small.kept) keptGif++;
+                    } catch (e) {
+                        console.warn('[diary] 画像の取り込みに失敗', e);
+                        fails.push(known || 'decode');
+                    }
                 }
+                if (added) {
+                    await hydrateImages(editor);
+                    syncEditorContent();
+                }
+            } finally {
+                busy.done();   // 「取り込んでいます…」を必ず消す
+            }
+
+            if (fails.length) {
+                // いちばん多い理由でまとめて伝える
+                const tally = {};
+                fails.forEach(r => { tally[r] = (tally[r] || 0) + 1; });
+                const top = Object.keys(tally).sort((a, b) => tally[b] - tally[a])[0];
+                showToast(imgFailMessage(top, fails.length), 'error');
             }
             if (added) {
-                await hydrateImages(editor);
-                syncEditorContent();
+                const gifNote = keptGif ? `（動くGIF${keptGif}枚はそのまま）` : '';
+                showToast(`画像を${added}枚追加しました${gifNote}`, 'success');
             }
-            if (failed) showToast(`画像を${failed}枚取り込めませんでした（容量不足かもしれません）`, 'error');
-            else if (added) showToast(`画像を${added}枚追加しました`, 'success');
             return added;
         }
         function pickImages() {
@@ -2077,32 +2242,127 @@ function rteToggleBlock(kind) {
   syncEditorContent();
 }
 
+/* ── リンク ────────────────────────────────────────────────
+   以前はURLだけを聞いて、そのURLをそのまま本文に出していた。
+   長いURLが本文に並ぶと読みにくいので、表示するテキストも一緒に決められる
+   ようにする（選択中の文字があればそれを初期値にする）。
+   カーソルがすでにリンクの中にあるときは、その内容を読み込んで編集にする。 */
+let linkEditRange = null;   // ダイアログを開いた時点の選択位置
+let linkEditAnchor = null;  // 編集対象のリンク（新規なら null）
+
+function urlIsAllowed(u) {
+  return /^(https?:|mailto:|tel:)/i.test(String(u || '').trim());
+}
+/** 入力を寛容に受ける。「example.com」だけ打たれても https:// を補う。 */
+function normalizeUrlInput(raw) {
+  let u = String(raw || '').trim();
+  if (!u) return '';
+  if (/^www\./i.test(u)) u = 'https://' + u;
+  // スキームが無く、ドメインらしい形なら https:// を足す
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(u) && /^[^\s/]+\.[^\s/]{2,}/.test(u)) u = 'https://' + u;
+  return u;
+}
+function anchorAt(node) {
+  const editor = rteEditor();
+  let el = node && node.nodeType === 3 ? node.parentNode : node;
+  while (el && el !== editor) {
+    if (el.tagName === 'A') return el;
+    el = el.parentNode;
+  }
+  return null;
+}
+
 function rteCreateLink() {
   const editor = rteEditor();
   if (!editor) return;
   editor.focus();
   const range = rteGetRange();
   if (!range) return;
-  const url = prompt('リンク先URLを入力', 'https://');
-  if (!url) return;
-  const trimmed = url.trim();
-  if (!/^(https?:|mailto:|tel:)/i.test(trimmed)) {
+  linkEditRange = range.cloneRange();
+  linkEditAnchor = anchorAt(range.startContainer) || (!range.collapsed ? anchorAt(range.endContainer) : null);
+
+  const textInput = document.getElementById('linkText');
+  const urlInput = document.getElementById('linkUrl');
+  const removeBtn = document.getElementById('linkRemoveBtn');
+  const title = document.getElementById('linkModalTitle');
+
+  if (linkEditAnchor) {
+    textInput.value = linkEditAnchor.textContent || '';
+    urlInput.value = linkEditAnchor.getAttribute('href') || '';
+    if (removeBtn) removeBtn.style.display = '';
+    if (title) title.textContent = '🔗 リンクを編集';
+  } else {
+    textInput.value = range.collapsed ? '' : String(range.toString() || '');
+    urlInput.value = '';
+    if (removeBtn) removeBtn.style.display = 'none';
+    if (title) title.textContent = '🔗 リンク';
+  }
+  openModal('linkModal');
+  // 表示テキストが既に埋まっているならURL欄から入力を始めたい
+  setTimeout(() => {
+    const first = textInput.value ? urlInput : textInput;
+    try { first.focus(); first.select && first.select(); } catch (e) {}
+  }, 40);
+}
+
+function submitLink() {
+  const editor = rteEditor();
+  if (!editor) return;
+  const url = normalizeUrlInput((document.getElementById('linkUrl') || {}).value);
+  const text = String((document.getElementById('linkText') || {}).value || '').trim();
+  if (!url) { showToast('リンク先URLを入力してください', 'error'); return; }
+  if (!urlIsAllowed(url)) {
     showToast('http(s):, mailto:, tel: のみ使用できます', 'error');
     return;
   }
+  closeModal('linkModal');
+  editor.focus();
+
   const a = editor.ownerDocument.createElement('a');
-  a.setAttribute('href', trimmed);
+  a.setAttribute('href', url);
   a.setAttribute('target', '_blank');
   a.setAttribute('rel', 'noopener noreferrer');
-  if (range.collapsed) {
-    a.textContent = trimmed;
-    range.insertNode(a);
+
+  if (linkEditAnchor && editor.contains(linkEditAnchor)) {
+    // 既存のリンクを編集
+    linkEditAnchor.setAttribute('href', url);
+    linkEditAnchor.setAttribute('target', '_blank');
+    linkEditAnchor.setAttribute('rel', 'noopener noreferrer');
+    linkEditAnchor.textContent = text || url;
   } else {
-    try {
+    const range = linkEditRange;
+    if (!range) return;
+    try { rteSetSelection(range); } catch (e) {}
+    if (range.collapsed || text) {
+      // 表示テキストが決まっているなら、選択範囲ごと差し替える
+      a.textContent = text || url;
+      range.deleteContents();
+      range.insertNode(a);
+    } else {
       a.appendChild(range.extractContents());
       range.insertNode(a);
-    } catch (e) { console.error(e); return; }
+    }
+    // リンクの直後にカーソルを置く（続けて書けるように）
+    try {
+      const sel = window.getSelection();
+      const after = editor.ownerDocument.createRange();
+      after.setStartAfter(a); after.collapse(true);
+      sel.removeAllRanges(); sel.addRange(after);
+    } catch (e) {}
   }
+  linkEditRange = null; linkEditAnchor = null;
+  rteNormalize(editor);
+  syncEditorContent();
+}
+
+function removeLinkAtCursor() {
+  const editor = rteEditor();
+  closeModal('linkModal');
+  if (!editor || !linkEditAnchor || !editor.contains(linkEditAnchor)) return;
+  const parent = linkEditAnchor.parentNode;
+  while (linkEditAnchor.firstChild) parent.insertBefore(linkEditAnchor.firstChild, linkEditAnchor);
+  parent.removeChild(linkEditAnchor);
+  linkEditAnchor = null; linkEditRange = null;
   rteNormalize(editor);
   syncEditorContent();
 }
@@ -2759,6 +3019,24 @@ function insertTablePrompt() {
             }
         }
 
+        /** 消えない進捗トースト。done() を呼ぶまで出したままにする。
+         *  処理が途中で終わっても言いっぱなしにならないよう、保険の時間切れも置く。 */
+        function showBusyToast(message) {
+            const region = document.getElementById('toastRegion') || document.body;
+            const toast = document.createElement('div');
+            toast.className = 'toast info';
+            toast.textContent = message;
+            toast.setAttribute('role', 'status');
+            region.appendChild(toast);
+            let done = false;
+            const kill = () => {
+                if (done) return;
+                done = true;
+                try { toast.remove(); } catch (e) {}
+            };
+            const t = setTimeout(kill, 30000);
+            return { done: () => { clearTimeout(t); kill(); } };
+        }
         function showToast(message, type = 'success') {
             const region = document.getElementById('toastRegion') || document.body;
             const toast = document.createElement('div');
@@ -2767,8 +3045,14 @@ function insertTablePrompt() {
             // エラーは即時読み上げ、それ以外は穏やかに（a11y）
             toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
             region.appendChild(toast);
-            setTimeout(() => { toast.style.animation = 'slideIn 0.3s ease-out reverse'; }, 2500);
-            setTimeout(() => toast.remove(), 2800);
+            // 失敗の説明は長いので、読み切れる時間を置く。押せばすぐ消せる。
+            const hold = type === 'error' ? Math.min(14000, 4000 + String(message).length * 90) : 2500;
+            let t1 = setTimeout(() => { toast.style.animation = 'slideIn 0.3s ease-out reverse'; }, hold);
+            let t2 = setTimeout(() => toast.remove(), hold + 300);
+            toast.addEventListener('click', () => {
+                clearTimeout(t1); clearTimeout(t2);
+                try { toast.remove(); } catch (e) {}
+            });
         }
 
         // オーバーレイのクリックで閉じる（フォーカスも復帰させる）
