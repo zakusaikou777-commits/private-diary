@@ -46,6 +46,20 @@ header .grow{flex:1;min-width:0}
 .dimnote{font-size:11.5px;color:var(--soft);margin:6px 2px 0;line-height:1.6;display:none}
 html.night .dimnote{display:block}
 #player,#pwrap iframe{width:100%;height:100%;border:0;display:block}
+.aurow{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.abtn{border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:10px;padding:9px 13px;font:inherit;font-size:13px;font-weight:700;cursor:pointer}
+.abtn:hover{border-color:var(--accent)}
+.abtn.solid{background:var(--accent);color:#fff;border-color:var(--accent)}
+.auform{border:1px solid var(--line);border-radius:10px;padding:10px;margin:8px 0;background:var(--card)}
+.auform input{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;font:inherit;font-size:13px;margin-bottom:8px;background:var(--bg);color:var(--fg)}
+.aulist{display:flex;flex-direction:column;gap:6px;margin:10px 0}
+.aucard{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--card);cursor:pointer}
+.aucard.on{border-color:var(--accent);box-shadow:0 0 0 2px rgba(192,70,60,.15)}
+.aucard .an{flex:1;min-width:0;font-size:13.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.aucard .ad{font-size:11px;color:var(--muted);margin-top:2px;font-weight:400}
+.aucard .ax{border:none;background:none;color:var(--muted);font-size:15px;cursor:pointer;padding:4px 6px}
+.aucard .ax:hover{color:var(--accent)}
+.auempty{font-size:12.5px;color:var(--muted);padding:14px 2px;line-height:1.8}
 #pnote{font-size:11.5px;color:var(--red-d);margin:6px 2px 0;line-height:1.6}
 
 #nowbar{margin-top:10px;background:var(--card);border:1px solid var(--line);border-radius:13px;padding:11px 12px}
@@ -145,6 +159,7 @@ html.night .dimnote{display:block}
 
   <div class="modes">
     <button class="mode on" id="mYt">YouTube</button>
+    <button class="mode" id="mAu">音源</button>
     <button class="mode" id="mSc">就寝用の音</button>
   </div>
 
@@ -192,6 +207,29 @@ html.night .dimnote{display:block}
     </div>
     <div class="chips" id="gfilters" style="margin-bottom:10px"></div>
     <div id="list"></div>
+  </section>
+
+  <section class="panel" id="pAu">
+    <div class="note">
+      <b>通信をほとんど使わずに、画面を消しても鳴り続けます。</b>YouTubeは映像も一緒に受け取るため通信量が大きく、スマホでは画面を消すと止まります。ここは音だけを鳴らすので、その両方がありません。ロック画面からの操作も使えます。
+    </div>
+    <div class="aurow">
+      <button class="abtn" id="auAddFile">＋ 手持ちの音源ファイル</button>
+      <button class="abtn" id="auAddUrl">＋ ラジオ・配信のURL</button>
+    </div>
+    <input type="file" id="auFile" accept="audio/*" multiple hidden>
+    <div id="auForm" class="auform" hidden>
+      <input type="text" id="auUrl" placeholder="https://… （音声ストリームのURL）" inputmode="url">
+      <input type="text" id="auName" placeholder="表示する名前（省略可）">
+      <div class="aurow">
+        <button class="abtn solid" id="auSave">登録</button>
+        <button class="abtn" id="auCancel">やめる</button>
+      </div>
+      <p class="hint">ネットラジオや配信の音声URLを登録できます。64〜128kbps程度なので、動画の10分の1以下の通信量です。</p>
+    </div>
+    <div class="aulist" id="auList"></div>
+    <div class="volrow"><span>音量</span><input type="range" id="auVol" min="0" max="100" step="1"><span id="auVolN">70</span></div>
+    <p id="auNote" class="hint"></p>
   </section>
 
   <section class="panel" id="pSc">
@@ -258,13 +296,45 @@ var DEFAULT_GENRES=[
   {name:"ジャズ",    q:"ジャズ BGM 落ち着く"},
   {name:"睡眠",      q:"睡眠用BGM 8時間"}
 ];
+/* ── 音源（手持ちのファイル／音声ストリーム）─────────────────
+   YouTubeは映像も受け取るので通信量が大きく、スマホでは画面を消すと止まる。
+   ここは音だけを鳴らすので、その両方が無い。再生はシェル（index.html）の
+   最上位で行うため、他のタブに切り替えても画面を消しても続く。
+
+   ファイルの実体は専用のDBに置く。localStorageに入れると数MBで即あふれるし、
+   Driveへ同期すると毎回何十MBも往復してしまう（URLだけは軽いので同期する）。 */
+var AU_DB_NAME="BgmAudioDB", AU_STORE="tracks";
+var auDb=(function(){
+  return new Promise(function(res,rej){
+    var settled=false;
+    var fin=function(f){return function(v){ if(settled)return; settled=true; clearTimeout(t); f(v); };};
+    var ok=fin(res), ng=fin(rej);
+    var t=setTimeout(function(){ ng(new Error("IDB_TIMEOUT")); },8000);
+    var r;
+    try{ r=indexedDB.open(AU_DB_NAME,1); }catch(e){ return ng(e); }
+    r.onupgradeneeded=function(){ try{ var db=r.result; if(!db.objectStoreNames.contains(AU_STORE)) db.createObjectStore(AU_STORE,{keyPath:"id"}); }catch(e){} };
+    r.onsuccess=function(){ var db=r.result; try{ db.onversionchange=function(){ try{db.close();}catch(e){} }; }catch(e){} ok(db); };
+    r.onerror=function(){ ng(r.error||new Error("IDB_ERROR")); };
+    // blocked を拾わないと success も error も来ず、永久に待ち続ける
+    r.onblocked=function(){ ng(new Error("IDB_BLOCKED")); };
+  });
+})();
+auDb.catch(function(e){ console.error("[bgm] 音源DBを開けません",e); });
+function auTx(mode){ return auDb.then(function(db){ return db.transaction(AU_STORE,mode).objectStore(AU_STORE); }); }
+function auPut(rec){ return auTx("readwrite").then(function(st){ return new Promise(function(res,rej){ var r=st.put(rec); r.onsuccess=function(){res(true);}; r.onerror=function(){rej(r.error);}; }); }); }
+function auGet(id){ return auTx("readonly").then(function(st){ return new Promise(function(res){ var r=st.get(id); r.onsuccess=function(){res(r.result||null);}; r.onerror=function(){res(null);}; }); }); }
+function auKeys(){ return auTx("readonly").then(function(st){ return new Promise(function(res){ var r=st.getAllKeys(); r.onsuccess=function(){res(r.result||[]);}; r.onerror=function(){res([]);}; }); }); }
+function auDel(id){ return auTx("readwrite").then(function(st){ return new Promise(function(res){ var r=st.delete(id); r.onsuccess=function(){res(true);}; r.onerror=function(){res(false);}; }); }); }
+function auId(){ return "a"+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+function auFmtSize(n){ n=n||0; return n>=1048576 ? (Math.round(n/1048576*10)/10)+"MB" : Math.max(1,Math.round(n/1024))+"KB"; }
+
 var SOUNDS=[
   {id:"brown",n:"ブラウンノイズ",d:"低くこもった「ゴーッ」という音。生活音を覆い隠す力がいちばん強い。",f:"audio/brown.wav"},
   {id:"pink", n:"ピンクノイズ",  d:"音域のバランスが自然で、長く流しても耳が疲れにくい。",f:"audio/pink.wav"},
   {id:"rain", n:"雨・シャワー",  d:"やわらかな雨だれのような音。静かすぎる部屋が苦手なときに。",f:"audio/rain.wav"}
 ];
 
-var S={items:[],hist:[],genres:[],delItems:[],delGenres:[],vol:60,scVol:70,shuffle:false,night:false,mode:"yt",filter:"all",gfilter:"",lastCats:[],timer:0};
+var S={items:[],hist:[],genres:[],delItems:[],delGenres:[],tracks:[],delTracks:[],vol:60,scVol:70,auVol:70,shuffle:false,night:false,mode:"yt",filter:"all",gfilter:"",lastCats:[],timer:0};
 try{
   var raw=store.get(KEY);
   if(raw){var o=JSON.parse(raw)||{};
@@ -276,7 +346,10 @@ try{
     if(Array.isArray(o.lastCats))S.lastCats=o.lastCats;
     ["vol","scVol"].forEach(function(k){if(typeof o[k]==="number")S[k]=o[k];});
     ["shuffle","night"].forEach(function(k){if(typeof o[k]==="boolean")S[k]=o[k];});
-    if(o.mode==="sc"||o.mode==="yt")S.mode=o.mode;
+    if(o.mode==="sc"||o.mode==="yt"||o.mode==="au")S.mode=o.mode;
+    if(Array.isArray(o.tracks))S.tracks=o.tracks;
+    if(Array.isArray(o.delTracks))S.delTracks=o.delTracks;
+    if(typeof o.auVol==="number")S.auVol=Math.max(0,Math.min(100,o.auVol));
     if(typeof o.filter==="string")S.filter=o.filter;
     if(typeof o.gfilter==="string")S.gfilter=o.gfilter;
   }
@@ -363,7 +436,7 @@ normalize();
 var saveFailed=false;
 function save(){
   var body=null;
-  try{body=JSON.stringify({items:S.items,hist:S.hist.slice(0,300),genres:S.genres,delItems:S.delItems,delGenres:S.delGenres,vol:S.vol,scVol:S.scVol,shuffle:S.shuffle,night:S.night,mode:S.mode,filter:S.filter,gfilter:S.gfilter,lastCats:S.lastCats});}catch(e){return;}
+  try{body=JSON.stringify({items:S.items,hist:S.hist.slice(0,300),genres:S.genres,delItems:S.delItems,delGenres:S.delGenres,tracks:S.tracks,delTracks:S.delTracks,vol:S.vol,scVol:S.scVol,auVol:S.auVol,shuffle:S.shuffle,night:S.night,mode:S.mode,filter:S.filter,gfilter:S.gfilter,lastCats:S.lastCats});}catch(e){return;}
   var okNow=store.set(KEY,body);
   /* 保存できなかったことを黙っていると、翌日に開いて全部消えてから気づくことになる。
      データが失われる話なので、必ず目に見える形で伝える。 */
@@ -879,7 +952,12 @@ var SND=(function(){
       st.id=d.nkSoundState.id; st.playing=!!d.nkSoundState.playing;
       if(typeof d.nkSoundState.volOk==="boolean") st.volOk=d.nkSoundState.volOk;
       if(d.nkSoundState.err==="tap") toast("もう一度タップしてください。",4000);
+      if(d.nkSoundState.err==="track") toast("この音源を再生できませんでした。ファイルが壊れているか、URLが音声ではないかもしれません。",7000);
+      if(d.nkSoundState.err==="missing") toast("音源の実体が見つかりませんでした。登録し直してください。",6000);
       renderSc();
+      if(typeof renderAu==="function") renderAu();
+      // 曲が終わったら次へ（ラジオは終わらないのでここには来ない）
+      if(d.nkSoundState.ended && typeof auNext==="function") auNext();
     });
     post({cmd:"state"});
   }
@@ -899,7 +977,28 @@ var SND=(function(){
       if(localVolSupported()){ try{ scA.volume=Math.max(0,Math.min(1,vol)); }catch(e){} }
       scA.play().then(function(){ mediaMeta(sd.n); }).catch(function(){ toast("再生できませんでした。もう一度タップしてください。",4000); renderSc(); });
     },
-    stop:function(){ if(emb){ post({cmd:"stop"}); return; } try{ scA.pause(); }catch(e){} }
+    stop:function(){ if(emb){ post({cmd:"stop"}); return; } try{ scA.pause(); scA.loop=true; }catch(e){} },
+    /** 音源（手持ちのファイル／ストリーム）を鳴らす。
+     *  シェルの中では最上位に頼む。最上位で鳴らさないと、タブを切り替えたり
+     *  画面を消したときに止まってしまう。 */
+    playTrack:function(t,vol){
+      if(emb){ post({cmd:"playTrack",id:t.id,kind:t.kind,url:t.url||"",name:t.name,vol:vol}); return; }
+      var go=function(src,revoke){
+        try{ scA.loop=false; }catch(e){}
+        scA.src=src; scA.setAttribute("data-id",t.id);
+        if(localVolSupported()){ try{ scA.volume=Math.max(0,Math.min(1,vol)); }catch(e){} }
+        scA.play().then(function(){ mediaMeta(t.name); }).catch(function(){
+          toast("再生できませんでした。もう一度タップしてください。",4000);
+          if(revoke) try{ URL.revokeObjectURL(src); }catch(e){}
+          renderAu();
+        });
+      };
+      if(t.kind==="stream"){ go(t.url,false); return; }
+      auGet(t.id).then(function(rec){
+        if(!rec||!rec.blob){ toast("音源の実体が見つかりませんでした。登録し直してください。",6000); return; }
+        go(URL.createObjectURL(rec.blob),true);
+      }).catch(function(){ toast("音源を読み出せませんでした。",5000); });
+    }
   };
 })();
 var volCtl=null;
@@ -931,7 +1030,11 @@ function renderSc(){
   });
 }
 $("scList").addEventListener("click",function(e){var b=e.target.closest("[data-sc]");if(b)playSound(b.getAttribute("data-sc"));});
-if(!SND.embedded){ scA.addEventListener("pause",renderSc); scA.addEventListener("play",renderSc); }
+if(!SND.embedded){
+  scA.addEventListener("pause",function(){ renderSc(); if(typeof renderAu==="function") renderAu(); });
+  scA.addEventListener("play",function(){ renderSc(); if(typeof renderAu==="function") renderAu(); });
+  scA.addEventListener("ended",function(){ if(typeof auNext==="function") auNext(); });
+}
 /* ロック画面の後始末。index.html（シェル）の nkSndStop と同じ振る舞いにする。
    これをしないと、止めたあともロック画面に操作パネルが残り続ける。 */
 function mediaClear(){
@@ -993,12 +1096,145 @@ Array.prototype.forEach.call(document.querySelectorAll("#sfilters .f"),function(
     render();
   });
 });
+/* ══════ 音源（ファイル／ストリーム）══════ */
+var auId_cur=null;          // いま鳴らしているもの
+function auById(id){ for(var i=0;i<S.tracks.length;i++) if(S.tracks[i].id===id) return S.tracks[i]; return null; }
+function auNormalize(){
+  var cut=Date.now()-90*24*3600*1000;
+  S.delTracks=(S.delTracks||[]).filter(function(t){ return t&&t.id&&(t.at||0)>cut; });
+  S.tracks=(S.tracks||[]).filter(function(t){
+    return t && typeof t.id==="string" && (t.kind==="file" || (t.kind==="stream" && /^https?:\/\//i.test(t.url||"")));
+  }).map(function(t){
+    return { id:String(t.id), kind:t.kind==="file"?"file":"stream", name:String(t.name||"名前なし"),
+             url:t.kind==="stream"?String(t.url||""):"", type:String(t.type||""),
+             size:t.size|0, addedAt:t.addedAt||0, updatedAt:t.updatedAt||t.addedAt||0,
+             synced:t.synced?1:undefined };
+  });
+}
+function auRemember(t){ t.updatedAt=Date.now(); save(); }
+
+/** ファイルを取り込む。音声は作り直すと品質が落ちるうえブラウザに変換器が
+ *  無いので、そのまま保存する（画像と違って縮小はしない）。 */
+function auAddFiles(files){
+  var list=Array.prototype.slice.call(files||[]).filter(function(f){ return f && /^audio\//i.test(f.type||""); });
+  if(!list.length){ toast("音声ファイルではありません。",4000); return; }
+  auDb.then(function(){
+    var added=0, failed=0, chain=Promise.resolve();
+    list.forEach(function(f){
+      chain=chain.then(function(){
+        var id=auId();
+        return auPut({id:id, blob:f, type:f.type||"audio/mpeg", name:f.name||"音源", size:f.size|0})
+          .then(function(){
+            S.tracks.unshift({id:id, kind:"file", name:(f.name||"音源").replace(/\.[^.]+$/,""), url:"",
+                              type:f.type||"", size:f.size|0, addedAt:Date.now(), updatedAt:Date.now()});
+            added++;
+          })
+          .catch(function(e){ console.warn("[bgm] 音源を保存できません",e); failed++; });
+      });
+    });
+    return chain.then(function(){
+      if(added){ save(); renderAu(); toast("音源を"+added+"件追加しました。",3500); }
+      if(failed) toast("音源を"+failed+"件保存できませんでした。端末の空き容量を確認してください。",7000);
+    });
+  }).catch(function(){
+    toast("音源の保存先を開けませんでした。このアプリの他のタブを閉じて、開き直してください。",8000);
+  });
+}
+function auAddStream(url,name){
+  url=String(url||"").trim();
+  if(!/^https?:\/\//i.test(url)){ toast("http(s):// で始まるURLを入れてください。",4500); return false; }
+  S.tracks.unshift({id:auId(), kind:"stream", name:String(name||"").trim()||url.replace(/^https?:\/\//,"").slice(0,40),
+                    url:url, type:"", size:0, addedAt:Date.now(), updatedAt:Date.now()});
+  save(); renderAu();
+  toast("登録しました。",3000);
+  return true;
+}
+function auRemove(id){
+  var t=auById(id); if(!t) return;
+  if(!confirm("「"+t.name+"」を削除しますか？")) return;
+  if(auId_cur===id){ SND.stop(); auId_cur=null; }
+  S.tracks=S.tracks.filter(function(x){ return x.id!==id; });
+  S.delTracks.push({id:id, at:Date.now()});
+  if(t.kind==="file") auDel(id).catch(function(){});
+  save(); renderAu();
+}
+function auPlay(id){
+  var t=auById(id); if(!t) return;
+  if(auId_cur===id && SND.playing()){ SND.stop(); auId_cur=null; renderAu(); return; }
+  auId_cur=id;
+  SND.playTrack(t, S.auVol/100);
+  renderAu();
+}
+/** 曲が終わったら次へ。ラジオは終わらないので、ここに来るのはファイルだけ。 */
+function auNext(){
+  if(!auId_cur) return;
+  var i=-1; for(var k=0;k<S.tracks.length;k++) if(S.tracks[k].id===auId_cur) i=k;
+  if(i<0) return;
+  var files=S.tracks.filter(function(t){ return t.kind==="file"; });
+  if(files.length<2){ auId_cur=null; renderAu(); return; }
+  var next;
+  if(S.shuffle){
+    var others=files.filter(function(t){ return t.id!==auId_cur; });
+    next=others[Math.floor(Math.random()*others.length)];
+  }else{
+    var fi=-1; for(var j=0;j<files.length;j++) if(files[j].id===auId_cur) fi=j;
+    next=files[(fi+1)%files.length];
+  }
+  if(next) auPlay(next.id);
+}
+function renderAu(){
+  var host=$("auList"); if(!host) return;
+  auNormalize();
+  if(!S.tracks.length){
+    host.innerHTML='<div class="auempty">まだ何もありません。<br>'
+      +'・<b>手持ちの音源ファイル</b>… 端末に保存するので通信は発生しません。<br>'
+      +'・<b>ラジオ・配信のURL</b>… 音声だけなので、動画の10分の1以下の通信量です。<br>'
+      +'どちらも画面を消しても鳴り続けます。</div>';
+    return;
+  }
+  var cur=SND.current(), on=SND.playing();
+  var h="";
+  S.tracks.forEach(function(t){
+    var live=(cur===t.id&&on);
+    var d = t.kind==="file" ? ("端末内の音源"+(t.size?" ・ "+auFmtSize(t.size):"")) : "ストリーム ・ "+esc(t.url.replace(/^https?:\/\//,"").slice(0,38));
+    h+='<div class="aucard'+(live?" on":"")+'" data-au="'+esc(t.id)+'">'
+      +'<span style="font-size:17px">'+(live?"⏸":"▶")+'</span>'
+      +'<div class="an">'+esc(t.name)+'<div class="ad">'+d+'</div></div>'
+      +'<button class="ax" data-audel="'+esc(t.id)+'" title="削除">✕</button></div>';
+  });
+  host.innerHTML=h;
+}
+$("auList").addEventListener("click",function(e){
+  var del=e.target.closest("[data-audel]");
+  if(del){ e.stopPropagation(); auRemove(del.getAttribute("data-audel")); return; }
+  var card=e.target.closest("[data-au]");
+  if(card) auPlay(card.getAttribute("data-au"));
+});
+$("auAddFile").addEventListener("click",function(){ $("auFile").click(); });
+$("auFile").addEventListener("change",function(){ auAddFiles(this.files); this.value=""; });
+$("auAddUrl").addEventListener("click",function(){ $("auForm").hidden=false; $("auUrl").focus(); });
+$("auCancel").addEventListener("click",function(){ $("auForm").hidden=true; $("auUrl").value=""; $("auName").value=""; });
+$("auSave").addEventListener("click",function(){
+  if(auAddStream($("auUrl").value,$("auName").value)){ $("auForm").hidden=true; $("auUrl").value=""; $("auName").value=""; }
+});
+$("auUrl").addEventListener("keypress",function(e){ if(e.key==="Enter"){ e.preventDefault(); $("auSave").click(); } });
+$("auVol").addEventListener("input",function(){
+  S.auVol=+this.value; $("auVolN").textContent=S.auVol; save();
+  if(auId_cur) SND.setVol(S.auVol/100);
+});
+function applyAuVol(){
+  $("auVol").value=S.auVol; $("auVolN").textContent=S.auVol;
+  $("auNote").textContent = SND.volOk() ? "" : "この端末ではアプリから音量を変えられません。本体の音量ボタンを使ってください。";
+}
+
 function setMode(m){
   S.mode=m;save();
-  $("mYt").classList.toggle("on",m==="yt");$("mSc").classList.toggle("on",m==="sc");
-  $("pYt").classList.toggle("on",m==="yt");$("pSc").classList.toggle("on",m==="sc");
+  $("mYt").classList.toggle("on",m==="yt");$("mAu").classList.toggle("on",m==="au");$("mSc").classList.toggle("on",m==="sc");
+  $("pYt").classList.toggle("on",m==="yt");$("pAu").classList.toggle("on",m==="au");$("pSc").classList.toggle("on",m==="sc");
+  if(m==="au") renderAu();
 }
 $("mYt").addEventListener("click",function(){setMode("yt");});
+$("mAu").addEventListener("click",function(){setMode("au");});
 $("mSc").addEventListener("click",function(){setMode("sc");});
 
 /* ── 夜間モード・焼き付き対策 ─────────────────────── */
@@ -1133,11 +1369,21 @@ $("bPlus10").addEventListener("click",function(){
 var sync=null;
 function touch(urgent){ if(sync) sync.touch(!!urgent); }
 function syncGetLocal(){
-  return {items:S.items,genres:S.genres,delItems:S.delItems,delGenres:S.delGenres};
+  // 音源のうち、URLで鳴らすものだけ同期する。手持ちのファイルは実体が数MBあり、
+  // 送ると毎回それだけの通信が発生するので端末内にとどめる（同期するのは登録情報のみ）。
+  return {items:S.items,genres:S.genres,delItems:S.delItems,delGenres:S.delGenres,
+          tracks:(S.tracks||[]).filter(function(t){ return t.kind==="stream"; }),
+          delTracks:S.delTracks};
 }
 function syncSetLocal(d){
   S.items=d.items||[]; S.genres=d.genres||[];
   S.delItems=d.delItems||[]; S.delGenres=d.delGenres||[];
+  if(d.tracks){
+    // 端末内のファイルは同期対象外なので、こちらの分を必ず残す
+    var mine=(S.tracks||[]).filter(function(t){ return t.kind==="file"; });
+    S.tracks=mine.concat(d.tracks);
+  }
+  if(d.delTracks) S.delTracks=d.delTracks;
   normalize(); save();
   if(curId&&!byId(curId))curId=null;
   if(editId&&!byId(editId))editId=null;
@@ -1204,7 +1450,10 @@ function syncMerge(local,remote,lastSync){
     return o;
   });
   var genres=NKSync.mergeById(local.genres,remote.genres,lastSync,tG,"id");
-  return {items:items,genres:genres,delItems:tI,delGenres:tG};
+  // 音源はURLで鳴らすものだけが同期対象（getLocal で絞ってある）
+  var tT=NKSync.mergeTombs(local.delTracks,remote.delTracks);
+  var tracks=NKSync.mergeById(local.tracks,remote.tracks,lastSync,tT,"id");
+  return {items:items,genres:genres,delItems:tI,delGenres:tG,tracks:tracks,delTracks:tT};
 }
 function paintSync(st,auto){
   var b=$("bSync");
@@ -1245,7 +1494,7 @@ $("bSyncAuto").addEventListener("click",function(){ if(sync) sync.setAuto(!sync.
 
 /* ── 初期化 ───────────────────────────────────────── */
 addCats=(S.lastCats||[]).filter(function(c){return !!genreByName(c);});
-setMode(S.mode); applyNight(); applyVol(); applyScVol(); paintWake();
+setMode(S.mode); applyNight(); applyVol(); applyScVol(); applyAuVol(); renderAu(); paintWake();
 renderGenreSearch(); renderAddCats(); renderGFilters();
 Array.prototype.forEach.call(document.querySelectorAll("#sfilters .f"),function(x){
   x.classList.toggle("on",x.getAttribute("data-f")===S.filter);

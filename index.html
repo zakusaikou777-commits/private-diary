@@ -410,9 +410,9 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     var fr=document.querySelectorAll('.appframe');
     for(var i=0;i<fr.length;i++){ try{ fr[i].contentWindow.postMessage(msg, location.origin); }catch(e){} }
   }
-  function nkSndState(err){
+  function nkSndState(err, ended){
     nkPost({nkSoundState:{id:(nkSnd.paused?null:nkSndId), playing:!nkSnd.paused,
-                          volOk:nkVolSupported(), err:err||''}});
+                          volOk:nkVolSupported(), err:err||'', ended:!!ended}});
   }
   function nkMedia(name){
     try{
@@ -442,22 +442,73 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
   /** 完全に止める。src も消さないと、ロック画面に操作パネルが残り続ける。 */
   function nkSndStop(){
     try{ nkSnd.pause(); }catch(e){}
+    nkFreeTrackUrl();
+    try{ nkSnd.loop=true; }catch(e){}
     nkSndId=null; nkSndName='';
     try{ nkSnd.removeAttribute('src'); nkSnd.load(); }catch(e){}
     nkMediaClear();
     nkSndState();
+  }
+  /* 音源（音タブの「音源」）。実体は BgmAudioDB にあり、ここで読み出して鳴らす。
+     iframe の中で作った blob: URL は、そのフレームが作り直されると無効になるため、
+     再生する側（＝最上位のここ）で作る。 */
+  var nkAuDb=null;
+  function nkOpenAuDb(){
+    if(nkAuDb) return nkAuDb;
+    nkAuDb=new Promise(function(res,rej){
+      var done=false, t=setTimeout(function(){ if(!done){done=true; rej(new Error('IDB_TIMEOUT'));} },8000);
+      var r=indexedDB.open('BgmAudioDB',1);
+      r.onupgradeneeded=function(){ try{ var db=r.result; if(!db.objectStoreNames.contains('tracks')) db.createObjectStore('tracks',{keyPath:'id'}); }catch(e){} };
+      r.onsuccess=function(){ if(done)return; done=true; clearTimeout(t);
+        try{ r.result.onversionchange=function(){ try{ r.result.close(); }catch(e){} }; }catch(e){}
+        res(r.result); };
+      r.onerror=function(){ if(done)return; done=true; clearTimeout(t); rej(r.error); };
+      r.onblocked=function(){ if(done)return; done=true; clearTimeout(t); rej(new Error('IDB_BLOCKED')); };
+    });
+    nkAuDb.catch(function(){ nkAuDb=null; });   // 次回もう一度試せるように
+    return nkAuDb;
+  }
+  var nkTrackUrl=null;   // いま鳴らしている音源の blob: URL
+  function nkFreeTrackUrl(){ if(nkTrackUrl){ try{ URL.revokeObjectURL(nkTrackUrl); }catch(e){} nkTrackUrl=null; } }
+  function nkPlaySrc(src, id, name, vol, isBlob){
+    nkFreeTrackUrl();
+    if(isBlob) nkTrackUrl=src;
+    nkSnd.loop=false;                 // 曲は繰り返さない（就寝音だけ loop）
+    nkSnd.src=src; nkSndId=id; nkSndName=name||'';
+    if(nkVolSupported() && typeof vol==='number') nkSnd.volume=Math.max(0,Math.min(1,vol));
+    nkSnd.play().then(function(){ nkMedia(name); nkSndState(); })
+                .catch(function(){ nkSndId=null; nkSndState('tap'); });
   }
   function nkSoundCmd(c){
     if(!c||!c.cmd) return;
     try{
       if(c.cmd==='state'){ nkSndState(); return; }
       if(c.cmd==='stop'){ nkSndStop(); return; }
+      if(c.cmd==='playTrack'){
+        if(nkSndId===c.id && !nkSnd.paused){ nkSndStop(); return; }
+        if(c.kind==='stream'){
+          if(!/^https?:\/\//i.test(c.url||'')){ nkSndState('track'); return; }
+          nkPlaySrc(c.url, c.id, c.name, c.vol, false);
+          return;
+        }
+        nkOpenAuDb().then(function(db){
+          return new Promise(function(res){
+            try{ var r=db.transaction('tracks','readonly').objectStore('tracks').get(c.id);
+                 r.onsuccess=function(){ res(r.result||null); }; r.onerror=function(){ res(null); };
+            }catch(e){ res(null); }
+          });
+        }).then(function(rec){
+          if(!rec||!rec.blob){ nkSndState('missing'); return; }
+          nkPlaySrc(URL.createObjectURL(rec.blob), c.id, c.name, c.vol, true);
+        }).catch(function(){ nkSndState('track'); });
+        return;
+      }
       if(c.cmd==='vol'){
         if(nkVolSupported() && typeof c.vol==='number') nkSnd.volume=Math.max(0,Math.min(1,c.vol));
         return;
       }
       if(c.cmd==='play'){
-        if(nkSndId!==c.id || !nkSnd.src){ nkSnd.src=c.file; nkSndId=c.id; nkSndName=c.name||''; }
+        if(nkSndId!==c.id || !nkSnd.src){ nkFreeTrackUrl(); nkSnd.loop=true; nkSnd.src=c.file; nkSndId=c.id; nkSndName=c.name||''; }
         if(nkVolSupported() && typeof c.vol==='number') nkSnd.volume=Math.max(0,Math.min(1,c.vol));
         nkSnd.play().then(function(){ nkMedia(c.name); nkSndState(); })
                     .catch(function(){ nkSndId=null; nkSndState('tap'); });
@@ -467,6 +518,9 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
   }
   nkSnd.addEventListener('play', function(){ nkSndState(); });
   nkSnd.addEventListener('pause', function(){ nkSndState(); });
+  // 曲が終わったら音タブへ知らせる（次の曲へ進めてもらう）
+  nkSnd.addEventListener('ended', function(){ nkSndState('', true); });
+  nkSnd.addEventListener('error', function(){ if(nkSndId) nkSndState('track'); });
 
   function knSend(msg){
     var fr=document.querySelectorAll('.appframe');
