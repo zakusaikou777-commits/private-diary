@@ -368,6 +368,19 @@ function safeLink(u) {
   if (typeof u !== "string") return false;
   return /^https?:\/\//i.test(u.trim());
 }
+/** 使ってよいURLか。javascript: が本文のリンクに入ると、押した時点で
+ *  このオリジンで任意のJSが動き、Googleのトークンまで読めてしまう。 */
+function urlAllowedKn(u) {
+  return /^(https?:|mailto:|tel:)/i.test(String(u || "").trim());
+}
+/** 「example.com/abc」のようにスキームを省いても受け取れるようにする。 */
+function normalizeUrlKn(raw) {
+  let u = String(raw || "").trim();
+  if (!u) return "";
+  if (/^www\./i.test(u)) u = "https://" + u;
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(u) && /^[^\s/]+\.[^\s/]{2,}/.test(u)) u = "https://" + u;
+  return u;
+}
 const itemTime = o => (o && (o.updatedAt || o.createdAt)) || 0;
 // 同期できた項目に印を付ける。次回以降、Driveから消えていれば
 // 他端末での削除だと判断できる（時計に依存しない）
@@ -547,7 +560,7 @@ function looksLikeHtmlKn(s) {
   return KN_HTML_RE.test(s || "");
 }
 const KN_SAFE_STYLE = new Set(["color", "background-color", "font-size", "font-family", "font-weight", "font-style", "text-decoration", "text-decoration-line", "text-align"]);
-const KN_SAFE_ATTR = new Set(["alt", "target", "rel", "size", "face", "color", "data-kid"]);
+const KN_SAFE_ATTR = new Set(["alt", "target", "rel", "size", "face", "color", "data-kid", "colspan", "rowspan"]);
 const KN_DANGEROUS_RE = /<\s*\/?\s*(script|iframe|object|embed|svg|math|link|meta|base|form|input|textarea|button|select|option|noscript|frame|frameset|applet|audio|video|source|track|canvas|picture|style|title)\b|\son\w+\s*=|javascript:/i;
 // メモ本文のHTMLをサニタイズ（インポート/Drive取り込み/貼り付け由来のonerror等を除去）
 function sanitizeMemoHtml(s) {
@@ -1462,6 +1475,10 @@ function RichEditor({
   const fileRef = useRef(null);
   const savedRange = useRef(null);
   const madeUrls = useRef([]);
+  const [linkDlg, setLinkDlg] = useState({ open: false, text: "", url: "", editing: false });
+  const [tblDlg, setTblDlg] = useState(false);
+  const [note, setNote] = useState("");
+  const setToastKn = m => { setNote(m); setTimeout(() => setNote(n => n === m ? "" : n), 4000); };
   // contenteditable は全消ししても <br> が残るため :empty が偽になる。
   // プレースホルダが二度と戻らない問題を避けるため、自前で空判定する。
   const updateEmpty = () => {
@@ -1480,6 +1497,10 @@ function RichEditor({
     if (ref.current) ref.current.focus();
     try {
       const s = window.getSelection();
+      // いま本文の中を選べているなら、それをそのまま使う。控えを無条件に
+      // 戻すと、ダブルクリックでの選択など「控えを取っていない選び方」を
+      // したときに、古い位置へ飛ばされて書式が別のところに当たる。
+      if (s && s.rangeCount && ref.current && ref.current.contains(s.anchorNode)) return;
       if (savedRange.current) {
         s.removeAllRanges();
         s.addRange(savedRange.current);
@@ -1525,6 +1546,91 @@ function RichEditor({
     saveSel();
     emit();
   };
+  /** カーソル位置に差し込む。選択が本文の外にあるときは末尾へ置く。
+   *  位置を確かめずに差し込むと、直前に触っていた別の欄に入ってしまう。 */
+  const insertAt = html => {
+    restoreSel();
+    const el = ref.current;
+    if (!el) return false;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !el.contains(sel.anchorNode)) {
+      el.focus();
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      r.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+    try { document.execCommand("insertHTML", false, html); } catch (e) { return false; }
+    saveSel();
+    emit();
+    return true;
+  };
+  /** カーソルがリンクの中にいるならその要素を返す */
+  const anchorHere = () => {
+    const el = ref.current;
+    try {
+      const sel = window.getSelection();
+      if (!sel || !sel.rangeCount || !el) return null;
+      let n = sel.anchorNode;
+      if (n && n.nodeType === 3) n = n.parentNode;
+      while (n && n !== el) {
+        if (n.tagName === "A") return n;
+        n = n.parentNode;
+      }
+    } catch (e) {}
+    return null;
+  };
+  const openLink = () => {
+    saveSel();
+    const a = anchorHere();
+    let text = "", url = "";
+    if (a) { text = a.textContent || ""; url = a.getAttribute("href") || ""; }
+    else {
+      try {
+        const sel = window.getSelection();
+        if (sel && sel.rangeCount) text = String(sel.getRangeAt(0).toString() || "");
+      } catch (e) {}
+    }
+    setLinkDlg({ open: true, text, url, editing: !!a });
+  };
+  const applyLink = (text, rawUrl) => {
+    const url = normalizeUrlKn(rawUrl);
+    if (!url) { setToastKn("リンク先URLを入れてください"); return; }
+    if (!urlAllowedKn(url)) { setToastKn("http(s): / mailto: / tel: のみ使えます"); return; }
+    restoreSel();
+    const a = anchorHere();
+    if (a) {
+      a.setAttribute("href", url);
+      a.setAttribute("target", "_blank");
+      a.setAttribute("rel", "noopener noreferrer");
+      if (!a.querySelector("*")) a.textContent = text || url;
+      emit();
+      return;
+    }
+    const label = (text || url).replace(/[<>&]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]);
+    const href = url.replace(/"/g, "&quot;");
+    insertAt('<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + label + "</a>&nbsp;");
+  };
+  const dropLink = () => {
+    restoreSel();
+    const a = anchorHere();
+    if (!a) return;
+    const parent = a.parentNode;
+    while (a.firstChild) parent.insertBefore(a.firstChild, a);
+    parent.removeChild(a);
+    emit();
+  };
+  const insertTable = (rows, cols) => {
+    let h = '<table><tbody>';
+    for (let r = 0; r < rows; r++) {
+      h += "<tr>";
+      for (let c = 0; c < cols; c++) h += "<td>&nbsp;</td>";
+      h += "</tr>";
+    }
+    h += "</tbody></table><p><br></p>";
+    insertAt(h);
+  };
   const insertImages = async files => {
     restoreSel();
     for (const f of files) {
@@ -1562,6 +1668,24 @@ function RichEditor({
       e.preventDefault();
       e.stopPropagation();
       await insertImages(imgs);
+      return;
+    }
+    // URLをそのまま貼ったらリンクにする。文字を選んだ状態で貼れば、
+    // その文字がリンクの見出しになる（日記帳と同じ感覚）。
+    const plain = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
+    const html = e.clipboardData ? e.clipboardData.getData("text/html") : "";
+    if (!html && plain && !/\s/.test(plain.trim())) {
+      const u = normalizeUrlKn(plain);
+      if (/^https?:/i.test(u) && urlAllowedKn(u)) {
+        e.preventDefault();
+        e.stopPropagation();
+        let label = "";
+        try {
+          const sel = window.getSelection();
+          if (sel && sel.rangeCount) label = String(sel.getRangeAt(0).toString() || "");
+        } catch (err) {}
+        applyLink(label, u);
+      }
     }
   };
   const onDrop = async e => {
@@ -1654,12 +1778,41 @@ function RichEditor({
       textDecoration: "underline"
     },
     onClick: () => cmd("underline")
-  }, "U"), React.createElement("label", {
-    className: "rich-color"
-  }, "A", React.createElement("input", {
-    type: "color",
-    onChange: e => cmd("foreColor", e.target.value)
-  })), React.createElement("button", {
+  }, "U"),
+  // 文字色。以前は小さな「A」だけで何のボタンか分からなかったので、
+  // よく使う色をその場で押せるようにし、細かい色は右の見本から選ぶ形にした。
+  React.createElement("span", { className: "rich-colors" },
+    ["#2c2620", "#c0463c", "#3E6CA3", "#57845A", "#b8860b"].map(c =>
+      React.createElement("button", {
+        type: "button",
+        key: c,
+        className: "rich-sw",
+        style: { background: c },
+        title: "文字の色",
+        "aria-label": "文字の色",
+        onMouseDown: e => e.preventDefault(),
+        onClick: () => cmd("foreColor", c)
+      })),
+    React.createElement("label", {
+      className: "rich-color",
+      title: "好きな色を選ぶ"
+    }, "\u8272", React.createElement("input", {
+      type: "color",
+      onChange: e => cmd("foreColor", e.target.value)
+    }))),
+  React.createElement("button", {
+    type: "button",
+    className: "rich-b",
+    title: "\u30EA\u30F3\u30AF",
+    onMouseDown: e => e.preventDefault(),
+    onClick: openLink
+  }, "\uD83D\uDD17"), React.createElement("button", {
+    type: "button",
+    className: "rich-b",
+    title: "\u8868\u3092\u5165\u308C\u308B",
+    onMouseDown: e => e.preventDefault(),
+    onClick: () => { saveSel(); setTblDlg(true); }
+  }, "\u8868"), React.createElement("button", {
     type: "button",
     className: "rich-b",
     onClick: () => cmd("insertUnorderedList")
@@ -1699,7 +1852,81 @@ function RichEditor({
     onPaste: onPaste,
     onDrop: onDrop,
     "data-ph": "\u672C\u6587\uFF08\u898B\u51FA\u3057\u30FB\u30B5\u30A4\u30BA\u30FB\u8272\u30FB\u753B\u50CF\u306E\u8CBC\u308A\u4ED8\u3051\u3082OK\uFF09"
+  }),
+  note && React.createElement("div", { className: "rich-note" }, note),
+  linkDlg.open && React.createElement(LinkDialog, {
+    init: linkDlg,
+    onClose: () => setLinkDlg({ open: false, text: "", url: "", editing: false }),
+    onApply: (t, u) => { setLinkDlg({ open: false, text: "", url: "", editing: false }); applyLink(t, u); },
+    onRemove: () => { setLinkDlg({ open: false, text: "", url: "", editing: false }); dropLink(); }
+  }),
+  tblDlg && React.createElement(TableDialog, {
+    onClose: () => setTblDlg(false),
+    onApply: (r, c) => { setTblDlg(false); insertTable(r, c); }
   }));
+}
+
+/* ── リンクの入力（日記帳と同じ形）───────────────────────────
+   以前はURLだけを本文の外に並べていたので、長いURLがそのまま出ていた。
+   表示するテキストを別に持てば、本文の中にいくつでも置ける。 */
+function LinkDialog({ init, onClose, onApply, onRemove }) {
+  const [text, setText] = useState(init.text || "");
+  const [url, setUrl] = useState(init.url || "");
+  const urlRef = useRef(null);
+  useEffect(() => {
+    const t = setTimeout(() => { try { urlRef.current && urlRef.current.focus(); } catch (e) {} }, 40);
+    const esc = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", esc);
+    return () => { clearTimeout(t); window.removeEventListener("keydown", esc); };
+  }, []);
+  return React.createElement("div", {
+    className: "kn-dlg",
+    onMouseDown: e => { if (e.target.classList.contains("kn-dlg")) onClose(); }
+  }, React.createElement("div", { className: "kn-dlg-card" },
+    React.createElement("div", { className: "kn-dlg-h" }, init.editing ? "\uD83D\uDD17 \u30EA\u30F3\u30AF\u3092\u7DE8\u96C6" : "\uD83D\uDD17 \u30EA\u30F3\u30AF"),
+    React.createElement("label", { className: "kn-dlg-l" }, "\u8868\u793A\u3059\u308B\u30C6\u30AD\u30B9\u30C8"),
+    React.createElement("input", {
+      className: "kn-dlg-i", value: text, placeholder: "\u4F8B: \u30C0\u30FC\u30AF\u30BD\u30A6\u30EB\u653B\u7565Wiki",
+      onChange: e => setText(e.target.value)
+    }),
+    React.createElement("label", { className: "kn-dlg-l" }, "\u30EA\u30F3\u30AF\u5148URL"),
+    React.createElement("input", {
+      ref: urlRef, className: "kn-dlg-i", value: url, placeholder: "https://", inputMode: "url",
+      onChange: e => setUrl(e.target.value),
+      onKeyDown: e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); onApply(text, url); } }
+    }),
+    React.createElement("p", { className: "kn-dlg-n" }, "\u8868\u793A\u3059\u308B\u30C6\u30AD\u30B9\u30C8\u3092\u7A7A\u306B\u3059\u308B\u3068\u3001URL\u3092\u305D\u306E\u307E\u307E\u8868\u793A\u3057\u307E\u3059\u3002"),
+    React.createElement("div", { className: "kn-dlg-f" },
+      init.editing && React.createElement("button", {
+        type: "button", className: "kn-dlg-b ghost", style: { marginRight: "auto" }, onClick: onRemove
+      }, "\u30EA\u30F3\u30AF\u3092\u5916\u3059"),
+      React.createElement("button", { type: "button", className: "kn-dlg-b ghost", onClick: onClose }, "\u3084\u3081\u308B"),
+      React.createElement("button", { type: "button", className: "kn-dlg-b solid", onClick: () => onApply(text, url) }, "OK"))));
+}
+
+function TableDialog({ onClose, onApply }) {
+  const [r, setR] = useState(3);
+  const [c, setC] = useState(3);
+  useEffect(() => {
+    const esc = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", esc);
+    return () => window.removeEventListener("keydown", esc);
+  }, []);
+  return React.createElement("div", {
+    className: "kn-dlg",
+    onMouseDown: e => { if (e.target.classList.contains("kn-dlg")) onClose(); }
+  }, React.createElement("div", { className: "kn-dlg-card" },
+    React.createElement("div", { className: "kn-dlg-h" }, "\u8868\u3092\u5165\u308C\u308B"),
+    React.createElement("div", { className: "kn-dlg-row" },
+      React.createElement("label", null, "\u884C",
+        React.createElement("input", { className: "kn-dlg-i num", type: "number", min: 1, max: 20, value: r,
+          onChange: e => setR(Math.max(1, Math.min(20, +e.target.value || 1))) })),
+      React.createElement("label", null, "\u5217",
+        React.createElement("input", { className: "kn-dlg-i num", type: "number", min: 1, max: 10, value: c,
+          onChange: e => setC(Math.max(1, Math.min(10, +e.target.value || 1))) }))),
+    React.createElement("div", { className: "kn-dlg-f" },
+      React.createElement("button", { type: "button", className: "kn-dlg-b ghost", onClick: onClose }, "\u3084\u3081\u308B"),
+      React.createElement("button", { type: "button", className: "kn-dlg-b solid", onClick: () => onApply(r, c) }, "\u5165\u308C\u308B"))));
 }
 function LinksEditor({
   links,
@@ -1707,8 +1934,10 @@ function LinksEditor({
 }) {
   const [val, setVal] = useState("");
   const add = raw => {
-    const u = raw.trim();
-    if (u && !links.includes(u)) onChange([...links, u]);
+    const u = normalizeUrlKn(raw);
+    if (!u) { setVal(""); return; }
+    if (!urlAllowedKn(u)) { setVal(""); return; }
+    if (!links.includes(u)) onChange([...links, u]);
     setVal("");
   };
   return React.createElement("div", {
@@ -1726,16 +1955,25 @@ function LinksEditor({
     className: "link-input",
     type: "url",
     inputMode: "url",
-    placeholder: "https://\u2026 \u3092\u8FFD\u52A0\uFF08Enter\u3067\u78BA\u5B9A\uFF09",
+    placeholder: "https://\u2026 \u3092\u8FFD\u52A0",
     value: val,
     onChange: e => setVal(e.target.value),
+    // 打ちかけのまま保存しても捨てない（タグ欄と同じ理由）
+    onBlur: () => { if (val.trim()) add(val); },
     onKeyDown: e => {
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === "Enter") {
         e.preventDefault();
         add(val);
       }
     }
-  }));
+  }), React.createElement("button", {
+    type: "button",
+    className: "tag-add",
+    disabled: !val.trim(),
+    onMouseDown: e => e.preventDefault(),
+    onClick: () => add(val)
+  }, "\u8FFD\u52A0"));
 }
 const FileGlyphLink = () => React.createElement("svg", {
   viewBox: "0 0 24 24",
@@ -1755,10 +1993,28 @@ function TagEditor({
   suggestions
 }) {
   const [val, setVal] = useState("");
+  // 日本語入力の変換中かどうか。変換を確定するEnterと、タグを確定するEnterは
+  // 同じキーなので、これを見ないと「変換しただけ」で中途半端なタグが入ったり、
+  // 逆に何も入らなかったりする（実機で「タグが追加できない」原因）。
+  const composing = useRef(false);
+  const inputRef = useRef(null);
+  /** いま欄に入っている文字。日本語入力の変換中、Reactは onChange を
+   *  止めることがあり、state が空のままになる。DOMの値も見て取りこぼさない。 */
+  const currentVal = () => {
+    const dom = inputRef.current && inputRef.current.value;
+    return (dom && dom.trim()) ? dom : val;
+  };
+  /** 空白・読点・カンマ区切りでまとめて追加する。 */
   const add = raw => {
-    const tag = raw.trim().replace(/^#/, "");
-    if (tag && !tags.includes(tag)) onChange([...tags, tag]);
+    const parts = String(raw || "").split(/[\s,、]+/);
+    let next = tags;
+    parts.forEach(one => {
+      const tag = one.trim().replace(/^#/, "");
+      if (tag && !next.includes(tag)) next = [...next, tag];
+    });
+    if (next !== tags) onChange(next);
     setVal("");
+    if (inputRef.current) inputRef.current.value = "";
   };
   const free = (suggestions || []).filter(s => !tags.includes(s)).slice(0, 8);
   return React.createElement("div", {
@@ -1772,17 +2028,36 @@ function TagEditor({
     type: "button",
     onClick: () => onChange(tags.filter(x => x !== t))
   }, "\xD7"))), React.createElement("input", {
+    ref: inputRef,
     className: "tag-input",
     value: val,
     placeholder: "\u30BF\u30B0\u3092\u8FFD\u52A0",
     onChange: e => setVal(e.target.value),
+    onCompositionStart: () => { composing.current = true; },
+    onCompositionEnd: e => {
+      composing.current = false;
+      const v = e.target.value;      // 変換が確定した文字を state にも取り込む
+      if (v !== val) setVal(v);
+    },
+    // 打ちかけのまま「保存」を押しても捨てない。以前はEnterを押さないと
+    // 黙って消えていて、入力したのに入らない、と見えていた。
+    onBlur: () => { const v = currentVal(); if (v && v.trim()) add(v); },
     onKeyDown: e => {
+      // 変換確定のEnterはここで扱わない（IME側の操作なので通す）
+      if (composing.current || e.isComposing || e.keyCode === 229) return;
       if (e.key === "Enter" || e.key === ",") {
         e.preventDefault();
-        add(val);
+        add(currentVal());
       } else if (e.key === "Backspace" && !val && tags.length) onChange(tags.slice(0, -1));
     }
-  })), free.length > 0 && React.createElement("div", {
+  }), React.createElement("button", {
+    // Enterキーに頼らない入口。スマホのソフトキーボードでは Enter が
+    // 「改行」や「完了」になって届かないことがある。
+    type: "button",
+    className: "tag-add",
+    onMouseDown: e => e.preventDefault(),   // blur より先に押せるように
+    onClick: () => add(currentVal())
+  }, "\u8FFD\u52A0")), free.length > 0 && React.createElement("div", {
     className: "tag-suggest"
   }, free.map(s => React.createElement("button", {
     type: "button",
@@ -1886,6 +2161,77 @@ function MemoCard({
   const [attachments, setAttachments] = useState(memo.attachments || []);
   const [viewer, setViewer] = useState(null);
   const [gcalBusy, setGcalBusy] = useState(false);
+  // 全画面で見る／書く。カードの中は狭くて、本文も表も窮屈だった。
+  const [full, setFull] = useState(false);
+  const openFull = (edit) => {
+    if (edit) {
+      setT(memo.title); setB(memo.body); setCat(memo.category);
+      setTags(memo.tags || []); setLinks(memo.links || []); setFid(memo.notebookId);
+      setDate(memo.date); setTime(memo.time); setRemind(memo.remind ?? null);
+      setAttachments(memo.attachments || []);
+      setEditing(true);
+    }
+    setFull(true);
+  };
+  const closeFull = () => {
+    // 書きかけを黙って捨てない
+    if (editing) {
+      const changed = t !== memo.title || b !== memo.body || cat !== memo.category ||
+        JSON.stringify(tags) !== JSON.stringify(memo.tags || []) ||
+        JSON.stringify(links) !== JSON.stringify(memo.links || []);
+      if (changed && !window.confirm("書きかけの内容を破棄して閉じますか？")) return;
+    }
+    setEditing(false);
+    setFull(false);
+  };
+  // Escape と、スマホの「戻る」で閉じられるようにする。
+  // 戻るで閉じられないと、全画面のままアプリを出てしまう。
+  //
+  // ★依存は full だけにすること。本文やタグを依存に入れると、文字を打つたびに
+  //   このeffectが後始末→再実行され、後始末の history.back() が popstate を
+  //   呼んで全画面が勝手に閉じる。最新の closeFull は ref 経由で呼ぶ。
+  const closeRef = useRef(null);
+  closeRef.current = closeFull;
+  useEffect(() => {
+    if (!full) return;
+    const onKey = e => { if (e.key === "Escape") { e.preventDefault(); closeRef.current(); } };
+    let pushed = false;
+    try { window.history.pushState({ knFull: memo.id }, ""); pushed = true; } catch (e) {}
+    const onPop = () => { pushed = false; setEditing(false); setFull(false); };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("popstate", onPop);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("popstate", onPop);
+      document.body.style.overflow = prev;
+      // 自分が積んだ履歴だけを戻す（戻るで閉じたときは既に消えている）
+      if (pushed) { try { window.history.back(); } catch (e) {} }
+    };
+  }, [full]);
+  /** 全画面のときだけ、オーバーレイで包む */
+  const wrapFull = (inner, headTitle) => {
+    if (!full) return inner;
+    return React.createElement("div", {
+      className: "kn-full",
+      onMouseDown: e => { if (e.target.classList.contains("kn-full")) closeFull(); }
+    }, React.createElement("div", { className: "kn-full-card" },
+      React.createElement("div", { className: "kn-full-bar" },
+        React.createElement("span", { className: "kn-full-t" }, headTitle || ""),
+        !editing && React.createElement("button", {
+          type: "button", className: "kn-full-b", onClick: () => openFull(true)
+        }, "\u7DE8\u96C6"),
+        // 保存は本文の下だけでなく、常に見えるここにも置く。長い本文だと
+        // 下までスクロールしないと保存できず、書いたのに閉じてしまう。
+        editing && React.createElement("button", {
+          type: "button", className: "kn-full-b solid", onClick: commit
+        }, "\u4FDD\u5B58"),
+        React.createElement("button", {
+          type: "button", className: "kn-full-x", onClick: closeFull, "aria-label": "\u9589\u3058\u308B"
+        }, "\u00D7")),
+      React.createElement("div", { className: "kn-full-body" }, inner)));
+  };
   const calRegister = async () => {
     setGcalBusy(true);
     try {
@@ -1964,9 +2310,14 @@ function MemoCard({
     setRemind(memo.remind ?? null);
     setAttachments(memo.attachments || []);
     setEditing(true);
+    setFull(true);   // 編集はカードの中ではなく全画面で
   };
   const commit = () => {
-    if (!t.trim()) return;
+    if (!t.trim()) {
+      // 以前は何も起きず、ボタンが壊れているように見えた
+      onToast({ title: "タイトルを入れてください", body: "" });
+      return;
+    }
     onSave(memo.id, {
       title: t.trim(),
       body: sanitizeMemoHtml(b.trim()),
@@ -1980,11 +2331,12 @@ function MemoCard({
       attachments
     });
     setEditing(false);
+    setFull(false);
   };
   const folderOf = folders.find(f => f.id === memo.notebookId);
   if (editing) {
-    return React.createElement("div", _extends({
-      className: "card editing",
+    return wrapFull(React.createElement("div", _extends({
+      className: "card editing" + (full ? " in-full" : ""),
       style: {
         "--c": catColor(cat)
       }
@@ -2041,12 +2393,20 @@ function MemoCard({
     }, "\u30AD\u30E3\u30F3\u30BB\u30EB"), React.createElement("button", {
       className: "btn solid",
       onClick: commit
-    }, "\u4FDD\u5B58")));
+    }, "\u4FDD\u5B58"))), memo.title || "\u7DE8\u96C6");
   }
-  return React.createElement("div", {
-    className: "card" + (memo.done ? " done" : "") + (memo.pinned ? " pinned" : "") + (fresh ? " fresh" : ""),
+  return wrapFull(React.createElement("div", {
+    className: "card" + (memo.done ? " done" : "") + (memo.pinned ? " pinned" : "") + (fresh ? " fresh" : "") + (full ? " in-full" : ""),
     style: {
       "--c": catColor(memo.category)
+    },
+    // カードを押したら全画面で読む。ボタン・チェック・リンク・入力の上で
+    // 押したときは、その操作を邪魔しない。
+    onClick: e => {
+      if (full) return;
+      const t2 = e.target;
+      if (t2.closest && t2.closest("button,a,input,label,select,textarea,.check,.pin,[contenteditable]")) return;
+      openFull(false);
     }
   }, React.createElement("div", {
     className: "card-top"
@@ -2177,7 +2537,7 @@ function MemoCard({
   }, React.createElement("img", {
     src: viewer,
     alt: ""
-  })));
+  }))), memo.title || "");
 }
 function FolderRow({
   folder,
@@ -4806,6 +5166,58 @@ const CSS = `
 .rich-sel { border:1px solid var(--line); border-radius:7px; padding:5px 6px; font-size:12px; background:#fff; color:var(--ink); font-family:inherit; }
 .rich-b { width:30px; height:30px; border:1px solid var(--line); border-radius:7px; background:#fff; color:var(--ink); cursor:pointer; font-size:13px; display:grid; place-items:center; font-family:inherit; padding:0; }
 .rich-b:hover { border-color:var(--red); color:var(--red); }
+/* ── 全画面で見る・書く ─────────────────────────────
+   カードの中は狭く、本文も表もツールバーも窮屈だった。読むときも書くときも
+   画面いっぱいを使う。シェルのiframeの中でも収まるよう、位置は fixed で取る。 */
+.kn-full { position:fixed; inset:0; background:rgba(40,32,24,.5); z-index:110; display:flex; align-items:stretch; justify-content:center; padding:0; }
+.kn-full-card { background:var(--paper); width:100%; max-width:920px; display:flex; flex-direction:column; box-shadow:0 0 60px rgba(0,0,0,.35); }
+.kn-full-bar { flex:none; display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--line); background:var(--card); position:sticky; top:0; z-index:3; }
+.kn-full-t { flex:1; min-width:0; font-weight:800; font-size:15px; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.kn-full-b { border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:9px; padding:7px 14px; font:inherit; font-size:13px; font-weight:700; cursor:pointer; }
+.kn-full-b:hover { border-color:var(--accent); color:var(--accent); }
+.kn-full-b.solid { background:var(--accent); color:#fff; border-color:var(--accent); }
+.kn-full-b.solid:hover { color:#fff; opacity:.9; }
+.kn-full-x { border:none; background:none; font-size:24px; line-height:1; color:var(--muted); cursor:pointer; padding:2px 6px; }
+.kn-full-x:hover { color:var(--accent); }
+.kn-full-body { flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; padding:16px; background:var(--paper); }
+/* 全画面の中では、カードの飾り（枠・影・幅の制限）を外して素の紙面にする */
+.card.in-full { border:none; box-shadow:none; background:transparent; padding:0; margin:0; max-width:none; cursor:default; }
+.card.in-full .memo-rich, .card.in-full .rich-area { font-size:15.5px; line-height:1.9; }
+.card.in-full .rich-area { min-height:52vh; }
+.card.in-full .rich-tb { position:sticky; top:0; }
+.card.in-full .edit-title { font-size:19px; font-weight:800; }
+@media (min-width:900px){
+  /* 長すぎる行は読みにくいので、本文だけ幅を抑える（表と画像は目一杯使う） */
+  .card.in-full .memo-rich > p, .card.in-full .memo-rich > ul, .card.in-full .memo-rich > ol { max-width:34em; }
+}
+/* ── 文字色・リンク・表 ─────────────────────────────── */
+.rich-colors { display:inline-flex; align-items:center; gap:3px; padding:0 3px; }
+.rich-sw { width:20px; height:20px; border:1px solid rgba(0,0,0,.18); border-radius:50%; cursor:pointer; padding:0; }
+.rich-sw:hover { transform:scale(1.15); }
+.rich-note { font-size:12px; color:var(--accent); padding:6px 10px; border-top:1px solid var(--line); }
+.tag-add { border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:7px; font:inherit; font-size:12px; font-weight:700; padding:4px 10px; cursor:pointer; }
+.tag-add:disabled { opacity:.4; cursor:default; }
+.tag-add:not(:disabled):hover { border-color:var(--accent); color:var(--accent); }
+/* 本文の表。狭い画面でレイアウトを壊さないよう、はみ出す分は横スクロールさせる */
+.rich-area table, .memo-rich table { border-collapse:collapse; margin:10px 0; width:auto; max-width:100%; }
+.rich-area td, .rich-area th, .memo-rich td, .memo-rich th { border:1px solid var(--line); padding:6px 10px; font-size:13.5px; min-width:56px; vertical-align:top; }
+.rich-area th, .memo-rich th { background:rgba(0,0,0,.04); font-weight:700; }
+.rich-area, .memo-rich { overflow-x:auto; }
+.rich-area a, .memo-rich a { color:#3E6CA3; text-decoration:underline; text-underline-offset:2px; }
+/* エディタ内のダイアログ */
+.kn-dlg { position:fixed; inset:0; background:rgba(40,32,24,.45); display:flex; align-items:flex-start; justify-content:center; z-index:120; padding:18px; overflow-y:auto; }
+.kn-dlg-card { background:var(--paper); border:1px solid var(--line); border-radius:16px; max-width:420px; width:100%; padding:18px; box-shadow:0 20px 60px rgba(0,0,0,.3); margin:auto 0; }
+.kn-dlg-h { font-weight:800; font-size:16px; color:var(--ink); margin-bottom:14px; }
+.kn-dlg-l { display:block; font-size:12px; font-weight:700; color:var(--muted); margin:10px 0 5px; }
+.kn-dlg-i { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:9px; font:inherit; font-size:14px; background:#fff; color:var(--ink); }
+.kn-dlg-i.num { width:80px; }
+.kn-dlg-row { display:flex; gap:14px; align-items:center; }
+.kn-dlg-row label { font-size:13px; font-weight:700; color:var(--ink); display:flex; align-items:center; gap:6px; }
+.kn-dlg-n { font-size:12px; color:var(--muted); line-height:1.6; margin:10px 0 0; }
+.kn-dlg-f { display:flex; gap:8px; justify-content:flex-end; margin-top:16px; }
+.kn-dlg-b { border-radius:9px; padding:9px 15px; font:inherit; font-size:13.5px; font-weight:700; cursor:pointer; border:1px solid var(--line); }
+.kn-dlg-b.ghost { background:#fff; color:var(--ink); }
+.kn-dlg-b.solid { background:var(--accent); color:#fff; border-color:var(--accent); }
 .rich-color { width:30px; height:30px; border:1px solid var(--line); border-radius:7px; background:#fff; display:grid; place-items:center; cursor:pointer; position:relative; font-weight:800; color:var(--ink); }
 .rich-color input { position:absolute; inset:0; opacity:0; cursor:pointer; }
 .rich-area { min-height:240px; padding:12px; font-size:15px; line-height:1.85; color:var(--ink); outline:none; }
