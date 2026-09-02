@@ -1494,17 +1494,31 @@ function RichEditor({
     } catch (e) {}
   };
   const restoreSel = () => {
-    if (ref.current) ref.current.focus();
+    const el = ref.current;
+    if (!el) return;
+    // ★focus() より前に見ること。空の contenteditable に focus すると
+    //   カーソルが先頭へ置かれるので、focus 後に「いま本文の中にある」と
+    //   判定すると、必ず先頭が選ばれてしまう（貼るたびに前へ挿入される）。
+    let live = false;
+    try {
+      const sel0 = window.getSelection();
+      live = !!(sel0 && sel0.rangeCount && el.contains(sel0.anchorNode));
+    } catch (e) {}
+    el.focus();
+    if (live) return;   // 本文の中を選べているなら、それをそのまま使う
     try {
       const s = window.getSelection();
-      // いま本文の中を選べているなら、それをそのまま使う。控えを無条件に
-      // 戻すと、ダブルクリックでの選択など「控えを取っていない選び方」を
-      // したときに、古い位置へ飛ばされて書式が別のところに当たる。
-      if (s && s.rangeCount && ref.current && ref.current.contains(s.anchorNode)) return;
       if (savedRange.current) {
         s.removeAllRanges();
         s.addRange(savedRange.current);
+        return;
       }
+      // 控えも無いときは末尾へ。先頭に置くと、書いた内容の前に入ってしまう。
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      r.collapse(false);
+      s.removeAllRanges();
+      s.addRange(r);
     } catch (e) {}
   };
   useEffect(() => {
@@ -1594,12 +1608,16 @@ function RichEditor({
     }
     setLinkDlg({ open: true, text, url, editing: !!a });
   };
-  const applyLink = (text, rawUrl) => {
+  const applyLink = (text, rawUrl, editing) => {
     const url = normalizeUrlKn(rawUrl);
     if (!url) { setToastKn("リンク先URLを入れてください"); return; }
     if (!urlAllowedKn(url)) { setToastKn("http(s): / mailto: / tel: のみ使えます"); return; }
     restoreSel();
-    const a = anchorHere();
+    // 「いまカーソルがリンクの中にあるか」で判断すると、直前に貼ったリンクの
+    // 内側にカーソルが残っている状態で次を貼ったときに、前のリンクを
+    // 書き換えてしまう（2個目を貼ると1個目が消える）。ダイアログを
+    // 「編集として開いたか」で判断する。
+    const a = editing ? anchorHere() : null;
     if (a) {
       a.setAttribute("href", url);
       a.setAttribute("target", "_blank");
@@ -1610,7 +1628,26 @@ function RichEditor({
     }
     const label = (text || url).replace(/[<>&]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]);
     const href = url.replace(/"/g, "&quot;");
-    insertAt('<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + label + "</a>&nbsp;");
+    // 目印を付けて挿入し、そのあとカーソルをリンクの「外」へ出す。
+    // 中に残ったままだと、続けて文字を打つとリンクの一部になってしまうし、
+    // 次に貼るリンクの判定も狂う。
+    const mark = "knl" + Date.now().toString(36);
+    if (!insertAt('<a href="' + href + '" target="_blank" rel="noopener noreferrer" data-knmark="' + mark + '">' + label + "</a>&nbsp;")) return;
+    try {
+      const el = ref.current;
+      const ins = el && el.querySelector('a[data-knmark="' + mark + '"]');
+      if (ins) {
+        ins.removeAttribute("data-knmark");
+        const r = document.createRange();
+        r.setStartAfter(ins);
+        r.collapse(true);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(r);
+        savedRange.current = r.cloneRange();
+      }
+    } catch (e) {}
+    emit();
   };
   const dropLink = () => {
     restoreSel();
@@ -1684,7 +1721,7 @@ function RichEditor({
           const sel = window.getSelection();
           if (sel && sel.rangeCount) label = String(sel.getRangeAt(0).toString() || "");
         } catch (err) {}
-        applyLink(label, u);
+        applyLink(label, u, false);
       }
     }
   };
@@ -1857,7 +1894,11 @@ function RichEditor({
   linkDlg.open && React.createElement(LinkDialog, {
     init: linkDlg,
     onClose: () => setLinkDlg({ open: false, text: "", url: "", editing: false }),
-    onApply: (t, u) => { setLinkDlg({ open: false, text: "", url: "", editing: false }); applyLink(t, u); },
+    onApply: (t, u) => {
+      const wasEditing = linkDlg.editing;
+      setLinkDlg({ open: false, text: "", url: "", editing: false });
+      applyLink(t, u, wasEditing);
+    },
     onRemove: () => { setLinkDlg({ open: false, text: "", url: "", editing: false }); dropLink(); }
   }),
   tblDlg && React.createElement(TableDialog, {
