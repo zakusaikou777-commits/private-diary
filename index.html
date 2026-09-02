@@ -7,6 +7,7 @@
 <meta name="theme-color" content="#f4ecda" />
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="apple-touch-icon" href="icon-192.png" />
+<script src="version.js"></script>
 <script>if('serviceWorker' in navigator){ try{ navigator.serviceWorker.register('sw.js'); }catch(e){} }</script>
 <style>
 *{box-sizing:border-box}
@@ -65,6 +66,20 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 .knrow.ok{border-color:#bcd0bb}
 .knrow.err{border-color:#e0a99f;background:#fdf0ec}
 .knrow.err .st{color:#a3392f}
+.knver{display:flex;align-items:baseline;gap:10px;margin:2px 0 10px}
+.knver-n{font-size:24px;font-weight:800;color:#a3392f;font-family:"Shippori Mincho",serif;letter-spacing:.02em}
+.knver-d{font-size:12px;color:#7a6f5e}
+.knlog{margin:12px 0 0;max-height:46vh;overflow-y:auto;-webkit-overflow-scrolling:touch;border:1px solid #e2d6bd;border-radius:10px;background:#fdf8ec;padding:4px 12px}
+.knlog h5{margin:12px 0 5px;font-size:13px;color:#a3392f;font-family:"Shippori Mincho",serif;display:flex;align-items:baseline;gap:8px}
+.knlog h5 span{font-size:11px;color:#7a6f5e;font-weight:400;font-family:inherit}
+.knlog h5.now:after{content:"いま使っている版";font-size:10px;font-weight:700;color:#fff;background:#57845A;border-radius:9999px;padding:2px 8px}
+.knlog ul{padding-left:1.15em;margin:.2em 0 10px}
+.knlog li{font-size:12.5px;color:#3a3228;line-height:1.75;margin:3px 0}
+/* 更新のお知らせ（新しい版で最初に開いたとき一度だけ） */
+.knnew{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:60;display:flex;align-items:center;gap:12px;max-width:min(92vw,460px);background:#2c2620;color:#fdf1e6;border-radius:12px;padding:11px 14px;box-shadow:0 10px 34px rgba(0,0,0,.35);font-size:13px;line-height:1.6}
+.knnew b{color:#f0c987}
+.knnew button{flex:none;border:1px solid rgba(255,255,255,.35);background:transparent;color:#fdf1e6;border-radius:8px;padding:6px 11px;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+.knnew button.x{border:none;font-size:18px;padding:2px 4px;line-height:1}
 .iconbtn.knerr{color:#a3392f;position:relative}
 .iconbtn.knerr:after{content:"";position:absolute;top:1px;right:1px;width:8px;height:8px;border-radius:50%;background:#c0463c}
 </style>
@@ -130,8 +145,13 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 </div>
 <div id="knHelp" class="knmodal">
 <div class="knmodal-card knhelp-card knhelp">
-<div class="knmodal-h">❓ ヘルプ・設定ガイド<button id="knHelpX" class="knmodal-x" type="button">×</button></div>
-<p class="lead">日記帳・気になり帳・暗室・音（BGM）の4-in-1アプリです。データはこの端末（各アプリ内）に保存されます。GoogleドライブやGoogleカレンダーと連携するときは、最初に少しだけ設定が必要です。</p>
+<div class="knmodal-h">❓ ヘルプ・更新履歴<button id="knHelpX" class="knmodal-x" type="button">×</button></div>
+<p class="lead">日記帳・気になり帳・タスク・暗室・音・くつろぎの6-in-1アプリです。データはこの端末（各アプリ内）に保存されます。GoogleドライブやGoogleカレンダーと連携するときは、最初に少しだけ設定が必要です。</p>
+
+<div class="knsec">バージョン</div>
+<div class="knver"><span class="knver-n" id="knVerNum">—</span><span class="knver-d" id="knVerDate"></span></div>
+<div class="knmodal-row"><button id="knLogBtn" class="knbtn ghost" type="button">更新履歴を見る</button></div>
+<div id="knLog" class="knlog" hidden></div>
 
 <h4>暗室（イメージストリーミング）</h4>
 <p><b>🎞️ 暗室</b>タブは、情景を思い浮かべて五感の細部を声に出して描写する練習（ウェンガー式イメージストリーミング）のためのタイマーと記録です。情景のお題・3/5/10分タイマー・音声ガイド・Ten/Ten（10分×10日）の進捗が使えます。練習記録はこの端末に保存され、上部の <b>☁</b> から同期・バックアップできます。読み上げの声は、暗室の画面で選べます（端末に入っている声から選択でき、高さと速さも調整できます）。</p>
@@ -561,6 +581,20 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     r.onblocked=function(){ if(done)return; done=true; clearTimeout(t); rej(new Error('IDB_BLOCKED')); };
   }); }
   function knDiaryImgAll(db){ return new Promise(function(res){ try{ var tx=db.transaction('images','readonly'); var rq=tx.objectStore('images').getAll(); rq.onsuccess=function(){ res(rq.result||[]); }; rq.onerror=function(){ res([]); }; }catch(e){ res([]); } }); }
+  /* 音タブの「音源」の実体。案内文が「添付の画像・ファイルも含む」と言っている以上、
+     これを積まないと、取り込んだ先で鳴らせない亡霊カードだけが並ぶ。 */
+  function knOpenBgmDB(){ return new Promise(function(res,rej){
+    var done=false, t=setTimeout(function(){ if(!done){done=true; rej(new Error('IDB_TIMEOUT'));} },8000);
+    var r=indexedDB.open('BgmAudioDB',1);
+    r.onupgradeneeded=function(){ try{ var db=r.result; if(!db.objectStoreNames.contains('tracks')) db.createObjectStore('tracks',{keyPath:'id'}); }catch(e){} };
+    r.onsuccess=function(){ if(done)return; done=true; clearTimeout(t);
+      try{ r.result.onversionchange=function(){ try{ r.result.close(); }catch(e){} }; }catch(e){}
+      res(r.result); };
+    r.onerror=function(){ if(done)return; done=true; clearTimeout(t); rej(r.error); };
+    r.onblocked=function(){ if(done)return; done=true; clearTimeout(t); rej(new Error('IDB_BLOCKED')); };
+  }); }
+  function knBgmAll(db){ return new Promise(function(res){ try{ var tx=db.transaction('tracks','readonly'); var rq=tx.objectStore('tracks').getAll(); rq.onsuccess=function(){ res(rq.result||[]); }; rq.onerror=function(){ res([]); }; }catch(e){ res([]); } }); }
+  function knBgmPut(db,rec){ return new Promise(function(res){ try{ var tx=db.transaction('tracks','readwrite'); tx.objectStore('tracks').put(rec); tx.oncomplete=function(){res(true);}; tx.onerror=function(){res(false);}; }catch(e){ res(false);} }); }
   function knDiaryImgPut(db,rec){ return new Promise(function(res){ try{ var tx=db.transaction('images','readwrite'); tx.objectStore('images').put(rec); tx.oncomplete=function(){res(true);}; tx.onerror=function(){res(false);}; }catch(e){ res(false);} }); }
   function knIdbAll(db){ return new Promise(function(res){ try{ var tx=db.transaction('files','readonly'); var rq=tx.objectStore('files').getAll(); rq.onsuccess=function(){ res(rq.result||[]); }; rq.onerror=function(){ res([]); }; }catch(e){ res([]); } }); }
   function knIdbPut(db,rec){ return new Promise(function(res){ try{ var tx=db.transaction('files','readwrite'); tx.objectStore('files').put(rec); tx.oncomplete=function(){res(true);}; tx.onerror=function(){res(false);}; }catch(e){ res(false);} }); }
@@ -609,7 +643,16 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
         }catch(e){}
       }
     }catch(e){}
-    return { app:'nikki-kininari', v:2, exportedAt:new Date().toISOString(), diaryImages:diaryImages, diary:diary, diaryLastBackup:diaryLast, kininari:{ data:kdata, files:files }, anshitsu:anshitsu, anshitsuCleared:anshitsuCleared, bgm:bgm, gdCid:gdCid, autogenic:autogenic, autogenicCfg:autogenicCfg, autogenicCleared:autogenicCleared, tasks:tasks, kininariDel:kininariDel, autogenicScript:autogenicScript };
+    // 音源（手持ちのファイル）の実体
+    var bgmTracks=[];
+    try{
+      var bdb=await knOpenBgmDB(); var brecs=await knBgmAll(bdb);
+      for(var bi=0; bi<brecs.length; bi++){
+        var br=brecs[bi]; if(!br||!br.blob) continue;
+        try{ bgmTracks.push({id:br.id, name:br.name, type:br.type, dataUrl:await blobToDataURL(br.blob)}); }catch(e){}
+      }
+    }catch(e){}
+    return { app:'nikki-kininari', v:2, exportedAt:new Date().toISOString(), diaryImages:diaryImages, bgmTracks:bgmTracks, diary:diary, diaryLastBackup:diaryLast, kininari:{ data:kdata, files:files }, anshitsu:anshitsu, anshitsuCleared:anshitsuCleared, bgm:bgm, gdCid:gdCid, autogenic:autogenic, autogenicCfg:autogenicCfg, autogenicCleared:autogenicCleared, tasks:tasks, kininariDel:kininariDel, autogenicScript:autogenicScript };
   }
   async function knExport(){
     knMsg('準備中…');
@@ -662,6 +705,16 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
           }
         }catch(e){}
       }
+      if(Array.isArray(obj.bgmTracks) && obj.bgmTracks.length){
+        try{
+          var bdb2=await knOpenBgmDB();
+          for(var bk=0;bk<obj.bgmTracks.length;bk++){
+            var bt=obj.bgmTracks[bk]; if(!bt||!bt.id||!bt.dataUrl) continue;
+            try{ var bb=await (await fetch(bt.dataUrl)).blob();
+                 await knBgmPut(bdb2,{id:bt.id, blob:bb, type:bt.type||bb.type, name:bt.name||'音源', size:bb.size}); }catch(e){}
+          }
+        }catch(e){}
+      }
       if(obj.kininari){
         if(typeof obj.kininari.data==='string') localStorage.setItem('kininari:data:v2', obj.kininari.data);
         var files=(obj.kininari.files||[]);
@@ -691,7 +744,61 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
   document.getElementById('knBackupBtn').addEventListener('click', function(){ knModalOpen(true); });
   document.getElementById('knModalX').addEventListener('click', function(){ knModalOpen(false); });
   document.getElementById('knModal').addEventListener('click', function(e){ if(e.target.id==='knModal') knModalOpen(false); });
-  var hb=document.getElementById('knHelpBtn'); if(hb) hb.addEventListener('click', function(){ document.getElementById('knHelp').classList.add('open'); });
+  var hb=document.getElementById('knHelpBtn'); if(hb) hb.addEventListener('click', function(){ document.getElementById('knHelp').classList.add('open'); knPaintVer(); });
+
+  /* ── バージョンと更新履歴 ──────────────────────────────
+     更新したのに反映されていない、が何度もあったので、いま動いている版が
+     すぐ分かるようにする。版が変わったときは一度だけお知らせも出す。 */
+  var KN_VER_SEEN='shared:seenVersion';
+  function knApp(){ return (window.NK_APP && window.NK_APP.version) ? window.NK_APP : {version:'?',date:'',log:[]}; }
+  function knPaintVer(){
+    var a=knApp();
+    var n=document.getElementById('knVerNum'); if(n) n.textContent=a.version;
+    var d=document.getElementById('knVerDate'); if(d) d.textContent=a.date?('（'+a.date+' 更新）'):'';
+  }
+  function knRenderLog(){
+    var host=document.getElementById('knLog'); if(!host) return;
+    var a=knApp(), h='';
+    (a.log||[]).forEach(function(e){
+      if(!e||!e.v) return;
+      h+='<h5'+(e.v===a.version?' class="now"':'')+'>'+knEsc(e.v)+'<span>'+knEsc(e.date||'')+'</span></h5><ul>';
+      (e.items||[]).forEach(function(it){ h+='<li>'+knEsc(it)+'</li>'; });
+      h+='</ul>';
+    });
+    host.innerHTML=h||'<p style="font-size:12.5px;color:#7a6f5e">履歴がありません。</p>';
+  }
+  var lb=document.getElementById('knLogBtn');
+  if(lb) lb.addEventListener('click', function(){
+    var host=document.getElementById('knLog');
+    if(!host) return;
+    if(host.hidden){ knRenderLog(); host.hidden=false; lb.textContent='更新履歴を閉じる'; }
+    else { host.hidden=true; lb.textContent='更新履歴を見る'; }
+  });
+  function knOpenLog(){
+    document.getElementById('knHelp').classList.add('open');
+    knPaintVer(); knRenderLog();
+    var host=document.getElementById('knLog');
+    if(host){ host.hidden=false; var lb2=document.getElementById('knLogBtn'); if(lb2) lb2.textContent='更新履歴を閉じる';
+      try{ host.scrollIntoView({block:'nearest'}); }catch(e){} }
+  }
+  /* 新しい版で最初に開いたときだけ、一度お知らせする */
+  (function(){
+    var a=knApp(); if(a.version==='?') return;
+    var seen=null; try{ seen=localStorage.getItem(KN_VER_SEEN); }catch(e){}
+    if(seen===a.version) return;
+    var bar=document.createElement('div');
+    bar.className='knnew';
+    var msg=document.createElement('span');
+    msg.innerHTML = seen ? ('新しくなりました <b>'+knEsc(a.version)+'</b>') : ('バージョン <b>'+knEsc(a.version)+'</b> を使っています');
+    var see=document.createElement('button'); see.type='button'; see.textContent='変更点を見る';
+    var x=document.createElement('button'); x.type='button'; x.className='x'; x.textContent='×'; x.setAttribute('aria-label','閉じる');
+    function done(){ try{ localStorage.setItem(KN_VER_SEEN,a.version); }catch(e){} try{ bar.remove(); }catch(e){} }
+    see.addEventListener('click', function(){ done(); knOpenLog(); });
+    x.addEventListener('click', done);
+    bar.appendChild(msg); bar.appendChild(see); bar.appendChild(x);
+    document.body.appendChild(bar);
+    setTimeout(function(){ if(bar.isConnected) done(); }, 15000);
+  })();
   var hx=document.getElementById('knHelpX'); if(hx) hx.addEventListener('click', function(){ document.getElementById('knHelp').classList.remove('open'); });
   var hl=document.getElementById('knHelp'); if(hl) hl.addEventListener('click', function(e){ if(e.target.id==='knHelp') hl.classList.remove('open'); });
   document.getElementById('knSyncAll').addEventListener('click', function(){

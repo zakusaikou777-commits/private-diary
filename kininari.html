@@ -366,7 +366,10 @@ function tombstonesMerge(remote) {
 // localStorage の Google トークンやAPIキーまで読めてしまう。
 function safeLink(u) {
   if (typeof u !== "string") return false;
-  return /^https?:\/\//i.test(u.trim());
+  // 保存できる（urlAllowedKn）ものは、表示もできるようにする。
+  // http(s) だけに絞っていたため、mailto: や tel: を登録すると保存はされるのに
+  // カードに一切出ず、消えたように見えていた。
+  return /^(https?:\/\/|mailto:|tel:)/i.test(u.trim());
 }
 /** 使ってよいURLか。javascript: が本文のリンクに入ると、押した時点で
  *  このオリジンで任意のJSが動き、Googleのトークンまで読めてしまう。 */
@@ -573,6 +576,9 @@ function sanitizeMemoHtml(s) {
     const tpl = document.createElement("template");
     tpl.innerHTML = String(s);
     const root = tpl.content;
+    // <template> の中身は querySelectorAll("*") に出てこない。いまは不活性でも、
+    // サニタイズ済みのはずの本文に生きたペイロードを残さないよう、丸ごと落とす。
+    root.querySelectorAll("template").forEach(el => el.remove());
     root.querySelectorAll("script,style,iframe,object,embed,link,meta,base,form,input,textarea,button,select,option,svg,math,noscript,title,frame,frameset,applet,audio,video,source,track,canvas,picture").forEach(el => el.remove());
     root.querySelectorAll("*").forEach(el => {
       Array.from(el.attributes).forEach(attr => {
@@ -1244,6 +1250,18 @@ function AttachmentList({
     "aria-label": "\u524A\u9664"
   }, "\xD7"))));
 }
+/** 添付に失敗したことを画面に出す。黙って「増えないだけ」だと原因が分からない。
+ *  React の外からでも使えるよう、素の要素で短く出す。 */
+function knAttachFailed(n) {
+  try {
+    const el = document.createElement("div");
+    el.className = "kn-attach-err";
+    el.textContent = "添付を" + n + "件保存できませんでした。端末の空き容量を確認してください（プライベートモードでは保存できないことがあります）。";
+    document.body.appendChild(el);
+    setTimeout(() => { try { el.remove(); } catch (e) {} }, 8000);
+    el.addEventListener("click", () => { try { el.remove(); } catch (e) {} });
+  } catch (e) {}
+}
 async function ingestFiles(fileList) {
   const out = [];
   for (const file of Array.from(fileList || [])) {
@@ -1286,6 +1304,7 @@ function dropPasteHandlers(append) {
       if (picked.length) {
         const added = await ingestFiles(picked);
         if (added.length) append(added);
+        if (added.failed) knAttachFailed(added.failed);
       }
     },
     onDragOver: e => {
@@ -1297,6 +1316,7 @@ function dropPasteHandlers(append) {
       if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
         e.preventDefault();
         const added = await ingestFiles(e.dataTransfer.files);
+    if (added.failed) knAttachFailed(added.failed);
         if (added.length) append(added);
       }
     }
@@ -1316,6 +1336,7 @@ function AttachmentEditor({
     const added = await ingestFiles(files);
     setBusy(false);
     if (added.length) onChange([...(attachments || []), ...added]);
+    if (added.failed) knAttachFailed(added.failed);
   };
   const remove = id => onChange((attachments || []).filter(a => a.id !== id));
   return React.createElement("div", {
@@ -1916,9 +1937,16 @@ function LinkDialog({ init, onClose, onApply, onRemove }) {
   const urlRef = useRef(null);
   useEffect(() => {
     const t = setTimeout(() => { try { urlRef.current && urlRef.current.focus(); } catch (e) {} }, 40);
-    const esc = e => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", esc);
-    return () => { clearTimeout(t); window.removeEventListener("keydown", esc); };
+    // ダイアログのEscapeは、ここで止める。止めないと全画面の編集にも届いて、
+    // 「リンクを入れるのをやめただけ」で書きかけごと閉じてしまう。
+    const esc = e => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", esc, true);
+    return () => { clearTimeout(t); window.removeEventListener("keydown", esc, true); };
   }, []);
   return React.createElement("div", {
     className: "kn-dlg",
@@ -1949,9 +1977,14 @@ function TableDialog({ onClose, onApply }) {
   const [r, setR] = useState(3);
   const [c, setC] = useState(3);
   useEffect(() => {
-    const esc = e => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", esc);
-    return () => window.removeEventListener("keydown", esc);
+    const esc = e => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", esc, true);
+    return () => window.removeEventListener("keydown", esc, true);
   }, []);
   return React.createElement("div", {
     className: "kn-dlg",
@@ -1974,12 +2007,19 @@ function LinksEditor({
   onChange
 }) {
   const [val, setVal] = useState("");
+  const [err, setErr] = useState("");
   const add = raw => {
     const u = normalizeUrlKn(raw);
-    if (!u) { setVal(""); return; }
-    if (!urlAllowedKn(u)) { setVal(""); return; }
+    if (!u) { setVal(""); setErr(""); return; }
+    if (!urlAllowedKn(u)) {
+      // 黙って消すと「入力したのに入らない」に見える
+      setErr("http(s):// で始まるURL（または mailto: / tel:）を入れてください");
+      setTimeout(() => setErr(""), 5000);
+      return;
+    }
     if (!links.includes(u)) onChange([...links, u]);
     setVal("");
+    setErr("");
   };
   return React.createElement("div", {
     className: "links-editor"
@@ -2014,7 +2054,7 @@ function LinksEditor({
     disabled: !val.trim(),
     onMouseDown: e => e.preventDefault(),
     onClick: () => add(val)
-  }, "\u8FFD\u52A0"));
+  }, "\u8FFD\u52A0"), err && React.createElement("div", { className: "rich-note" }, err));
 }
 const FileGlyphLink = () => React.createElement("svg", {
   viewBox: "0 0 24 24",
@@ -2067,6 +2107,8 @@ function TagEditor({
     key: t
   }, "#", t, React.createElement("button", {
     type: "button",
+    // 先に blur が走ると、捨てたかった打ちかけの文字までタグになってしまう
+    onMouseDown: e => e.preventDefault(),
     onClick: () => onChange(tags.filter(x => x !== t))
   }, "\xD7"))), React.createElement("input", {
     ref: inputRef,
@@ -2104,7 +2146,8 @@ function TagEditor({
     type: "button",
     key: s,
     className: "tag-chip ghost",
-    onClick: () => add(s)
+    onMouseDown: e => e.preventDefault(),   // 打ちかけの文字を巻き込まない
+    onClick: () => { setVal(""); if (inputRef.current) inputRef.current.value = ""; add(s); }
   }, "#", s))));
 }
 function DateFields({
@@ -2214,13 +2257,21 @@ function MemoCard({
     }
     setFull(true);
   };
+  /** 何か変わっているか。本文とタイトルだけを見ていたため、フォルダ・日付・
+   *  時刻・通知・添付だけを直して閉じると、確認もなく捨てられていた。 */
+  const isDirty = () =>
+    t !== memo.title || b !== memo.body || cat !== memo.category ||
+    (fid ?? null) !== (memo.notebookId ?? null) ||
+    (date ?? null) !== (memo.date ?? null) ||
+    (time ?? null) !== (memo.time ?? null) ||
+    (remind ?? null) !== (memo.remind ?? null) ||
+    JSON.stringify(tags) !== JSON.stringify(memo.tags || []) ||
+    JSON.stringify(links) !== JSON.stringify(memo.links || []) ||
+    JSON.stringify(attachments) !== JSON.stringify(memo.attachments || []);
   const closeFull = () => {
     // 書きかけを黙って捨てない
-    if (editing) {
-      const changed = t !== memo.title || b !== memo.body || cat !== memo.category ||
-        JSON.stringify(tags) !== JSON.stringify(memo.tags || []) ||
-        JSON.stringify(links) !== JSON.stringify(memo.links || []);
-      if (changed && !window.confirm("書きかけの内容を破棄して閉じますか？")) return;
+    if (editing && isDirty()) {
+      if (!window.confirm("書きかけの内容を破棄して閉じますか？")) return;
     }
     setEditing(false);
     setFull(false);
@@ -2233,12 +2284,26 @@ function MemoCard({
   //   呼んで全画面が勝手に閉じる。最新の closeFull は ref 経由で呼ぶ。
   const closeRef = useRef(null);
   closeRef.current = closeFull;
+  const dirtyRef = useRef(null);
+  dirtyRef.current = () => editing && isDirty();
   useEffect(() => {
     if (!full) return;
     const onKey = e => { if (e.key === "Escape") { e.preventDefault(); closeRef.current(); } };
     let pushed = false;
     try { window.history.pushState({ knFull: memo.id }, ""); pushed = true; } catch (e) {}
-    const onPop = () => { pushed = false; setEditing(false); setFull(false); };
+    const onPop = () => {
+      pushed = false;
+      // 「戻る」も×と同じ扱いにする。ここだけ確認なしで捨てていた。
+      if (dirtyRef.current && dirtyRef.current()) {
+        if (!window.confirm("書きかけの内容を破棄して閉じますか？")) {
+          // 破棄しないなら、履歴を積み直して全画面のままにする
+          try { window.history.pushState({ knFull: memo.id }, ""); pushed = true; } catch (e) {}
+          return;
+        }
+      }
+      setEditing(false);
+      setFull(false);
+    };
     window.addEventListener("keydown", onKey);
     window.addEventListener("popstate", onPop);
     const prev = document.body.style.overflow;
@@ -2430,7 +2495,7 @@ function MemoCard({
       className: "edit-actions"
     }, React.createElement("button", {
       className: "btn ghost",
-      onClick: () => setEditing(false)
+      onClick: () => { setEditing(false); setFull(false); }
     }, "\u30AD\u30E3\u30F3\u30BB\u30EB"), React.createElement("button", {
       className: "btn solid",
       onClick: commit
@@ -2446,7 +2511,13 @@ function MemoCard({
     onClick: e => {
       if (full) return;
       const t2 = e.target;
-      if (t2.closest && t2.closest("button,a,input,label,select,textarea,.check,.pin,[contenteditable]")) return;
+      if (t2.closest && t2.closest("button,a,input,label,select,textarea,img,.check,.pin,.lightbox,[contenteditable]")) return;
+      // 文字をなぞってコピーしようとしただけで開いてしまわないように。
+      // ドラッグで選んだ直後は click も飛んでくるので、選択が残っていたら開かない。
+      try {
+        const sel = window.getSelection();
+        if (sel && !sel.isCollapsed && String(sel.toString() || "").length > 1) return;
+      } catch (err) {}
       openFull(false);
     }
   }, React.createElement("div", {
@@ -2574,7 +2645,7 @@ function MemoCard({
     onClick: () => onDelete(memo.id)
   }, "\u524A\u9664")), viewer && React.createElement("div", {
     className: "lightbox",
-    onClick: () => setViewer(null)
+    onClick: e => { e.stopPropagation(); setViewer(null); }
   }, React.createElement("img", {
     src: viewer,
     alt: ""
@@ -5236,6 +5307,7 @@ const CSS = `
 .rich-sw { width:20px; height:20px; border:1px solid rgba(0,0,0,.18); border-radius:50%; cursor:pointer; padding:0; }
 .rich-sw:hover { transform:scale(1.15); }
 .rich-note { font-size:12px; color:var(--accent); padding:6px 10px; border-top:1px solid var(--line); }
+.kn-attach-err { position:fixed; left:50%; bottom:18px; transform:translateX(-50%); z-index:200; max-width:min(92vw,460px); background:var(--accent); color:#fff; font-size:13px; line-height:1.6; padding:11px 15px; border-radius:11px; box-shadow:0 8px 28px rgba(0,0,0,.3); cursor:pointer; }
 .tag-add { border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:7px; font:inherit; font-size:12px; font-weight:700; padding:4px 10px; cursor:pointer; }
 .tag-add:disabled { opacity:.4; cursor:default; }
 .tag-add:not(:disabled):hover { border-color:var(--accent); color:var(--accent); }

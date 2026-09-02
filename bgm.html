@@ -436,12 +436,13 @@ normalize();
 var saveFailed=false;
 function save(){
   var body=null;
-  try{body=JSON.stringify({items:S.items,hist:S.hist.slice(0,300),genres:S.genres,delItems:S.delItems,delGenres:S.delGenres,tracks:S.tracks,delTracks:S.delTracks,vol:S.vol,scVol:S.scVol,auVol:S.auVol,shuffle:S.shuffle,night:S.night,mode:S.mode,filter:S.filter,gfilter:S.gfilter,lastCats:S.lastCats});}catch(e){return;}
+  try{body=JSON.stringify({items:S.items,hist:S.hist.slice(0,300),genres:S.genres,delItems:S.delItems,delGenres:S.delGenres,tracks:S.tracks,delTracks:S.delTracks,vol:S.vol,scVol:S.scVol,auVol:S.auVol,shuffle:S.shuffle,night:S.night,mode:S.mode,filter:S.filter,gfilter:S.gfilter,lastCats:S.lastCats});}catch(e){return false;}
   var okNow=store.set(KEY,body);
   /* 保存できなかったことを黙っていると、翌日に開いて全部消えてから気づくことになる。
      データが失われる話なので、必ず目に見える形で伝える。 */
   if(!okNow){ if(!saveFailed){ saveFailed=true; showStoreWarn(); } }
   else if(saveFailed){ saveFailed=false; hideStoreWarn(); }   // 空きができたら黙って直す
+  return okNow;
 }
 function showStoreWarn(){
   var el=$("storeWarn"); if(!el) return;
@@ -940,6 +941,10 @@ var SND=(function(){
   var emb=(function(){try{return window.top!==window.self;}catch(e){return true;}})();
   var st={id:null,playing:false,volOk:true};
   var localVolOk=null;
+  // 単体で開いたときの blob: URL。作りっぱなしにするとファイルが
+  // まるごとメモリに固定され続けるので、切り替えるたびに解放する。
+  var localUrl=null;
+  function freeLocalUrl(){ if(localUrl){ try{ URL.revokeObjectURL(localUrl); }catch(e){} localUrl=null; } }
   function post(m){ try{ parent.postMessage({nkSound:m},"*"); }catch(e){} }
   function localVolSupported(){
     if(localVolOk!==null) return localVolOk;
@@ -973,11 +978,15 @@ var SND=(function(){
     },
     play:function(sd,vol){
       if(emb){ post({cmd:"play",id:sd.id,file:sd.f,name:sd.n,vol:vol}); return; }
+      // 音源を鳴らしたあとは loop=false のままなので、ここで必ず戻す。
+      // 戻さないと就寝用の音が20秒で終わり、ended から次の曲が鳴り出す。
+      freeLocalUrl();
+      try{ scA.loop=true; }catch(e){}
       if(!scA.src||scA.getAttribute("data-id")!==sd.id){ scA.src=sd.f; scA.setAttribute("data-id",sd.id); }
       if(localVolSupported()){ try{ scA.volume=Math.max(0,Math.min(1,vol)); }catch(e){} }
       scA.play().then(function(){ mediaMeta(sd.n); }).catch(function(){ toast("再生できませんでした。もう一度タップしてください。",4000); renderSc(); });
     },
-    stop:function(){ if(emb){ post({cmd:"stop"}); return; } try{ scA.pause(); scA.loop=true; }catch(e){} },
+    stop:function(){ if(emb){ post({cmd:"stop"}); return; } try{ scA.pause(); scA.loop=true; }catch(e){} freeLocalUrl(); },
     /** 音源（手持ちのファイル／ストリーム）を鳴らす。
      *  シェルの中では最上位に頼む。最上位で鳴らさないと、タブを切り替えたり
      *  画面を消したときに止まってしまう。 */
@@ -993,10 +1002,12 @@ var SND=(function(){
           renderAu();
         });
       };
-      if(t.kind==="stream"){ go(t.url,false); return; }
+      if(t.kind==="stream"){ freeLocalUrl(); go(t.url,false); return; }
       auGet(t.id).then(function(rec){
         if(!rec||!rec.blob){ toast("音源の実体が見つかりませんでした。登録し直してください。",6000); return; }
-        go(URL.createObjectURL(rec.blob),true);
+        freeLocalUrl();
+        localUrl = URL.createObjectURL(rec.blob);
+        go(localUrl,true);
       }).catch(function(){ toast("音源を読み出せませんでした。",5000); });
     }
   };
@@ -1008,15 +1019,23 @@ var volCtl=null;
   $("scList").innerHTML=h;
 })();
 function scVolSupported(){ return SND.volOk(); }
+/* 就寝音と音源はシェルの同じ<audio>を使う。どちらを鳴らしているかを覚えて
+   おかないと、フェードや音量スライダが相手の設定を当ててしまう
+   （寝入りばなに音量が跳ね上がる、など）。 */
+var sndKind = null;   // "sc" | "au" | null
+function curBaseVol(){ return (sndKind==="au" ? S.auVol : S.scVol)/100; }
 function applyScVol(){
   $("scVol").value=S.scVol;$("scVolN").textContent=S.scVol;
-  SND.setVol(S.scVol/100);
+  // 音源を鳴らしている最中に就寝音のスライダを動かしても、音は変えない
+  if(sndKind!=="au") SND.setVol(S.scVol/100);
   $("scVolNote").textContent=scVolSupported()?"":"※ この端末（iPhone/iPad）では、音量は本体のボタンで調整してください。";
 }
 function playSound(id){
   var s=null; SOUNDS.forEach(function(x){if(x.id===id)s=x;}); if(!s) return;
-  if(SND.current()===id&&SND.playing()){ SND.stop(); scId=null; scStopLocal(); renderSc(); return; }
+  if(SND.current()===id&&SND.playing()){ SND.stop(); scId=null; sndKind=null; scStopLocal(); renderSc(); if(typeof renderAu==="function") renderAu(); return; }
   scId=id;
+  auId_cur=null;      // 就寝音に切り替えたので、音源の選択は外す
+  sndKind="sc";
   SND.play(s, S.scVol/100);
   S.hist.unshift({at:Date.now(),id:"sc:"+id,title:s.n});S.hist=S.hist.slice(0,300);
   save(); touch(false);
@@ -1116,7 +1135,11 @@ function auRemember(t){ t.updatedAt=Date.now(); save(); }
 /** ファイルを取り込む。音声は作り直すと品質が落ちるうえブラウザに変換器が
  *  無いので、そのまま保存する（画像と違って縮小はしない）。 */
 function auAddFiles(files){
-  var list=Array.prototype.slice.call(files||[]).filter(function(f){ return f && /^audio\//i.test(f.type||""); });
+  // 端末によっては .m4a / .opus などで type が空になる。拡張子でも受ける。
+  var AUDIO_EXT=/\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|weba|webm|mp4)$/i;
+  var list=Array.prototype.slice.call(files||[]).filter(function(f){
+    return f && (/^audio\//i.test(f.type||"") || AUDIO_EXT.test(f.name||""));
+  });
   if(!list.length){ toast("音声ファイルではありません。",4000); return; }
   auDb.then(function(){
     var added=0, failed=0, chain=Promise.resolve();
@@ -1127,6 +1150,13 @@ function auAddFiles(files){
           .then(function(){
             S.tracks.unshift({id:id, kind:"file", name:(f.name||"音源").replace(/\.[^.]+$/,""), url:"",
                               type:f.type||"", size:f.size|0, addedAt:Date.now(), updatedAt:Date.now()});
+            if(!save()){
+              // 一覧を保存できないのに実体だけ残すと、画面から消せない
+              // 数MBのゴミになる。登録ごと取り消す。
+              S.tracks=S.tracks.filter(function(x){ return x.id!==id; });
+              auDel(id).catch(function(){});
+              failed++; return;
+            }
             added++;
           })
           .catch(function(e){ console.warn("[bgm] 音源を保存できません",e); failed++; });
@@ -1152,7 +1182,8 @@ function auAddStream(url,name){
 function auRemove(id){
   var t=auById(id); if(!t) return;
   if(!confirm("「"+t.name+"」を削除しますか？")) return;
-  if(auId_cur===id){ SND.stop(); auId_cur=null; }
+  if(auId_cur===id && sndKind==="au"){ SND.stop(); auId_cur=null; sndKind=null; }
+  else if(auId_cur===id){ auId_cur=null; }
   S.tracks=S.tracks.filter(function(x){ return x.id!==id; });
   S.delTracks.push({id:id, at:Date.now()});
   if(t.kind==="file") auDel(id).catch(function(){});
@@ -1160,14 +1191,21 @@ function auRemove(id){
 }
 function auPlay(id){
   var t=auById(id); if(!t) return;
-  if(auId_cur===id && SND.playing()){ SND.stop(); auId_cur=null; renderAu(); return; }
+  // 「いま鳴っているのがこの音源か」で止める。SND.playing() だけを見ると、
+  // 就寝音が鳴っているときにも真になり、押しても就寝音が止まるだけになる。
+  if(auId_cur===id && sndKind==="au" && SND.playing()){ SND.stop(); auId_cur=null; sndKind=null; renderAu(); return; }
   auId_cur=id;
+  scId=null;          // 音源に切り替えたので就寝音の選択は外す
+  sndKind="au";
   SND.playTrack(t, S.auVol/100);
-  renderAu();
+  renderAu(); renderSc();
 }
 /** 曲が終わったら次へ。ラジオは終わらないので、ここに来るのはファイルだけ。 */
 function auNext(){
-  if(!auId_cur) return;
+  if(!auId_cur || sndKind!=="au") return;
+  var cur0=auById(auId_cur);
+  // ストリームは終わらない前提。終端が来ても勝手に別の曲へ飛ばさない。
+  if(cur0 && cur0.kind!=="file"){ auId_cur=null; sndKind=null; renderAu(); return; }
   var i=-1; for(var k=0;k<S.tracks.length;k++) if(S.tracks[k].id===auId_cur) i=k;
   if(i<0) return;
   var files=S.tracks.filter(function(t){ return t.kind==="file"; });
@@ -1220,7 +1258,7 @@ $("auSave").addEventListener("click",function(){
 $("auUrl").addEventListener("keypress",function(e){ if(e.key==="Enter"){ e.preventDefault(); $("auSave").click(); } });
 $("auVol").addEventListener("input",function(){
   S.auVol=+this.value; $("auVolN").textContent=S.auVol; save();
-  if(auId_cur) SND.setVol(S.auVol/100);
+  if(auId_cur && sndKind==="au") SND.setVol(S.auVol/100);
 });
 function applyAuVol(){
   $("auVol").value=S.auVol; $("auVolN").textContent=S.auVol;
@@ -1316,7 +1354,7 @@ function tickTimer(){
 }
 function beginFade(){
   var SECS=20,t=0;
-  var v0=S.vol, sv0=S.scVol/100, canSc=scVolSupported();
+  var v0=S.vol, sv0=curBaseVol(), canSc=scVolSupported();
   $("tleft").textContent="停止中…";
   fadeTick=setInterval(function(){
     t+=0.5;
@@ -1327,7 +1365,8 @@ function beginFade(){
       clearInterval(fadeTick);fadeTick=null;
       try{if(yt&&yt.pauseVideo)yt.pauseVideo();}catch(e){}
       SND.stop();
-      scId=null;renderSc();
+      scId=null;auId_cur=null;sndKind=null;renderSc();
+      if(typeof renderAu==="function") renderAu();
       applyVol();applyScVol();
       wakeWanted=false;wakeRelease();paintWake();updateDrift();
       setTimer(0);
@@ -1379,11 +1418,24 @@ function syncSetLocal(d){
   S.items=d.items||[]; S.genres=d.genres||[];
   S.delItems=d.delItems||[]; S.delGenres=d.delGenres||[];
   if(d.tracks){
-    // 端末内のファイルは同期対象外なので、こちらの分を必ず残す
+    // 端末内のファイルは同期対象外なので、こちらの分を必ず残す。
+    // 並び順は元のまま（先頭へ寄せると同期のたびに一覧が入れ替わる）。
+    // 他端末のファイル登録は実体が無く鳴らせないので受け取らない。
     var mine=(S.tracks||[]).filter(function(t){ return t.kind==="file"; });
-    S.tracks=mine.concat(d.tracks);
+    var got=(d.tracks||[]).filter(function(t){ return t && t.kind==="stream"; });
+    var byId={}; got.forEach(function(t){ byId[t.id]=t; });
+    var out=[];
+    (S.tracks||[]).forEach(function(t){
+      if(t.kind==="file"){ out.push(t); return; }
+      if(byId[t.id]){ out.push(byId[t.id]); delete byId[t.id]; }
+    });
+    got.forEach(function(t){ if(byId[t.id]) out.push(t); });
+    S.tracks=out;
+    if(!out.length && mine.length) S.tracks=mine;
   }
   if(d.delTracks) S.delTracks=d.delTracks;
+  // 他端末で登録したラジオが、モードを切り替えるまで出てこなかった
+  if(typeof renderAu==="function") setTimeout(renderAu,0);
   normalize(); save();
   if(curId&&!byId(curId))curId=null;
   if(editId&&!byId(editId))editId=null;
