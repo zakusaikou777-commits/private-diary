@@ -2196,6 +2196,24 @@ function ReminderField({
   }, label))));
 }
 // 本文HTMLの描画。<img data-kid> を IndexedDB から復元して表示する
+/** 一覧に出す抜粋。書式は落として素の文章にする（カードの高さを揃えるため）。 */
+function memoExcerpt(body) {
+  const t = htmlToText(body || "").replace(/\s*\n\s*/g, " ").trim();
+  return t.length > 220 ? t.slice(0, 220) + "…" : t;
+}
+/** 中に何が入っているかの目印。抜粋だけだと、画像や表があることが分からない。 */
+function memoMarks(memo) {
+  const b = String(memo.body || "");
+  const marks = [];
+  const imgs = (b.match(/<img\b/gi) || []).length + ((memo.attachments || []).length);
+  if (imgs) marks.push("\uD83D\uDDBC\uFE0F " + imgs);
+  if (/<table\b/i.test(b)) marks.push("\u8868");
+  const inLinks = (b.match(/<a\b[^>]*href=/gi) || []).length + ((memo.links || []).length);
+  if (inLinks) marks.push("\uD83D\uDD17 " + inLinks);
+  if (!marks.length) return null;
+  return React.createElement("div", { className: "memo-marks" },
+    marks.map((m, i) => React.createElement("span", { key: i, className: "memo-mark" }, m)));
+}
 function RichBody({ html }) {
   const ref = useRef(null);
   const made = useRef([]);
@@ -2555,12 +2573,17 @@ function MemoCard({
     onClick: () => onPin(memo.id),
     "aria-label": "\u30D4\u30F3"
   }, React.createElement(PinIcon, null))), React.createElement("div", {
-    className: "title"
-  }, memo.title), memo.body && (looksLikeHtmlKn(memo.body) ? React.createElement(RichBody, {
-    html: memo.body
-  }) : React.createElement("div", {
-    className: "body"
-  }, memo.body)), memo.tags && memo.tags.length > 0 && React.createElement("div", {
+    className: "title" + (full ? "" : " clip")
+  }, memo.title),
+  // 一覧では本文を全部は出さない。長いメモが何件も並ぶと、ほかのメモが
+  // 見えなくなるうえ、全文のHTMLをカードの数だけ描くので重くなる。
+  // 押せば全画面で全部読めるので、ここは冒頭の数行だけでよい。
+  memo.body && (full
+    ? (looksLikeHtmlKn(memo.body) ? React.createElement(RichBody, { html: memo.body })
+                                  : React.createElement("div", { className: "body" }, memo.body))
+    : React.createElement("div", { className: "body excerpt" }, memoExcerpt(memo.body))),
+  !full && memoMarks(memo),
+  memo.tags && memo.tags.length > 0 && React.createElement("div", {
     className: "card-tags"
   }, memo.tags.map(tg => React.createElement("button", {
     key: tg,
@@ -5307,6 +5330,11 @@ const CSS = `
 .rich-sw { width:20px; height:20px; border:1px solid rgba(0,0,0,.18); border-radius:50%; cursor:pointer; padding:0; }
 .rich-sw:hover { transform:scale(1.15); }
 .rich-note { font-size:12px; color:var(--accent); padding:6px 10px; border-top:1px solid var(--line); }
+/* 一覧の抜粋。3行で切って、どのメモも同じくらいの高さに揃える */
+.card .title.clip{ display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; overflow:hidden; word-break:break-word; }
+.body.excerpt{ display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; line-clamp:3; overflow:hidden; color:var(--soft); font-size:13px; line-height:1.75; margin-top:4px; word-break:break-word; }
+.memo-marks{ display:flex; gap:6px; flex-wrap:wrap; margin-top:7px; }
+.memo-mark{ font-size:10.5px; color:var(--soft); border:1px solid var(--line); border-radius:9999px; padding:1px 8px; background:rgba(0,0,0,.02); }
 .kn-attach-err { position:fixed; left:50%; bottom:18px; transform:translateX(-50%); z-index:200; max-width:min(92vw,460px); background:var(--accent); color:#fff; font-size:13px; line-height:1.6; padding:11px 15px; border-radius:11px; box-shadow:0 8px 28px rgba(0,0,0,.3); cursor:pointer; }
 .tag-add { border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:7px; font:inherit; font-size:12px; font-weight:700; padding:4px 10px; cursor:pointer; }
 .tag-add:disabled { opacity:.4; cursor:default; }
