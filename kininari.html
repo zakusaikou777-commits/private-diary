@@ -529,6 +529,12 @@ function srsStart(memo, days, iv) {
   };
 }
 
+/** 覚え中＝復習に入れていて、まだ「完了」になっていないメモ */
+function isLearning(memo) {
+  const s = memo && memo.srs;
+  return !!s && s.st !== SRS_ST.DONE;
+}
+
 function srsIsDue(memo, at) {
   const s = memo && memo.srs;
   if (!s) return false;
@@ -3850,7 +3856,8 @@ function App() {
   const [tagFilter, setTagFilter] = useState(null);
   const [sort, setSort] = useState("created");
   const [hideDone, setHideDone] = useState(false);
-  const [reviewMode, setReviewMode] = useState(false);   // 「今日の復習」だけ表示
+  // "" = ふつうの一覧 / "due" = 今日の復習 / "learning" = 覚え中（復習に入れているもの全部）
+  const [revFilter, setRevFilter] = useState("");
   // 開きっぱなしのままでも期限を数え直すための時計（1分ごと＋画面に戻ったとき）
   const [reviewTick, setReviewTick] = useState(() => Date.now());
   useEffect(() => {
@@ -4808,8 +4815,9 @@ function App() {
     const nowMs = reviewTick;
     // 復習は「いま開いているフォルダ」ではなく全体から拾う。
     // でないと、フォルダ分けしている人はバッジの件数と一覧が食い違う。
-    let list = (reviewMode ? memos : baseMemos).filter(m => {
-      if (reviewMode) return srsIsDue(m, nowMs);
+    let list = (revFilter ? memos : baseMemos).filter(m => {
+      if (revFilter === "due") return srsIsDue(m, nowMs);
+      if (revFilter === "learning") return isLearning(m);
       if (catFilter !== "all" && m.category !== catFilter) return false;
       if (tagFilter && !(m.tags || []).includes(tagFilter)) return false;
       if (hideDone && m.done) return false;
@@ -4820,15 +4828,22 @@ function App() {
       return true;
     });
     const dval = m => m.date ? Number(m.date.replace(/-/g, "") + (m.time ? m.time.replace(":", "") : "0000")) : Infinity;
-    list.sort((a, b) => {
-      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-      if (sort === "date" && dval(a) !== dval(b)) return dval(a) - dval(b);
-      return b.createdAt - a.createdAt;
-    });
+    if (revFilter) {
+      // 復習の一覧は「次にやる順」に並べる（期限切れが上、完了は下）
+      const due = m => (m.srs && m.srs.d) ? m.srs.d : Infinity;
+      list.sort((a, b) => due(a) - due(b) || b.createdAt - a.createdAt);
+    } else {
+      list.sort((a, b) => {
+        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+        if (sort === "date" && dval(a) !== dval(b)) return dval(a) - dval(b);
+        return b.createdAt - a.createdAt;
+      });
+    }
     return list;
-  }, [baseMemos, memos, catFilter, tagFilter, hideDone, q, sort, searching, reviewMode, reviewTick]);
+  }, [baseMemos, memos, catFilter, tagFilter, hideDone, q, sort, searching, revFilter, reviewTick]);
   // 復習の対象件数（サイドの見出しとボタンに出す）
   const dueMemos = useMemo(() => memos.filter(m => srsIsDue(m, reviewTick)), [memos, reviewTick]);
+  const learningMemos = useMemo(() => memos.filter(isLearning), [memos]);
   // 消えた項目（他端末の削除など）は飛ばして、次に生きているものを出す
   let focusMemo = null;
   let focusAt = focusIdx;
@@ -4839,7 +4854,7 @@ function App() {
     }
   }
   const openFocus = () => {
-    const ids = visible.filter(m => srsIsDue(m)).map(m => m.id);
+    const ids = visible.filter(m => srsIsDue(m, reviewTick)).map(m => m.id);
     if (!ids.length) return;
     setFocusQueue(ids);
     setFocusIdx(0);
@@ -5050,17 +5065,23 @@ function App() {
     className: "ai-btn",
     disabled: subtreeMemos.length === 0,
     onClick: () => setAiOpen(true)
-  }, React.createElement(SparkIcon, null), "AI\u3067\u6574\u7406\u3059\u308B", activeFolder != null && crumbs.length ? `（${crumbs[crumbs.length - 1].name}）` : "")), (dueMemos.length > 0 || reviewMode) && React.createElement("div", {
+  }, React.createElement(SparkIcon, null), "AI\u3067\u6574\u7406\u3059\u308B", activeFolder != null && crumbs.length ? `（${crumbs[crumbs.length - 1].name}）` : "")), (learningMemos.length > 0 || revFilter) && React.createElement("div", {
     className: "review-bar"
   }, React.createElement("button", {
-    className: "f rev" + (reviewMode ? " on" : ""),
-    onClick: () => setReviewMode(v => !v)
-  }, "\u4ECA\u65E5\u306E\u5FA9\u7FD2", dueMemos.length ? React.createElement("b", null, dueMemos.length) : null), reviewMode && visible.length > 0 && React.createElement("button", {
+    className: "f rev" + (revFilter === "due" ? " on" : ""),
+    onClick: () => setRevFilter(v => v === "due" ? "" : "due")
+  }, "\u4ECA\u65E5\u306E\u5FA9\u7FD2", dueMemos.length ? React.createElement("b", null, dueMemos.length) : null), React.createElement("button", {
+    className: "f rev learn" + (revFilter === "learning" ? " on" : ""),
+    title: "\u5FA9\u7FD2\u306B\u5165\u308C\u3066\u3044\u308B\u30E1\u30E2\u3092\u3001\u6B21\u56DE\u304C\u8FD1\u3044\u9806\u306B\u4E26\u3079\u307E\u3059",
+    onClick: () => setRevFilter(v => v === "learning" ? "" : "learning")
+  }, "\u899A\u3048\u4E2D", learningMemos.length ? React.createElement("b", null, learningMemos.length) : null), revFilter === "due" && visible.length > 0 && React.createElement("button", {
     className: "rev-go",
     onClick: openFocus
-  }, "\u9806\u756A\u306B\u5FA9\u7FD2\u3059\u308B"), reviewMode && visible.length === 0 && React.createElement("span", {
+  }, "\u9806\u756A\u306B\u5FA9\u7FD2\u3059\u308B"), revFilter === "due" && visible.length === 0 && React.createElement("span", {
     className: "rev-none"
-  }, "\u4ECA\u65E5\u306E\u5FA9\u7FD2\u306F\u3042\u308A\u307E\u305B\u3093")), React.createElement("div", {
+  }, "\u4ECA\u65E5\u306E\u5FA9\u7FD2\u306F\u3042\u308A\u307E\u305B\u3093"), revFilter === "learning" && visible.length === 0 && React.createElement("span", {
+    className: "rev-none"
+  }, "\u899A\u3048\u4E2D\u306E\u30E1\u30E2\u306F\u3042\u308A\u307E\u305B\u3093")), React.createElement("div", {
     className: "filters"
   }, React.createElement("button", {
     className: "f" + (catFilter === "all" ? " on" : ""),
@@ -5235,6 +5256,8 @@ const CSS = `
 .review-bar .f.rev{display:inline-flex;align-items:center;gap:6px}
 .review-bar .f.rev b{background:#7c5aff;color:#fff;border-radius:999px;padding:0 7px;font-size:11px;line-height:1.7}
 .review-bar .f.rev.on{background:#7c5aff;border-color:#7c5aff;color:#fff}
+.review-bar .f.rev.learn b{background:#2e7d52}
+.review-bar .f.rev.learn.on{background:#2e7d52;border-color:#2e7d52}
 .review-bar .f.rev.on b{background:rgba(255,255,255,.25)}
 .rev-go{border:1px solid #7c5aff;background:#7c5aff;color:#fff;border-radius:999px;
   padding:5px 14px;font-size:13px;font-weight:700;cursor:pointer}
