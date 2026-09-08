@@ -476,16 +476,133 @@ function findUrl(text) {
   const m = (text || "").match(URL_RE);
   return m ? m[0] : null;
 }
+/* ── 復習（忘却曲線）────────────────────────────────────────
+   Chrome拡張「Recall」と同じ間隔でメモを復習に回す。
+   メモの srs は { b: 段位, d: 次回の時刻, rv: 復習した回数, st: 状態, iv: 固定間隔(日) }。
+   srs が無いメモは復習に出てこない（今までどおりのメモとして扱う）。
+   状態 st: 0=未読 / 1=学習中 / 2=完了
+   ------------------------------------------------------------ */
+const SRS_STEPS = [1, 3, 7, 14, 30, 60, 120];
+const SRS_HOUR = 9;                     // この時刻に「今日の復習」へ出す
+const SRS_ST = { NEW: 0, LEARNING: 1, DONE: 2 };
+
+function srsDueAfter(days, from) {
+  const n = Number(days);
+  const safe = Number.isFinite(n) ? Math.max(0, Math.round(n)) : 1;
+  const d = new Date(from || Date.now());
+  d.setDate(d.getDate() + safe);
+  d.setHours(SRS_HOUR, 0, 0, 0);
+  return d.getTime();
+}
+
+function srsClampBox(b) {
+  const n = Number(b) || 0;
+  return Math.min(Math.max(0, Math.round(n)), SRS_STEPS.length - 1);
+}
+
+/** 壊れた値・古い形・他端末から来た変な値でも必ず使える形にそろえる */
+function srsNormalize(s) {
+  if (!s || typeof s !== "object" || Array.isArray(s)) return null;
+  const st = [0, 1, 2].includes(Number(s.st)) ? Number(s.st) : SRS_ST.NEW;
+  const iv = Math.max(0, Number(s.iv) || 0);
+  let d = Number(s.d);
+  // 0 や極端に先の日付は「永久に復習に出てこない」「次回 NaN」になるので入れ直す
+  const FAR = Date.now() + 3650 * 86400000;
+  if (!Number.isFinite(d) || d <= 0 || d > FAR) d = srsDueAfter(iv > 0 ? iv : SRS_STEPS[0]);
+  if (st === SRS_ST.DONE) d = 0;
+  return { b: srsClampBox(s.b), d: d, rv: Math.max(0, Number(s.rv) || 0), st: st, iv: iv };
+}
+
+/** 復習を始める（days=0 なら今すぐ対象にする） */
+function srsStart(memo, days, iv) {
+  const interval = Math.max(0, Number(iv) || 0);
+  const wait = days == null ? (interval > 0 ? interval : SRS_STEPS[0]) : Number(days);
+  return {
+    ...memo,
+    srs: {
+      b: 0,
+      d: wait > 0 ? srsDueAfter(wait) : Date.now(),
+      rv: 0,
+      st: SRS_ST.NEW,
+      iv: interval
+    }
+  };
+}
+
+function srsIsDue(memo, at) {
+  const s = memo && memo.srs;
+  if (!s) return false;
+  if (s.st !== SRS_ST.NEW && s.st !== SRS_ST.LEARNING) return false;
+  return s.d > 0 && s.d <= (at || Date.now());
+}
+
+/** 復習の結果を反映する。result: "ok"（覚えた）/ "again"（まだ）/ "later"（あとで） */
+function srsReview(memo, result) {
+  const s = srsNormalize(memo.srs) || srsNormalize({});
+  const next = { b: srsClampBox(s.b), d: s.d, rv: (s.rv || 0) + 1, st: s.st, iv: s.iv };
+
+  if (result === "later") {
+    next.d = srsDueAfter(1);
+    if (next.st !== SRS_ST.NEW) next.st = SRS_ST.LEARNING;
+    return { ...memo, srs: next };
+  }
+  if (next.iv > 0) {                       // 固定間隔（毎週など）
+    next.d = srsDueAfter(result === "ok" ? next.iv : Math.max(1, Math.round(next.iv / 3)));
+    next.st = SRS_ST.LEARNING;
+    return { ...memo, srs: next };
+  }
+  if (result === "again") {                // まだ → 最初の間隔に戻す
+    next.b = 0;
+    next.st = SRS_ST.LEARNING;
+    next.d = srsDueAfter(SRS_STEPS[0]);
+    return { ...memo, srs: next };
+  }
+  const step = next.b + 1;                 // 覚えた → 間隔を広げる
+  if (step >= SRS_STEPS.length) {
+    next.b = SRS_STEPS.length - 1;
+    next.st = SRS_ST.DONE;
+    next.d = 0;
+  } else {
+    next.b = step;
+    next.st = SRS_ST.LEARNING;
+    next.d = srsDueAfter(SRS_STEPS[step]);
+  }
+  return { ...memo, srs: next };
+}
+
+/** 次に「覚えた」を押したときの間隔（ボタンに出す） */
+function srsNextDays(memo) {
+  const s = srsNormalize(memo && memo.srs);
+  if (!s) return SRS_STEPS[0];
+  if (s.iv > 0) return s.iv;
+  const step = srsClampBox(s.b) + 1;
+  return step >= SRS_STEPS.length ? 0 : SRS_STEPS[step];
+}
+
+function srsFmtDue(ts) {
+  if (!ts || !Number.isFinite(Number(ts))) return "\u2014";
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const diff = Math.round((new Date(ts).setHours(0, 0, 0, 0) - today.getTime()) / 86400000);
+  if (diff === 0) return "\u4eca\u65e5";
+  if (diff === 1) return "\u660e\u65e5";
+  if (diff < 0) return (-diff) + "\u65e5\u524d";
+  if (diff <= 30) return diff + "\u65e5\u5f8c";
+  const d = new Date(ts);
+  return (d.getMonth() + 1) + "/" + d.getDate();
+}
+
 function normalizeMemo(m) {
   const links = Array.isArray(m.links) ? m.links : m.link ? [m.link] : [];
   const o = {
     ...m,
+    title: typeof m.title === "string" ? m.title : String(m.title == null ? "" : m.title).slice(0, 300),
     body: typeof m.body === "string" ? sanitizeMemoHtml(m.body) : "",
     tags: Array.isArray(m.tags) ? m.tags : [],
     links,
     notebookId: m.notebookId || null,
     attachments: Array.isArray(m.attachments) ? m.attachments : [],
     remind: typeof m.remind === "number" ? m.remind : null,
+    srs: srsNormalize(m.srs),
     updatedAt: typeof m.updatedAt === "number" ? m.updatedAt : (m.createdAt || 0)
   };
   delete o.link;
@@ -2242,6 +2359,9 @@ function MemoCard({
   allTags,
   showFolder,
   fresh,
+  onReview,
+  onStartReview,
+  onStopReview,
   onToggleDone,
   onPin,
   onDelete,
@@ -2552,7 +2672,29 @@ function MemoCard({
     className: "tag-pill"
   }, React.createElement("span", {
     className: "dot"
-  }), memo.category), memo.date && React.createElement("span", {
+  }), memo.category), memo.srs ? React.createElement("span", {
+    className: "srs-chip" + (srsIsDue(memo) ? " due" : "") + (memo.srs.st === SRS_ST.DONE ? " done" : ""),
+    title: "\u5FA9\u7FD2 " + (memo.srs.rv || 0) + "\u56DE"
+  }, memo.srs.st === SRS_ST.DONE ? "\u5FA9\u7FD2\u5B8C\u4E86" : srsIsDue(memo) ? "\u5FA9\u7FD2: \u4ECA\u65E5" : "\u6B21\u56DE " + srsFmtDue(memo.srs.d), React.createElement("button", {
+    className: "srs-x",
+    title: "\u5FA9\u7FD2\u304B\u3089\u5916\u3059",
+    onClick: e => {
+      e.stopPropagation();
+      if (window.confirm("\u3053\u306E\u30E1\u30E2\u3092\u5FA9\u7FD2\u304B\u3089\u5916\u3057\u307E\u3059\u304B\uFF1F")) onStopReview(memo.id);
+    }
+  }, "\u00D7")) : React.createElement("button", {
+    className: "srs-add",
+    title: "\u5FA9\u7FD2\u306B\u5165\u308C\u308B",
+    onClick: e => { e.stopPropagation(); onStartReview(memo.id); }
+  }, "+ \u5FA9\u7FD2"), memo.srs && srsIsDue(memo) && React.createElement("span", {
+    className: "srs-acts"
+  }, React.createElement("button", {
+    className: "srs-btn ok",
+    onClick: e => { e.stopPropagation(); onReview(memo.id, "ok"); }
+  }, "\u899A\u3048\u305F"), React.createElement("button", {
+    className: "srs-btn",
+    onClick: e => { e.stopPropagation(); onReview(memo.id, "again"); }
+  }, "\u307E\u3060")), memo.date && React.createElement("span", {
     className: "when"
   }, fmtDate(memo.date, memo.time)), memo.date && memo.remind != null && React.createElement("span", {
     className: "remind-chip",
@@ -3620,6 +3762,59 @@ function CalendarPanel({
     className: "ai-note"
   }, "Google\u30AB\u30EC\u30F3\u30C0\u30FC\uFF08\u30E1\u30A4\u30F3\uFF09\u306E\u4E88\u5B9A\u3092\u8868\u793A\u3057\u3066\u3044\u307E\u3059\u3002\u8868\u793A\u306F\u8AAD\u307F\u53D6\u308A\u5C02\u7528\u3067\u3059\u3002"))));
 }
+/* 集中復習。1件ずつ出して「覚えた / まだ / あとで」で答える。
+   スマホでも押しやすいよう、ボタンは大きめの横並びにしている。 */
+function ReviewFocus({ memo, index, total, onAnswer, onClose }) {
+  useEffect(() => {
+    const onKey = e => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.repeat) return;                                   // 押しっぱなしで連打しない
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const el = e.target;
+      if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) return;
+      if (e.key === "Escape") { onClose(); return; }
+      // スペースは本文のスクロールに使うので「覚えた」には割り当てない
+      if (e.key === "1") onAnswer("again");
+      else if (e.key === "2") onAnswer("later");
+      else if (e.key === "3" || e.key === "Enter") { e.preventDefault(); onAnswer("ok"); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onAnswer, onClose]);
+
+  const nextDays = srsNextDays(memo);
+  const link = (memo.links || []).filter(safeLink)[0] || null;
+  return React.createElement("div", {
+    className: "rf-back",
+    onClick: e => { if (e.target === e.currentTarget) onClose(); }
+  }, React.createElement("div", { className: "rf-card" },
+    React.createElement("div", { className: "rf-head" },
+      React.createElement("span", { className: "rf-count" }, (index + 1) + " / " + total),
+      React.createElement("button", { className: "rf-close", onClick: onClose }, "\u7D42\u4E86")
+    ),
+    React.createElement("div", { className: "rf-title" }, memo.title || "(\u7121\u984C)"),
+    React.createElement("div", { className: "rf-meta" },
+      React.createElement("span", { className: "tag-pill" }, React.createElement("span", { className: "dot" }), memo.category),
+      (memo.tags || []).map(t => React.createElement("span", { key: t, className: "rf-tag" }, "#" + t))
+    ),
+    React.createElement("div", { className: "rf-body" }, looksLikeHtmlKn(memo.body || "")
+      ? React.createElement(RichBody, { html: memo.body || "" })
+      : React.createElement("div", { className: "body" }, memo.body || "")),
+    link && React.createElement("a", {
+      className: "rf-link", href: link, target: "_blank", rel: "noopener"
+    }, hostname(link) + " \u3092\u958B\u304F"),
+    React.createElement("div", { className: "rf-btns" },
+      React.createElement("button", { className: "rf-b", onClick: () => onAnswer("again") },
+        React.createElement("b", null, "\u307E\u3060"), React.createElement("small", null, SRS_STEPS[0] + "\u65E5\u5F8C")),
+      React.createElement("button", { className: "rf-b", onClick: () => onAnswer("later") },
+        React.createElement("b", null, "\u3042\u3068\u3067"), React.createElement("small", null, "\u660E\u65E5")),
+      React.createElement("button", { className: "rf-b ok", onClick: () => onAnswer("ok") },
+        React.createElement("b", null, "\u899A\u3048\u305F"),
+        React.createElement("small", null, nextDays ? "\u6B21\u306F" + nextDays + "\u65E5\u5F8C" : "\u5B8C\u4E86\u306B\u3059\u308B"))
+    )
+  ));
+}
+
 function App() {
   const [memos, setMemos] = useState([]);
   const [folders, setFolders] = useState([]);
@@ -3655,6 +3850,22 @@ function App() {
   const [tagFilter, setTagFilter] = useState(null);
   const [sort, setSort] = useState("created");
   const [hideDone, setHideDone] = useState(false);
+  const [reviewMode, setReviewMode] = useState(false);   // 「今日の復習」だけ表示
+  // 開きっぱなしのままでも期限を数え直すための時計（1分ごと＋画面に戻ったとき）
+  const [reviewTick, setReviewTick] = useState(() => Date.now());
+  useEffect(() => {
+    const bump = () => setReviewTick(Date.now());
+    const t = setInterval(bump, 60000);
+    document.addEventListener("visibilitychange", bump);
+    window.addEventListener("focus", bump);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", bump);
+      window.removeEventListener("focus", bump);
+    };
+  }, []);
+  const [focusQueue, setFocusQueue] = useState(null);    // 集中復習の並び（id の配列）
+  const [focusIdx, setFocusIdx] = useState(0);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [expanded, setExpanded] = useState(new Set());
   const [actionsId, setActionsId] = useState(null);
@@ -3875,26 +4086,49 @@ function App() {
         }
         const esc = s => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
         const escA = s => esc(s).replace(/"/g, "&quot;");
+        // タグを別に受け取ったときは、本文の末尾に付いている同じタグ行を落とす
+        // （古い版の拡張では本文にしか入れられなかったため、両方入って重複する）
+        let note = String(clip.n || "");
+        if (Array.isArray(clip.tags) && clip.tags.length) {
+          note = note.replace(/(?:\r?\n)+[ \t]*#[^\n]*$/, "").replace(/\s+$/, "");
+        }
         let body = "";
         if (clip.img) body += `<img src="${escA(clip.img)}" alt="">`;
-        if (clip.n) body += `<div>${esc(clip.n).replace(/\n/g, "<br>")}</div>`;
+        if (note) body += `<div>${esc(note).replace(/\n/g, "<br>")}</div>`;
         const cats = ["メモ", "アイデア", "調べる", "やること", "行きたい"];
+        // タグ（拡張からは配列か、空白・カンマ区切りの文字列で届く）
+        const clipTags = [];
+        const rawTags = Array.isArray(clip.tags) ? clip.tags : String(clip.tags || "").split(/[,、\s]+/);
+        rawTags.forEach(t => {
+          const v = String(t || "").replace(/^#/, "").trim().slice(0, 24);
+          if (v && !clipTags.includes(v) && clipTags.length < 12) clipTags.push(v);
+        });
         const memo = {
           id: uid(),
-          title: clip.t || clip.u || "(無題)",
+          title: String(clip.t || clip.u || "(無題)").slice(0, 300),
           body,
           category: cats.includes(clip.c) ? clip.c : "調べる",
-          tags: [],
+          tags: clipTags,
           links: safeLink(clip.u) ? [clip.u] : [],
           notebookId: nbId,
           date: null,
           time: null,
           remind: null,
+          srs: null,
           attachments: [],
           done: false,
           pinned: false,
           createdAt: Date.now()
         };
+        // 復習の予定つきで届いたら、そのまま復習に入れる
+        //   clip.srs … {b,d,rv,st,iv} をそのまま引き継ぐ（拡張ですでに何回か復習した項目）
+        //   clip.rv  … 「今日から復習を始める」ときの間隔（0=自動 / 7=毎週 など）
+        if (clip.srs && typeof clip.srs === "object") {
+          memo.srs = srsNormalize(clip.srs);
+        } else if (clip.rv != null) {
+          const started = srsStart(memo, null, Number(clip.rv) || 0);
+          memo.srs = started.srs;
+        }
         const saved = persist([normalizeMemo(memo), ...curMemos], curFolders);
         // 保存が終わったことを Chrome拡張に知らせる。拡張はこの印を見て裏タブを
         // 閉じるので、印を立てるのは「Driveへ送り終えてから」にする。3秒デバウンス
@@ -4453,6 +4687,11 @@ function App() {
     ...m,
     done: !m.done
   } : m));
+  // 復習: 覚えた / まだ / あとで
+  const reviewMemo = (id, result) => saveMemos(memos.map(m => m.id === id ? srsReview(m, result) : m));
+  // 復習に入れる（すぐ対象にせず、既定の間隔をあけてから出す）
+  const startReviewFor = id => saveMemos(memos.map(m => m.id === id ? srsStart(m, null, 0) : m));
+  const stopReviewFor = id => saveMemos(memos.map(m => m.id === id ? { ...m, srs: null } : m));
   const pin = id => saveMemos(memos.map(m => m.id === id ? {
     ...m,
     pinned: !m.pinned
@@ -4566,7 +4805,11 @@ function App() {
     return memos.filter(m => (m.notebookId || null) === activeFolder);
   }, [memos, subtreeMemos, activeFolder, includeSub, searching]);
   const visible = useMemo(() => {
-    let list = baseMemos.filter(m => {
+    const nowMs = reviewTick;
+    // 復習は「いま開いているフォルダ」ではなく全体から拾う。
+    // でないと、フォルダ分けしている人はバッジの件数と一覧が食い違う。
+    let list = (reviewMode ? memos : baseMemos).filter(m => {
+      if (reviewMode) return srsIsDue(m, nowMs);
       if (catFilter !== "all" && m.category !== catFilter) return false;
       if (tagFilter && !(m.tags || []).includes(tagFilter)) return false;
       if (hideDone && m.done) return false;
@@ -4583,7 +4826,31 @@ function App() {
       return b.createdAt - a.createdAt;
     });
     return list;
-  }, [baseMemos, catFilter, tagFilter, hideDone, q, sort, searching]);
+  }, [baseMemos, memos, catFilter, tagFilter, hideDone, q, sort, searching, reviewMode, reviewTick]);
+  // 復習の対象件数（サイドの見出しとボタンに出す）
+  const dueMemos = useMemo(() => memos.filter(m => srsIsDue(m, reviewTick)), [memos, reviewTick]);
+  // 消えた項目（他端末の削除など）は飛ばして、次に生きているものを出す
+  let focusMemo = null;
+  let focusAt = focusIdx;
+  if (focusQueue && focusQueue.length) {
+    for (let i = focusIdx; i < focusQueue.length; i++) {
+      const hit = memos.find(m => m.id === focusQueue[i]);
+      if (hit) { focusMemo = hit; focusAt = i; break; }
+    }
+  }
+  const openFocus = () => {
+    const ids = visible.filter(m => srsIsDue(m)).map(m => m.id);
+    if (!ids.length) return;
+    setFocusQueue(ids);
+    setFocusIdx(0);
+  };
+  const closeFocus = () => { setFocusQueue(null); setFocusIdx(0); };
+  const focusAnswer = result => {
+    if (focusMemo) reviewMemo(focusMemo.id, result);
+    const next = focusAt + 1;
+    if (!focusQueue || next >= focusQueue.length) { setFocusQueue(null); setFocusIdx(0); return; }
+    setFocusIdx(next);
+  };
   const subFolders = showSubRows ? childrenOf(activeFolder) : [];
   const remaining = memos.filter(m => !m.done).length;
   const crumbs = pathOf(activeFolder);
@@ -4783,7 +5050,17 @@ function App() {
     className: "ai-btn",
     disabled: subtreeMemos.length === 0,
     onClick: () => setAiOpen(true)
-  }, React.createElement(SparkIcon, null), "AI\u3067\u6574\u7406\u3059\u308B", activeFolder != null && crumbs.length ? `（${crumbs[crumbs.length - 1].name}）` : "")), React.createElement("div", {
+  }, React.createElement(SparkIcon, null), "AI\u3067\u6574\u7406\u3059\u308B", activeFolder != null && crumbs.length ? `（${crumbs[crumbs.length - 1].name}）` : "")), (dueMemos.length > 0 || reviewMode) && React.createElement("div", {
+    className: "review-bar"
+  }, React.createElement("button", {
+    className: "f rev" + (reviewMode ? " on" : ""),
+    onClick: () => setReviewMode(v => !v)
+  }, "\u4ECA\u65E5\u306E\u5FA9\u7FD2", dueMemos.length ? React.createElement("b", null, dueMemos.length) : null), reviewMode && visible.length > 0 && React.createElement("button", {
+    className: "rev-go",
+    onClick: openFocus
+  }, "\u9806\u756A\u306B\u5FA9\u7FD2\u3059\u308B"), reviewMode && visible.length === 0 && React.createElement("span", {
+    className: "rev-none"
+  }, "\u4ECA\u65E5\u306E\u5FA9\u7FD2\u306F\u3042\u308A\u307E\u305B\u3093")), React.createElement("div", {
     className: "filters"
   }, React.createElement("button", {
     className: "f" + (catFilter === "all" ? " on" : ""),
@@ -4854,6 +5131,9 @@ function App() {
     allTags: allTags,
     showFolder: showFolderChip,
     fresh: m.id === freshId,
+    onReview: reviewMemo,
+    onStartReview: startReviewFor,
+    onStopReview: stopReviewFor,
     onToggleDone: toggleDone,
     onPin: pin,
     onDelete: del,
@@ -4915,6 +5195,19 @@ function App() {
     onGdDisconnect: gdDisconnect
   }), calOpen && React.createElement(CalendarPanel, {
     onClose: () => setCalOpen(false)
+  }), focusQueue && !focusMemo && React.createElement("div", {
+    className: "rf-back",
+    onClick: closeFocus
+  }, React.createElement("div", { className: "rf-card" },
+    React.createElement("div", { className: "rf-title" }, "\u5FA9\u7FD2\u3059\u308B\u3082\u306E\u304C\u306A\u304F\u306A\u308A\u307E\u3057\u305F"),
+    React.createElement("div", { className: "rf-btns" },
+      React.createElement("button", { className: "rf-b ok", onClick: closeFocus }, React.createElement("b", null, "\u9589\u3058\u308B"))))),
+  focusMemo && React.createElement(ReviewFocus, {
+    memo: focusMemo,
+    total: focusQueue ? focusQueue.length : 0,
+    index: focusAt,
+    onAnswer: focusAnswer,
+    onClose: closeFocus
   }), toast && React.createElement("div", {
     className: "toast",
     onClick: () => setToast(null)
@@ -4937,6 +5230,58 @@ function App() {
   }, "\xD7")));
 }
 const CSS = `
+/* ── 復習（忘却曲線）──────────────────────────── */
+.review-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:2px 0 6px}
+.review-bar .f.rev{display:inline-flex;align-items:center;gap:6px}
+.review-bar .f.rev b{background:#7c5aff;color:#fff;border-radius:999px;padding:0 7px;font-size:11px;line-height:1.7}
+.review-bar .f.rev.on{background:#7c5aff;border-color:#7c5aff;color:#fff}
+.review-bar .f.rev.on b{background:rgba(255,255,255,.25)}
+.rev-go{border:1px solid #7c5aff;background:#7c5aff;color:#fff;border-radius:999px;
+  padding:5px 14px;font-size:13px;font-weight:700;cursor:pointer}
+.rev-go:hover{filter:brightness(1.08)}
+.rev-none{font-size:12.5px;opacity:.7}
+
+.srs-chip{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;padding:1px 6px;
+  border:1px solid currentColor;border-radius:999px;opacity:.75}
+.srs-chip.due{color:#c0463c;opacity:1;font-weight:700}
+.srs-chip.done{opacity:.5}
+.srs-x{border:none;background:none;color:inherit;cursor:pointer;opacity:.6;font-size:13px;line-height:1;padding:0 1px}
+.srs-x:hover{opacity:1}
+.srs-add{border:1px dashed currentColor;background:none;color:inherit;opacity:.45;cursor:pointer;
+  border-radius:999px;padding:1px 8px;font-size:11.5px}
+.srs-add:hover{opacity:.9}
+.srs-acts{display:inline-flex;gap:4px}
+.srs-btn{border:1px solid currentColor;background:none;color:inherit;border-radius:999px;
+  padding:1px 9px;font-size:11.5px;cursor:pointer;opacity:.8}
+.srs-btn:hover{opacity:1}
+.srs-btn.ok{background:#7c5aff;border-color:#7c5aff;color:#fff;opacity:1;font-weight:700}
+
+.rf-back{position:fixed;inset:0;z-index:80;background:rgba(12,12,22,.55);backdrop-filter:blur(3px);
+  display:flex;align-items:center;justify-content:center;padding:16px}
+.rf-card{width:min(640px,100%);max-height:88vh;overflow:auto;border-radius:18px;padding:18px 20px;
+  background:var(--card,#fff);color:inherit;box-shadow:0 30px 80px rgba(0,0,0,.35);
+  display:flex;flex-direction:column;gap:10px}
+.rf-head{display:flex;align-items:center;font-size:12px;opacity:.7}
+.rf-count{flex:1}
+.rf-close{border:none;background:none;color:inherit;cursor:pointer;font-size:12.5px;opacity:.8}
+.rf-close:hover{opacity:1;text-decoration:underline}
+.rf-title{font-size:19px;font-weight:800;line-height:1.4}
+.rf-meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.rf-tag{font-size:11.5px;opacity:.7}
+.rf-body{font-size:14px;line-height:1.7;max-height:40vh;overflow:auto}
+.rf-body img{max-width:100%;height:auto;border-radius:8px}
+.rf-link{font-size:12.5px}
+.rf-btns{display:grid;grid-template-columns:1fr 1fr 1.3fr;gap:8px;margin-top:4px}
+.rf-b{display:flex;flex-direction:column;align-items:center;gap:1px;padding:12px 8px;cursor:pointer;
+  border:1px solid rgba(128,128,128,.45);border-radius:12px;background:transparent;color:inherit}
+.rf-b b{font-size:14px}
+.rf-b small{font-size:10.5px;opacity:.7}
+.rf-b:hover{background:rgba(128,128,128,.12)}
+.rf-b.ok{background:#7c5aff;border-color:#7c5aff;color:#fff}
+.rf-b.ok small{opacity:.85}
+.rf-b.ok:hover{filter:brightness(1.08);background:#7c5aff}
+@media(max-width:520px){.rf-btns{grid-template-columns:1fr}}
+
 @import url('https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap');
 
 * { box-sizing: border-box; }
