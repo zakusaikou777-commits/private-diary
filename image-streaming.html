@@ -324,9 +324,9 @@
             <summary>もっと自然な声にするには</summary>
             <div class="vhelp-b">
               使える声は、この端末に入っているものだけです（ブラウザ側の仕様で、アプリから声を配ることはできません）。<br><br>
-              <b>iPhone / iPad</b>：設定 → アクセシビリティ → 読み上げコンテンツ → 声 → 日本語 で、高品質版をダウンロードすると格段に自然になります。<br>
-              <b>Windows</b>：設定 → 時刻と言語 → 音声認識 で音声を追加。「Nanami」が入ると滑らかです。<br>
-              <b>Android / Chrome</b>：「Google 日本語」が入っていれば、たいていそれが一番自然です。<br><br>
+              <b>iPhone / iPad</b>：設定 → アクセシビリティ → 読み上げコンテンツ → 声 → 日本語 →「Kyoko」か「O-Ren」（どちらも女性）の<b>「拡張」</b>をダウンロードすると、格段に自然になります。<br>
+              <b>Windows</b>：このアプリを Microsoft Edge で開くと「Microsoft Nanami Online (Natural)」（女性・とても自然）が使えます。Chrome では「Google 日本語」が一番自然です（Windows の設定で声を足しても、ブラウザで使えるのは Haruka などの昔ながらの声だけです）。<br>
+              <b>Android</b>：声は端末の「テキスト読み上げの出力」の設定で決まります。優先するエンジンを「Google 音声サービス」にし、⚙ →「音声データのインストール」→ 日本語 で女性の声を選べます。<br><br>
               新しく入れたあとは、この画面を再読み込みすると一覧に出てきます。
             </div>
           </details>
@@ -528,18 +528,40 @@
       return vs.filter(function(v){ return (v.lang||"").toLowerCase().indexOf("ja") === 0; });
     } catch(e){ return []; }
   }
+  /* くつろぎ（autogenic.html）と同じ見分け方。声の種類は2つのアプリで共有しているので、
+     「自動」のときに選ぶ声も同じにしておく。直すときは両方そろえること。
+     q: 4=とても自然（ニューラル） 3=自然（拡張版など） 2=ふつう 1=機械的 0=おもしろ声
+     f: true=女性 false=男性 null=分からない */
+  var VQ_LABEL = ["機械的","機械的","ふつう","自然","とても自然"];
+  var VQ_SCORE = [-100,25,55,85,100];   // おもしろ声は、女性でも一番下に
+  function voiceInfo(v){
+    var nm = (((v&&v.name)||"") + " " + ((v&&v.voiceURI)||"")).toLowerCase();
+    var q = 2, f = null;
+    if(/eloquence|\b(eddy|flo|grandma|grandpa|reed|rocko|sandy|shelley)\b|espeak|festival|pico/.test(nm)) q = 0;
+    else if(/natural|neural|premium|プレミアム|online/.test(nm)) q = 4;
+    else if(/enhanced|拡張|高品質|siri/.test(nm)) q = 3;
+    else if(/google/.test(nm)) q = 3;
+    else if(/microsoft/.test(nm)) q = 1;
+    if(/female|女性|nanami|aoi|mayu|shiori|kyoko|京子|o-?ren|haruka|ayumi|sayaka|mizuki|google|\b(flo|grandma|sandy|shelley)\b/.test(nm)) f = true;
+    else if(/\bmale\b|男性|keita|daichi|naoki|masaru|ichiro|otoya|hattori|\b(eddy|grandpa|reed|rocko)\b/.test(nm)) f = false;
+    return { q: q, f: f };
+  }
   function voiceScore(v){
-    var nm = ((v.name||"") + " " + (v.voiceURI||"")).toLowerCase();
-    var sc = 0;
-    if(/google/.test(nm)) sc += 100;                       // Chrome/Androidの日本語は総じて自然
-    if(/nanami/.test(nm)) sc += 92;                        // Windows11のニューラル音声
-    if(/(enhanced|premium|neural|拡張|高品質)/.test(nm)) sc += 85;
-    if(/(siri|o-?ren)/.test(nm)) sc += 70;
-    if(/(kyoko|京子|mizuki|ayumi|sayaka|haruka|nanami|o-?ren)/.test(nm)) sc += 40;  // 女性の声
-    if(/(otoya|hattori|ichiro|daichi|keita|男性|male)/.test(nm)) sc -= 60;          // 男性の声
-    if(v.localService === false) sc += 12;                 // ネットワーク音声は概して高品質
-    if(/haruka/.test(nm)) sc -= 20;                        // 古い方式で機械的に聞こえる
+    var i = voiceInfo(v), sc = VQ_SCORE[i.q];
+    if(i.f === true) sc += 25; else if(i.f === false) sc -= 50;
+    if(v && v.localService === false) sc -= 5;
     return sc;
+  }
+  function rankVoices(vs){
+    return (vs||[]).map(function(v,i){ return { v: v, i: i, s: voiceScore(v) }; })
+      .sort(function(a,b){ return (b.s - a.s) || (a.i - b.i); })
+      .map(function(x){ return x.v; });
+  }
+  function voiceLabel(v){
+    var i = voiceInfo(v), a = [];
+    if(i.f === true) a.push("女性"); else if(i.f === false) a.push("男性");
+    a.push(VQ_LABEL[i.q]);
+    return a.join("・");
   }
   function pickVoice(){
     if(!ttsSupported) return;
@@ -549,9 +571,7 @@
     if(S.voiceURI){
       for(var i=0;i<vs.length;i++){ if(vs[i].voiceURI === S.voiceURI){ voice = vs[i]; renderVoices(); return; } }
     }
-    var best = vs[0], bs = voiceScore(vs[0]);
-    for(var j=1;j<vs.length;j++){ var t = voiceScore(vs[j]); if(t > bs){ bs = t; best = vs[j]; } }
-    voice = best;
+    voice = rankVoices(vs)[0];
     renderVoices();
   }
   function renderVoices(){
@@ -560,16 +580,21 @@
     var box = $("voiceBox");
     if(box) box.style.display = (ttsSupported && vs.length) ? "" : "none";
     if(!vs.length) return;
-    var cur = (voice && voice.voiceURI) || "";
-    if(sel.getAttribute("data-n") !== String(vs.length)){
-      var h = "";
-      vs.slice().sort(function(a,b){ return voiceScore(b) - voiceScore(a); }).forEach(function(v){
-        h += '<option value="' + v.voiceURI.replace(/"/g,"&quot;") + '">' + (v.name||v.voiceURI) + '</option>';
+    var rk = rankVoices(vs);
+    var sig = rk.map(function(v){ return v.voiceURI; }).join("|");
+    if(sel.getAttribute("data-sig") !== sig){
+      var ea = function(t){ return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); };
+      var h = '<option value="">おすすめを自動で選ぶ（いまは ' + ea(rk[0].name||rk[0].voiceURI) + '）</option>';
+      rk.forEach(function(v){
+        h += '<option value="' + ea(v.voiceURI) + '">' + ea((v.name||v.voiceURI) + " — " + voiceLabel(v)) + '</option>';
       });
       sel.innerHTML = h;
-      sel.setAttribute("data-n", String(vs.length));
+      sel.setAttribute("data-sig", sig);
     }
-    if(cur) sel.value = cur;
+    // 選んだ声がこの端末に無い（別の端末の設定など）ときは「自動」を見せる
+    var has = false;
+    for(var k=0;k<vs.length;k++){ if(vs[k].voiceURI === S.voiceURI){ has = true; break; } }
+    sel.value = (S.voiceURI && has) ? S.voiceURI : "";
   }
   function mkUtter(t){
     var u = new SpeechSynthesisUtterance(t);
@@ -595,11 +620,20 @@
   });
   function inGesture(){ return (Date.now() - lastGesture) < 1200; }
 
+  /* 端末の読み上げが読み違えやすい言葉は、声にだけ、かなで渡す（画面の字はそのまま）。
+     Open JTalk で確かめると「熟れた→なれた」「薪→たきぎ」「市場→しじょう」になる。
+     くつろぎ（autogenic.html）にも同じ仕組みがある。 */
+  var YOMI = [[/熟れた/g, "うれた"], [/薪ストーブ/g, "まきストーブ"], [/市場/g, "いちば"]];
+  function yomiText(t){
+    var s = String(t == null ? "" : t);
+    for(var i=0;i<YOMI.length;i++) s = s.replace(YOMI[i][0], YOMI[i][1]);
+    return s;
+  }
   function speak(text){
     try {
       if(!ttsSupported) return;
       var ss = window.speechSynthesis;
-      var parts = splitJa(text);
+      var parts = splitJa(yomiText(text));
       var go = function(){
         speakTimer = null;
         parts.forEach(function(t){
@@ -1069,11 +1103,21 @@
     $("vPitch").addEventListener("change", previewVoice);
     $("vRate").addEventListener("change", previewVoice);
     $("voiceSel").addEventListener("change", function(e){
-      S.voiceURI = e.target.value;
-      var vs = jaVoices();
-      for(var i=0;i<vs.length;i++){ if(vs[i].voiceURI === S.voiceURI){ voice = vs[i]; break; } }
-      saveVoicePrefs(); previewVoice();
+      S.voiceURI = String(e.target.value || "");   // "" は「おすすめを自動で選ぶ」
+      saveVoicePrefs(); pickVoice(); previewVoice();
     });
+    /* くつろぎ（別のフレーム）で声の種類を変えたら、こちらにも反映する。
+       反映しないと、次にここで高さを変えたときに古い声で上書きしてしまう。 */
+    try {
+      window.addEventListener("storage", function(e){
+        if(!e || e.key !== VOICE_KEY) return;
+        try {
+          var o = JSON.parse(e.newValue || "null");
+          S.voiceURI = (o && typeof o.voiceURI === "string") ? o.voiceURI : "";
+        } catch(x){ return; }
+        pickVoice();
+      });
+    } catch(e){}
     paintVoice();
     $("playPauseBtn").addEventListener("click", function(){ if(S.phase === "running") pause(); else if(S.phase === "paused") resume(); });
     $("endBtn").addEventListener("click", endNow);

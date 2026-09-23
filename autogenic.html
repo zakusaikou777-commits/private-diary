@@ -98,6 +98,14 @@ header{margin-bottom:16px}
 #toast{position:fixed;left:14px;right:14px;bottom:18px;background:var(--ink);color:var(--bg);border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.6;z-index:70;display:none}
 #syncWrap{margin-top:14px}
 .tiny{border:1px solid var(--line);background:none;color:var(--dim);border-radius:8px;padding:6px 11px;font-family:inherit;font-size:12px;cursor:pointer}
+/* ── 声 ── */
+.vsel{width:100%;max-width:100%;border:1px solid var(--line);background:rgba(0,0,0,.25);color:var(--ink);border-radius:9px;padding:9px 8px;font-family:inherit;font-size:13px}
+.vnum{min-width:2.6em;text-align:right;font-variant-numeric:tabular-nums}
+.vhelp{margin-top:10px;border:1px solid var(--line);border-radius:10px;padding:9px 11px}
+.vhelp summary{cursor:pointer;font-size:12.5px;color:var(--leaf)}
+.vhelp-b{font-size:12px;line-height:1.85;color:var(--ink);margin-top:8px}
+.vhelp-b p{margin:0 0 8px}
+.vhelp-b .dim{color:var(--dim)}
 </style>
 </head>
 <body>
@@ -196,8 +204,19 @@ header{margin-bottom:16px}
 
     <div class="card">
       <p class="ttl">声</p>
-      <p class="note" id="voiceNote" style="margin-top:0">読み上げの声は「暗室」の設定を共有します。声の種類・高さ・速さは、暗室の画面で変えられます。</p>
-      <button class="btn" id="voiceTest">この声を聞いてみる</button>
+      <div id="voiceBox" style="display:none">
+        <select id="voiceSel" class="vsel" aria-label="読み上げの声"></select>
+        <p class="note" id="voiceNow" style="margin-top:7px"></p>
+        <div class="srow"><span>高さ</span><input type="range" id="vPitch" min="0.8" max="1.2" step="0.01" aria-label="声の高さ"><span id="vPitchN" class="vnum">1.00</span></div>
+        <div class="srow"><span>速さ</span><input type="range" id="vRate" min="0.7" max="1.1" step="0.01" aria-label="声の速さ"><span id="vRateN" class="vnum">0.90</span></div>
+        <div style="margin-top:8px;text-align:right"><button class="tiny" id="voiceReset" type="button">高さ・速さを元に戻す</button></div>
+      </div>
+      <button class="btn" id="voiceTest" style="margin-top:10px">この声を聞いてみる</button>
+      <details class="vhelp" id="voiceHelp">
+        <summary>もっと自然な声にするには</summary>
+        <div class="vhelp-b" id="voiceHelpB"></div>
+      </details>
+      <p class="note" id="voiceNote">声の種類は「暗室」と共通です（どちらで選んでも両方に反映）。高さ・速さは、くつろぎだけの設定です。高さを上げると機械っぽく聞こえやすいので、1.00 がおすすめです。</p>
     </div>
 
     <div class="card">
@@ -437,7 +456,8 @@ function saveScript(){
 loadScript();
 
 /* ══════ 設定 ══════ */
-var C={steps:{heavy:true},hand:"R",pace:1,bg:"",bgVol:18,wake:true,gateSeen:false};
+var C={steps:{heavy:true},hand:"R",pace:1,bg:"",bgVol:18,wake:true,gateSeen:false,vPitch:1,vRate:0.9};
+var rateSaved=false;
 try{
   var o=JSON.parse(store.get(CFG_KEY)||"null");
   if(o){
@@ -448,8 +468,18 @@ try{
     if(typeof o.bgVol==="number")C.bgVol=o.bgVol;
     if(typeof o.wake==="boolean")C.wake=o.wake;
     if(typeof o.gateSeen==="boolean")C.gateSeen=o.gateSeen;
+    if(typeof o.vPitch==="number"&&isFinite(o.vPitch))C.vPitch=Math.min(1.2,Math.max(0.8,o.vPitch));
+    if(typeof o.vRate==="number"&&isFinite(o.vRate)){ C.vRate=Math.min(1.1,Math.max(0.7,o.vRate)); rateSaved=true; }
   }
 }catch(e){}
+/* 以前は暗室の速さ・高さをそのまま使っていた。速さを自分に合わせていた人のぶんは引き継ぐ。
+   高さは引き継がない（上げた高さが、機械っぽく聞こえるいちばんの元なので）。 */
+if(!rateSaved){
+  try{
+    var vo=JSON.parse(store.get(VOICE_KEY)||"null");
+    if(vo&&typeof vo.vRate==="number"&&isFinite(vo.vRate))C.vRate=Math.min(1.1,Math.max(0.7,vo.vRate));
+  }catch(e){}
+}
 function saveCfg(){try{store.set(CFG_KEY,JSON.stringify(C));}catch(e){}}
 
 /* ══════ 記録 ══════
@@ -471,41 +501,124 @@ try{ var r=JSON.parse(store.get(KEY)||"[]"); if(Array.isArray(r))H=guardHist(r);
 try{ clearedAt=parseInt(store.get(CLR_KEY)||"0",10)||0; }catch(e){}
 function saveHist(){H=guardHist(H);try{store.set(KEY,JSON.stringify(H));}catch(e){} if(sync)sync.touch(true);}
 
-/* ══════ 声（暗室と共有）══════ */
+/* ══════ 声 ══════
+   声の「種類」は暗室と共有する（どちらで選んでも両方に効く）。
+   高さ・速さは、くつろぎだけの設定（C.vPitch / C.vRate）。
+   暗室の既定の高さ 1.15 は、ここでは声を加工したような機械っぽさが出やすい。
+   自律訓練の声は落ち着いていてほしいので、くつろぎでは 1.0（加工なし）を既定にする。 */
 var ttsOK=("speechSynthesis" in window), voice=null;
-var V={voiceURI:"",vPitch:1.15,vRate:0.90};
+var V={voiceURI:""};
 function loadVoice(){
   try{
-    var o=JSON.parse(store.get(VOICE_KEY)||"null"); if(!o)return;
-    if(typeof o.voiceURI==="string")V.voiceURI=o.voiceURI;
-    if(typeof o.vPitch==="number")V.vPitch=o.vPitch;
-    if(typeof o.vRate==="number")V.vRate=o.vRate;
+    var o=JSON.parse(store.get(VOICE_KEY)||"null");
+    V.voiceURI=(o&&typeof o.voiceURI==="string")?o.voiceURI:"";
   }catch(e){}
 }
+/* 暗室の高さ・速さ・読み上げのON/OFFは残したまま、声の種類だけを書き換える */
+function saveSharedVoice(){
+  var o=null;
+  try{ o=JSON.parse(store.get(VOICE_KEY)||"null"); }catch(e){ o=null; }
+  if(!o||typeof o!=="object"||Array.isArray(o))o={};
+  o.voiceURI=V.voiceURI||"";
+  try{ store.set(VOICE_KEY,JSON.stringify(o)); }catch(e){}
+}
 function jaVoices(){
-  try{ return (window.speechSynthesis.getVoices()||[]).filter(function(v){return (v.lang||"").toLowerCase().indexOf("ja")===0;}); }
+  try{ return (window.speechSynthesis.getVoices()||[]).filter(function(v){return !!v&&(v.lang||"").toLowerCase().indexOf("ja")===0;}); }
   catch(e){ return []; }
 }
+/* 声の見分け。ブラウザは性別も品質も教えてくれないので、名前と voiceURI から判断する。
+   q: 4=とても自然（ニューラル） 3=自然（拡張版など） 2=ふつう 1=機械的 0=おもしろ声
+   f: true=女性 false=男性 null=分からない
+   旧版は「Google」を無条件で最上位にしていたため、Mac で「Kyoko（拡張）」を入れても
+   それより機械的な「Google 日本語」が選ばれていた。 */
+var VQ_LABEL=["機械的","機械的","ふつう","自然","とても自然"];
+var VQ_SCORE=[-100,25,55,85,100];   // おもしろ声は、女性でも一番下に
+function voiceInfo(v){
+  var nm=(((v&&v.name)||"")+" "+((v&&v.voiceURI)||"")).toLowerCase();
+  var q=2, f=null;
+  // iOS の「おもしろ声」（Eloquence）は、名前が英語の人名になっている
+  if(/eloquence|\b(eddy|flo|grandma|grandpa|reed|rocko|sandy|shelley)\b|espeak|festival|pico/.test(nm))q=0;
+  else if(/natural|neural|premium|プレミアム|online/.test(nm))q=4;   // Edge の Nanami Online (Natural) など
+  else if(/enhanced|拡張|高品質|siri/.test(nm))q=3;                  // iPhone・Mac の「拡張」
+  else if(/google/.test(nm))q=3;
+  else if(/microsoft/.test(nm))q=1;                                  // Windows の昔ながらの声（Haruka など）
+  if(/female|女性|nanami|aoi|mayu|shiori|kyoko|京子|o-?ren|haruka|ayumi|sayaka|mizuki|google|\b(flo|grandma|sandy|shelley)\b/.test(nm))f=true;
+  else if(/\bmale\b|男性|keita|daichi|naoki|masaru|ichiro|otoya|hattori|\b(eddy|grandpa|reed|rocko)\b/.test(nm))f=false;
+  return {q:q,f:f};
+}
 function voiceScore(v){
-  var nm=((v.name||"")+" "+(v.voiceURI||"")).toLowerCase(), sc=0;
-  if(/google/.test(nm))sc+=100;
-  if(/nanami/.test(nm))sc+=92;
-  if(/(enhanced|premium|neural|拡張|高品質)/.test(nm))sc+=85;
-  if(/(siri|o-?ren)/.test(nm))sc+=70;
-  if(/(kyoko|京子|mizuki|ayumi|sayaka|haruka|nanami|o-?ren)/.test(nm))sc+=40;
-  if(/(otoya|hattori|ichiro|daichi|keita|男性|male)/.test(nm))sc-=60;
-  if(v.localService===false)sc+=12;
-  if(/haruka/.test(nm))sc-=20;
+  var i=voiceInfo(v), sc=VQ_SCORE[i.q];
+  if(i.f===true)sc+=25; else if(i.f===false)sc-=50;   // 女性の声を先に
+  if(v&&v.localService===false)sc-=5;                 // 同じくらいなら端末の中の声（通信が切れても止まらない）
   return sc;
 }
-function pickVoice(){
-  if(!ttsOK)return;
-  var vs=jaVoices(); if(!vs.length){voice=null;return;}
-  if(V.voiceURI){for(var i=0;i<vs.length;i++){if(vs[i].voiceURI===V.voiceURI){voice=vs[i];return;}}}
-  var b=vs[0],bs=voiceScore(vs[0]);
-  for(var j=1;j<vs.length;j++){var t=voiceScore(vs[j]); if(t>bs){bs=t;b=vs[j];}}
-  voice=b;
+/* 点の高い順。同点は端末が並べた順のまま（毎回同じ声になるように） */
+function rankVoices(vs){
+  return (vs||[]).map(function(v,i){return {v:v,i:i,s:voiceScore(v)};})
+    .sort(function(a,b){return (b.s-a.s)||(a.i-b.i);})
+    .map(function(x){return x.v;});
 }
+/* ネットワークの声（Edge の Nanami Online、Chrome の Google 日本語）は、通信が切れると
+   エラーになって黙る。そのままだと消去動作まで無音で進んでしまうので、
+   失敗したら端末の中の声に切り替えて、同じ文を読み直す（speak の中）。 */
+var netVoiceFailed=false;
+function isNetVoice(v){ return !!v&&v.localService===false; }
+function offlineNow(){ try{ return navigator.onLine===false; }catch(e){ return false; } }
+/* 選んである声（無ければおすすめ）。通信の具合は見ない */
+function wantedVoice(vs){
+  if(V.voiceURI){ for(var i=0;i<vs.length;i++){ if(vs[i].voiceURI===V.voiceURI)return vs[i]; } }
+  return rankVoices(vs)[0]||null;
+}
+function pickVoice(){
+  if(!ttsOK){voice=null;return;}
+  var vs=jaVoices(); if(!vs.length){voice=null;return;}
+  var w=wantedVoice(vs);
+  if(isNetVoice(w)&&(netVoiceFailed||offlineNow())){
+    var loc=vs.filter(function(x){ return !isNetVoice(x); });
+    if(loc.length){ voice=rankVoices(loc)[0]; return; }
+  }
+  voice=w;
+}
+function voiceLabel(v){
+  var i=voiceInfo(v), a=[];
+  if(i.f===true)a.push("女性"); else if(i.f===false)a.push("男性");
+  a.push(VQ_LABEL[i.q]);
+  return a.join("・");
+}
+function voiceName(v){ return String((v&&(v.name||v.voiceURI))||""); }
+
+/* ══════ 読み方 ══════
+   端末の読み上げは、漢字の読みを取り違えることがある。Open JTalk で確かめると
+   「右腕→うわん」「左腕→さわん」「額→がく」「両脚→りょうきゃく」「体中→からだちゅう」。
+   公式の要の言葉でこれをやられると台無しなので、読み上げる文だけ、かなに直して渡す（画面の字はそのまま）。
+   編集した文のために「額《ひたい》」「｜お腹《おなか》」の書き方も受け付ける
+   （画面には「額」、声は「ひたい」）。 */
+var KJ="㐀-鿿豈-﫿々〆ヶ";
+var RUBY_BAR=/｜([^｜《》]+)《([^《》]*)》/g;
+var RUBY_KJ=new RegExp("(["+KJ+"]+)《([^《》]*)》","g");
+var YOMI=[
+  [/右腕/g,"みぎうで"],[/左腕/g,"ひだりうで"],[/両腕/g,"りょううで"],
+  [/右脚/g,"みぎあし"],[/左脚/g,"ひだりあし"],[/両脚/g,"りょうあし"],
+  [/お腹/g,"おなか"],[/体中/g,"からだじゅう"],[/下腹/g,"したはら"],
+  // 「金額」「差額」などはそのまま。前が漢字でない「額」だけを「ひたい」と読ませる
+  [new RegExp("(^|[^"+KJ+"])額","g"),"$1ひたい"]
+];
+/* 画面に出す字（読みの指定を取り除く） */
+function dispText(t){
+  return String(t==null?"":t).replace(RUBY_BAR,"$1").replace(RUBY_KJ,"$1").replace(/｜/g,"");
+}
+/* 読み上げに渡す字（読みの指定と、読み違えやすい言葉を、かなにする） */
+function yomiText(t){
+  var s=String(t==null?"":t)
+    .replace(RUBY_BAR,function(m,b,y){return y||b;})
+    .replace(RUBY_KJ,function(m,b,y){return y||b;})
+    .replace(/｜/g,"");
+  for(var i=0;i<YOMI.length;i++)s=s.replace(YOMI[i][0],YOMI[i][1]);
+  return s;
+}
+function clampN(x,lo,hi,d){ x=+x; if(!isFinite(x))x=d; return Math.min(hi,Math.max(lo,x)); }
+function vPitchNow(){ return clampN(C.vPitch,0.8,1.2,1); }
+function vRateNow(adj){ return Math.max(0.6, clampN(C.vRate,0.7,1.1,0.9)+((+adj)||0)); }
 function splitJa(t){
   var a=String(t||"").split(/(?:。|！|？)\s*/).map(function(x){return x.trim();}).filter(Boolean);
   return a.length?a:[String(t||"")];
@@ -523,11 +636,11 @@ var speakTick=0;
 /* rateAdj は「繰り返すほど少しずつゆっくり」の演出ぶん。
    onDone は最後の一文を読み終えた合図（進行はこれを主に使う）。
    読み上げを始められたときだけ true を返す。 */
-function speak(text,rateAdj,onDone){
+function speak(text,rateAdj,onDone,retry){
   var gen=++speakGen;
   clearTimeout(speakTimer); speakTimer=0;
   if(!ttsOK)return false;
-  var parts=splitJa(String(text==null?"":text)).filter(Boolean);
+  var parts=splitJa(yomiText(String(text==null?"":text))).filter(Boolean);
   if(!parts.length)return false;
   var fired=false;
   var fire=function(){
@@ -544,12 +657,29 @@ function speak(text,rateAdj,onDone){
         try{
           var u=new SpeechSynthesisUtterance(t);
           if(voice){u.voice=voice;u.lang=voice.lang;}else u.lang="ja-JP";
-          u.rate=Math.max(0.55,V.vRate+(rateAdj||0));
-          u.pitch=V.vPitch; u.volume=1;
+          u.rate=vRateNow(rateAdj);
+          u.pitch=vPitchNow(); u.volume=1;
           var tick=function(){ speakTick++; };
+          var uv=voice;
+          /* ネットワークの声が失敗したら、端末の中の声で同じ文を頭から読み直す（1回だけ） */
+          var onErr=function(ev){
+            tick();
+            var code=String((ev&&ev.error)||"");
+            // 止めた・操作が要る・文が長すぎる、などは声のせいではないので切り替えない
+            if(!retry&&gen===speakGen&&isNetVoice(uv)&&/^(network|synthesis-failed|synthesis-unavailable|voice-unavailable|language-unavailable|)$/.test(code)){
+              netVoiceFailed=true; pickVoice();
+              if(voice&&!isNetVoice(voice)){
+                try{ renderVoices(); }catch(e2){}
+                speak(text,rateAdj,onDone,true);
+                return;
+              }
+            }
+            if(last)fire();
+          };
           u.onstart=tick;
-          if(last){ u.onend=function(){ tick(); fire(); }; u.onerror=function(){ tick(); fire(); }; }
-          else { u.onend=tick; u.onerror=tick; }
+          u.onerror=onErr;
+          if(last){ u.onend=function(){ tick(); fire(); }; }
+          else { u.onend=tick; }
           uttKeep.push(u);
           if(uttKeep.length>16)uttKeep.splice(0,uttKeep.length-16);
           ss.speak(u);
@@ -691,7 +821,7 @@ function buildSeq(){
 }
 /* 待ち時間は必ず有限の数にする。hold が数値でないと NaN になり、
    setTimeout(…,NaN) が 0ms 扱いになって消去動作が一瞬で流れ去ってしまう。 */
-function speechMs(say){ return Math.max(2,String(say==null?"":say).length*0.14)*1000; }
+function speechMs(say){ return Math.max(2,dispText(say).length*0.14)*1000; }
 function holdMs(it){
   var h=+(it&&it.hold), p=+C.pace;
   if(!isFinite(h)||h<0)h=0;
@@ -843,7 +973,7 @@ function runStep(){
   }
   var say=String(it.say==null?"":it.say);
   $("stage").textContent=it.step||"";
-  $("line").textContent=say;
+  $("line").textContent=dispText(say);
   $("glyph").textContent=it.g||"";     // 前の段階の字を残さない
   var hold=holdMs(it), sp=speechMs(say), wait=hold+sp;
   R.elapsed+=wait/1000;
@@ -1068,10 +1198,107 @@ $("optWake").addEventListener("change",function(e){
   C.wake=e.target.checked; saveCfg();
   if(!C.wake)toast("練習中に画面が消えると読み上げが止まり、消去動作まで進めないことがあります。",7000);
 });
-$("voiceTest").addEventListener("click",function(){
-  ensureAudio(); loadVoice(); pickVoice();
-  speak("気持ちが、落ち着いている。両腕が、重たい。",0);
+/* ══════ 声の設定 ══════ */
+var VOICE_NOTE="声の種類は「暗室」と共通です（どちらで選んでも両方に反映）。高さ・速さは、くつろぎだけの設定です。高さを上げると機械っぽく聞こえやすいので、1.00 がおすすめです。";
+function sampleText(){
+  var a=(C.hand==="L")?"左":"右";
+  return "気持ちが、落ち着いている。"+a+"腕が、重たい。";
+}
+function previewVoice(){ ensureAudio(); speak(sampleText(),0); }
+var voiceSig="";
+/* iPhone は起動直後しばらく声の一覧が空のことがある。その間に「見つかりません」と
+   出すと驚かせるので、少し待ってから（または一覧の知らせが来てから）言う。 */
+var voicesSettled=false;
+function renderVoices(){
+  var sel=$("voiceSel"), box=$("voiceBox"), note=$("voiceNote"); if(!sel||!box)return;
+  if(!ttsOK)return;
+  var vs=jaVoices();
+  box.style.display=vs.length?"":"none";
+  if(!vs.length){
+    if(note)note.textContent=voicesSettled
+      ? "この端末には日本語の声が見つかりません。端末の既定の声で読み上げます。うまく読めないときは、下の「もっと自然な声にするには」をご覧ください。"
+      : VOICE_NOTE;
+    return;
+  }
+  if(note)note.textContent=VOICE_NOTE;
+  var rk=rankVoices(vs), best=rk[0];
+  var sig=rk.map(function(v){return v.voiceURI;}).join("|");
+  if(sig!==voiceSig){
+    voiceSig=sig;
+    var h='<option value="">おすすめを自動で選ぶ（いまは '+esc(voiceName(best))+'）</option>';
+    rk.forEach(function(v){ h+='<option value="'+esc(v.voiceURI)+'">'+esc(voiceName(v)+" — "+voiceLabel(v))+'</option>'; });
+    sel.innerHTML=h;
+  }
+  var has=false;
+  for(var i=0;i<vs.length;i++){ if(vs[i].voiceURI===V.voiceURI){ has=true; break; } }
+  sel.value=(V.voiceURI&&has)?V.voiceURI:"";
+  paintVoiceNow();
+}
+function paintVoiceNow(){
+  var p=vPitchNow(), r=clampN(C.vRate,0.7,1.1,0.9);
+  $("vPitch").value=p; $("vPitchN").textContent=p.toFixed(2);
+  $("vRate").value=r;  $("vRateN").textContent=r.toFixed(2);
+  var el=$("voiceNow"); if(!el||!ttsOK)return;
+  var vs=jaVoices(); if(!vs.length){ el.textContent=""; return; }
+  var v=voice||rankVoices(vs)[0], i=voiceInfo(v), w=wantedVoice(vs);
+  var t="使う声: "+voiceName(v)+"（"+voiceLabel(v)+"）";
+  if(w&&w!==v&&isNetVoice(w)) t+="。「"+voiceName(w)+"」はインターネットにつながっているときだけ使えるため、いまは端末の中の声で読みます";
+  if(i.f===false){
+    var fem=vs.some(function(x){ return voiceInfo(x).f===true; });
+    t+= fem ? "。女性の声は、上の一覧から選べます" : "。この端末には、女性の日本語の声が見当たりません";
+  }
+  if(i.q<=2) t+="。もっと自然な声は、下の「もっと自然な声にするには」の手順で足せます";
+  el.textContent=t+"。";
+}
+/* 端末ごとの「もっと自然な声」の入れ方。アプリから声を配ることはできないので、
+   できるのは、その端末にある一番よい声を選ぶことと、よりよい声の入れ方を案内すること。 */
+function platformKind(){
+  var ua=""; try{ ua=navigator.userAgent||""; }catch(e){}
+  var touchMac=false; try{ touchMac=/Macintosh/.test(ua)&&navigator.maxTouchPoints>1; }catch(e){}
+  if(/iPhone|iPad|iPod/.test(ua)||touchMac)return "ios";
+  if(/Android/.test(ua))return "android";
+  if(/Edg\//.test(ua))return "edge";
+  if(/Windows/.test(ua))return "win";
+  if(/Macintosh|Mac OS X/.test(ua))return "mac";
+  return "";
+}
+var VOICE_HELP={
+  ios:'<b>iPhone / iPad</b>：設定 → アクセシビリティ → 読み上げコンテンツ → 声 → 日本語 →「Kyoko」か「O-Ren」（どちらも女性）を開き、<b>「拡張」</b>の声をダウンロードします。終わったらこのアプリを一度閉じて開き直すと、上の一覧に出てきます。<span class="dim">（Siri の声は、ブラウザからは使えません）</span>',
+  android:'<b>Android</b>：声は端末の「テキスト読み上げ」の設定で決まります。設定 → システム → 言語（または「言語と入力」）→「テキスト読み上げの出力」で、優先するエンジンを<b>「Google 音声サービス」</b>にし、その ⚙ →「音声データのインストール」→ 日本語 で、女性の声を選びます。変えたあと、アプリを開き直してください。<span class="dim">（機種によって場所や名前が少し違います。Galaxy は 設定 → 一般管理 → 言語 → テキスト読み上げ）</span>',
+  win:'<b>Windows</b>：このアプリを <b>Microsoft Edge</b> で開くと、「Microsoft Nanami Online (Natural)」（女性・とても自然）が使えます。Chrome では「Google 日本語」がいちばん自然です。<span class="dim">（Windows の設定で声を足しても、ブラウザで使えるのは Haruka などの昔ながらの声だけです）</span>',
+  edge:'<b>Edge</b>：一覧の「Microsoft Nanami Online (Natural)」が、いちばん自然な女性の声です。<span class="dim">（インターネットにつながっているときに使えます）</span>',
+  mac:'<b>Mac</b>：システム設定 → アクセシビリティ → 読み上げコンテンツ →「システムの声」の一覧の下の「声を管理」→ 日本語 で「Kyoko（拡張）」か「O-Ren（拡張）」を入れます。Edge で開けば「Nanami Online (Natural)」も使えます。'
+};
+function renderVoiceHelp(){
+  var b=$("voiceHelpB"); if(!b)return;
+  var k=platformKind();
+  var h='<p>読み上げの声は、この端末に入っている声から選びます。アプリから声を配ることはできないため、声の自然さは端末しだいです。</p>';
+  if(k&&VOICE_HELP[k]) h+='<p>'+VOICE_HELP[k]+'</p><p class="dim">ほかの端末では:</p>';
+  ["ios","android","win","edge","mac"].forEach(function(x){ if(x!==k) h+='<p>'+VOICE_HELP[x]+'</p>'; });
+  h+='<p class="dim">読み方がおかしい言葉は、「誘導文の編集」で「額《ひたい》」のように書くと、画面は「額」のまま、声だけ「ひたい」と読みます。</p>';
+  b.innerHTML=h;
+}
+$("voiceSel").addEventListener("change",function(e){
+  V.voiceURI=String(e.target.value||""); saveSharedVoice(); pickVoice(); paintVoiceNow(); previewVoice();
 });
+$("vPitch").addEventListener("input",function(e){ C.vPitch=clampN(e.target.value,0.8,1.2,1); saveCfg(); paintVoiceNow(); });
+$("vRate").addEventListener("input",function(e){ C.vRate=clampN(e.target.value,0.7,1.1,0.9); saveCfg(); paintVoiceNow(); });
+$("vPitch").addEventListener("change",previewVoice);
+$("vRate").addEventListener("change",previewVoice);
+$("voiceReset").addEventListener("click",function(){ C.vPitch=1; C.vRate=0.9; saveCfg(); paintVoiceNow(); previewVoice(); });
+$("voiceTest").addEventListener("click",function(){
+  loadVoice(); pickVoice(); renderVoices(); previewVoice();
+});
+try{
+  window.addEventListener("online",function(){ netVoiceFailed=false; pickVoice(); renderVoices(); });
+  window.addEventListener("offline",function(){ pickVoice(); renderVoices(); });
+}catch(e){}
+/* 暗室（別のフレーム）で声を変えたら、こちらにも反映する */
+try{
+  window.addEventListener("storage",function(e){
+    if(e&&e.key===VOICE_KEY){ loadVoice(); pickVoice(); renderVoices(); }
+  });
+}catch(e){}
 $("tryBtn").addEventListener("click",function(){ begin(true); });
 /* 注意画面を「はじめる」の途中で出したのか、読み返しに来ただけなのかを覚えておく。
    読み返しただけで練習が始まってしまうと、心づもりのないまま始まってしまう。 */
@@ -1121,6 +1348,7 @@ function edRender(){
   $("edBody").innerHTML=h;
   $("edNote").innerHTML='左が読み上げる文、右がそのあとの沈黙（秒）です。「ゆっくり」を付けた行は、繰り返すごとに少しずつゆっくりになります。<br>'
     +'<b>%A%</b> は利き手の側、<b>%B%</b> は反対側に置き換わります。<br>'
+    +'読み方がおかしい言葉は <b>額《ひたい》</b> のように書くと、画面は「額」のまま、声だけ「ひたい」と読みます（かなが混ざるときは <b>｜お腹《おなか》</b> のように前に ｜ を付けます）。<br>'
     +'<b>消去動作は消せません。</b>ここを空にすると、練習後にぼんやりした状態のまま終わってしまうためです。';
 }
 /* 編集中の保存。書きかけの空行はここでは捨てない。
@@ -1326,8 +1554,18 @@ if(window.NKSync){
 
 /* ══════ 起動 ══════ */
 loadVoice();
-if(ttsOK){ pickVoice(); try{window.speechSynthesis.onvoiceschanged=pickVoice;}catch(e){} }
-else { $("voiceNote").textContent="この端末では読み上げが使えないため、画面の文字と合図音だけで進みます。"; }
+renderVoiceHelp();
+if(ttsOK){
+  var onVoices=function(){ pickVoice(); renderVoices(); };
+  onVoices();
+  try{window.speechSynthesis.onvoiceschanged=function(){ voicesSettled=true; onVoices(); };}catch(e){}
+  // iPhone では voiceschanged が来ないことがあるので、少し待って何度か見直す
+  [300,1200,3000].forEach(function(ms){ setTimeout(function(){ if(ms>=3000)voicesSettled=true; onVoices(); },ms); });
+}
+else {
+  $("voiceNote").textContent="この端末では読み上げが使えないため、画面の文字と合図音だけで進みます。";
+  $("voiceTest").style.display="none"; $("voiceHelp").style.display="none";
+}
 renderSteps(); paintSegs(); renderRecs(); renderPlan();
 if(!wakeSupported){
   // 練習前に伝えておく。注意画面では「画面が消えないようにします」と約束しているので、
