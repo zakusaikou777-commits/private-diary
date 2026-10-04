@@ -75,13 +75,24 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
 .knlog h5.now:after{content:"いま使っている版";font-size:10px;font-weight:700;color:#fff;background:#57845A;border-radius:9999px;padding:2px 8px}
 .knlog ul{padding-left:1.15em;margin:.2em 0 10px}
 .knlog li{font-size:12.5px;color:#3a3228;line-height:1.75;margin:3px 0}
-/* 更新のお知らせ（新しい版で最初に開いたとき一度だけ） */
-.knnew{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:60;display:flex;align-items:center;gap:12px;max-width:min(92vw,460px);background:#2c2620;color:#fdf1e6;border-radius:12px;padding:11px 14px;box-shadow:0 10px 34px rgba(0,0,0,.35);font-size:13px;line-height:1.6}
+/* 更新のお知らせ（新しい版で最初に開いたとき一度だけ）
+   旧: left:50% と translateX(-50%) だけで幅を決めていなかったため、幅の上限が「画面の右半分」になり、
+   390px のスマホでは文字が1字ずつ縦に並んで読めなかった。左右0＋margin:auto で中央に置き、幅は中身に合わせる。 */
+.knnew{position:fixed;left:0;right:0;margin:0 auto;bottom:16px;width:-webkit-max-content;width:max-content;z-index:60;display:flex;align-items:center;gap:12px;max-width:min(92vw,460px);box-sizing:border-box;background:#2c2620;color:#fdf1e6;border-radius:12px;padding:11px 14px;box-shadow:0 10px 34px rgba(0,0,0,.35);font-size:13px;line-height:1.6}
+.knnew span{flex:1 1 auto;min-width:0}
 .knnew b{color:#f0c987}
 .knnew button{flex:none;border:1px solid rgba(255,255,255,.35);background:transparent;color:#fdf1e6;border-radius:8px;padding:6px 11px;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
 .knnew button.x{border:none;font-size:18px;padding:2px 4px;line-height:1}
 .iconbtn.knerr{color:#a3392f;position:relative}
 .iconbtn.knerr:after{content:"";position:absolute;top:1px;right:1px;width:8px;height:8px;border-radius:50%;background:#c0463c}
+/* 暗室の練習中の暗転に合わせて、上のタブ帯も暗くする。暗室の黒い幕はフレームの中にしか
+   掛けられず、ここだけ明るいままだと、ふと目を開けたときにまぶしい（有機ELの電池も減る）。
+   触ると暗室と同じく操作が見える（最初の1回はタブの切り替えにしない）。 */
+body.nk-dark,body.nk-dark #tabbar{background:#000}
+body.nk-dark #tabbar{border-bottom-color:#000}
+body.nk-dark #tabbar .apptab,body.nk-dark #tabbar .iconbtn{background:#000;border-color:#0d0b0a;color:#2c2320;box-shadow:none}
+body.nk-dark #tabbar .iconbtn.knerr:after{background:#2c2320}
+body.nk-dark .knnew{opacity:.12}
 </style>
 </head>
 <body>
@@ -286,7 +297,9 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     fr.src = base;
     loaded[app] = true;
   }
+  var curApp = '';
   function show(app){
+    curApp = app;
     var tabs = document.querySelectorAll('.apptab');
     for(var i=0;i<tabs.length;i++){
       var on = tabs[i].getAttribute('data-app')===app;
@@ -297,7 +310,35 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     var fr = document.querySelectorAll('.appframe');
     for(var j=0;j<fr.length;j++){ fr[j].classList.toggle('active', fr[j].id===('frame-'+app)); }
     load(app);
+    nkDarkApply();   // 暗室から離れたらタブ帯を明るく戻す（戻ってきて、まだ暗転中ならまた暗く）
   }
+  /* ── 暗室の暗転に合わせてタブ帯を暗くする ──────────────────
+     暗室の黒い幕はフレームの中だけなので、上のタブ帯は覆えない。暗室から
+     {nkDark:true/false} が届いたら、暗室のタブを表示している間だけ帯を暗くする。
+     受け付けるのは暗室のフレーム自身からだけ（他のタブに画面を暗くさせない）。 */
+  var nkDarkOn = false;
+  function nkDarkApply(){
+    var on = !!(nkDarkOn && curApp === 'anshitsu');
+    document.body.classList.toggle('nk-dark', on);
+    // Android のホーム画面アプリでは、上のステータスバーの色もこれで決まる
+    var tc = document.querySelector('meta[name="theme-color"]');
+    if(tc) tc.setAttribute('content', on ? '#000000' : '#f4ecda');
+  }
+  function nkDarkReset(){ if(nkDarkOn){ nkDarkOn = false; nkDarkApply(); } }
+  // 暗室のフレームが読み込み直された・空にされた（取り込み時など）ときは、暗いまま残さない
+  (function(){
+    var fa = document.getElementById('frame-anshitsu');
+    if(fa) fa.addEventListener('load', nkDarkReset);
+  })();
+  /* 暗いタブ帯を触ったら、タブを切り替える代わりに明るく戻し、暗室にも操作を見せてもらう。
+     目を閉じたまま画面の上の方に触れて、知らないうちに別のタブへ移らないように。 */
+  document.getElementById('tabbar').addEventListener('click', function(e){
+    if(!document.body.classList.contains('nk-dark')) return;
+    e.preventDefault(); e.stopPropagation();
+    nkDarkReset();   // 暗室に届かなくても、帯が暗いまま操作できなくならないよう先に戻す
+    var fa = document.getElementById('frame-anshitsu');
+    try{ fa.contentWindow.postMessage({nkPeek:true}, location.origin); }catch(err){}
+  }, true);
   var tabs = document.querySelectorAll('.apptab');
   for(var k=0;k<tabs.length;k++){
     tabs[k].addEventListener('click', (function(t){ return function(){ show(t.getAttribute('data-app')); }; })(tabs[k]));
@@ -309,6 +350,12 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     // このオリジンで任意のJSが動き、Googleのトークンまで読める）。
     if(e.origin !== location.origin) return;
     if(!e.data) return;
+    if(typeof e.data.nkDark === 'boolean'){
+      var fa = document.getElementById('frame-anshitsu');
+      if(!fa || e.source !== fa.contentWindow) return;   // 暗室のフレームからだけ
+      nkDarkOn = e.data.nkDark; nkDarkApply();
+      return;
+    }
     if(e.data.knTab){ show(e.data.knTab); return; }
     if(e.data.nkOpenSync){ knModalOpen(true); return; }      // 日記帳のバナーから
     if(e.data.nkSyncStatus){ knOnStatus(e.data.nkSyncStatus); return; }
@@ -630,6 +677,11 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
     var autogenicScript = localStorage.getItem('autogenic:script');
     var autogenicCfg = localStorage.getItem('autogenic:cfg');
     var autogenicCleared = localStorage.getItem('autogenic:clearedAt');
+    // 日記帳の墓標（日記帳自身の書き出しには入っていた）。これが無いと、復元後の同期で
+    // 削除済みの日記が戻ったり、逆にこの端末に残っていた古い墓標で復元した日記が消えたりする
+    var diaryDeleted = localStorage.getItem('diaryDeleted');
+    // タスクの「Googleタスク側へ伝える削除」の控え（Google側からの復活も防いでいる）
+    var tasksGtDel = localStorage.getItem('tasks:gtaskDeleted');
     var files=[];
     try{ var db=await knOpenDB(); var recs=await knIdbAll(db); for(var i=0;i<recs.length;i++){ var r=recs[i]; if(r&&r.blob){ try{ files.push({id:r.id,name:r.name,type:r.type,dataUrl:await blobToDataURL(r.blob)}); }catch(e){} } } }catch(e){}
     // 日記帳の画像。暗号化してあるものは中身を読めないので、そのままの形で運ぶ
@@ -654,8 +706,42 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
         try{ bgmTracks.push({id:br.id, name:br.name, type:br.type, dataUrl:await blobToDataURL(br.blob)}); }catch(e){}
       }
     }catch(e){}
-    return { app:'nikki-kininari', v:2, exportedAt:new Date().toISOString(), diaryImages:diaryImages, bgmTracks:bgmTracks, diary:diary, diaryLastBackup:diaryLast, kininari:{ data:kdata, files:files }, anshitsu:anshitsu, anshitsuCleared:anshitsuCleared, bgm:bgm, gdCid:gdCid, autogenic:autogenic, autogenicCfg:autogenicCfg, autogenicCleared:autogenicCleared, tasks:tasks, kininariDel:kininariDel, autogenicScript:autogenicScript };
+    // v3: diaryDeleted / tasksGtDel を足した（v2 のファイルも取り込める）
+    return { app:KN_BACKUP_APP, v:3, exportedAt:new Date().toISOString(), diaryImages:diaryImages, bgmTracks:bgmTracks, diary:diary, diaryLastBackup:diaryLast, diaryDeleted:diaryDeleted, kininari:{ data:kdata, files:files }, anshitsu:anshitsu, anshitsuCleared:anshitsuCleared, bgm:bgm, gdCid:gdCid, autogenic:autogenic, autogenicCfg:autogenicCfg, autogenicCleared:autogenicCleared, tasks:tasks, tasksGtDel:tasksGtDel, kininariDel:kininariDel, autogenicScript:autogenicScript };
   }
+  var KN_BACKUP_APP='nikki-kininari';   // 「まとめて書き出す」のファイルの目印（取り込むときに確かめる）
+  /* 暗室の記録の形を確かめる（暗室側の cleanRec と同じ基準）。壊れた1件が混ざると、
+     以前は暗室が開いてもボタンが全部効かなくなった。暗室の側でも捨てるが、入口でも落としておく。
+     配列として読めないときは null（＝取り込まない。この端末の記録はそのまま） */
+  function knCleanAnshitsu(s){
+    try{
+      var a=JSON.parse(s); if(!Array.isArray(a)) return null;
+      return JSON.stringify(a.filter(function(h){
+        return !!h && typeof h==='object' && !Array.isArray(h) && typeof h.date==='string' &&
+               /^\d{4}-\d{2}-\d{2}$/.test(h.date) && typeof h.sec==='number' && isFinite(h.sec);
+      }));
+    }catch(e){ return null; }
+  }
+  /* 「同期済み」の印（synced）を外す。sync.js と気になり帳の同期は、印の付いた項目が
+     Drive に無いと「ほかの端末で消された」と判断して消す。バックアップの項目には元の端末の
+     印が付いたままなので、Drive の中身が変わっていると（別のアカウント・作り直したファイル・
+     その後の整理など）、取り込んだ項目が最初の同期でまとめて消えてしまう。
+     印を外せば「この端末で足した項目」として扱われ、Drive に送り直される。
+     （Drive にある削除の墓標・全消去の時刻は、これまでどおり効く） */
+  function knUnsync(s){
+    if(typeof s!=='string') return s;
+    try{
+      var strip=function(v){
+        if(Array.isArray(v)){ for(var i=0;i<v.length;i++) strip(v[i]); return; }
+        if(v && typeof v==='object'){
+          if(Object.prototype.hasOwnProperty.call(v,'id') && Object.prototype.hasOwnProperty.call(v,'synced')) delete v.synced;
+          for(var k in v){ if(Object.prototype.hasOwnProperty.call(v,k)) strip(v[k]); }
+        }
+      };
+      var o=JSON.parse(s); strip(o); return JSON.stringify(o);
+    }catch(e){ return s; }   // 読めない形はそのまま（各アプリが自分で整える）
+  }
+  function knSetOrRemove(key, v){ if(typeof v==='string') localStorage.setItem(key, v); else localStorage.removeItem(key); }
   async function knExport(){
     knMsg('準備中…');
     try{
@@ -672,8 +758,16 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
   }
   async function knDoImport(file){
     knMsg('取り込み中…');
+    var obj=null;
+    try{ obj=JSON.parse(await file.text()); }catch(e){ obj=null; }
+    /* 「まとめて書き出す」で作ったファイルかを、何かを書き換える前に確かめる。
+       以前は別のファイル（日記帳だけの書き出しなど）でも、何も取り込まないまま
+       各タブを閉じ・自動同期をOFFにして「取り込みました」と出ていた。 */
+    if(!obj || typeof obj!=='object' || Array.isArray(obj) || obj.app!==KN_BACKUP_APP){
+      knMsg('このファイルは「まとめて書き出す」で作ったバックアップではないため、取り込みませんでした（データはそのままです）。nikki-kininari-backup-（日付）.json を選んでください。', false);
+      return;
+    }
     try{
-      var text=await file.text(); var obj=JSON.parse(text);
       // 先に各アプリを止める。動いたままだと、日記帳の自動保存(0.8秒)や
       // 気になり帳の自動同期が、取り込んだ直後のデータを古い内容で
       // 上書きしてしまうことがある。
@@ -683,18 +777,47 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
         loaded={}; knReady={};
       }catch(e){}
       await new Promise(function(r){ setTimeout(r, 150); });
+      nkDarkReset();   // 暗室のフレームを閉じたので、タブ帯の暗転も解く
+      // 同期の記録（最終同期時刻・Drive上のファイルID）を捨てる。
+      // 残したままだと、リロード直後の自動同期が「Driveのほうが新しい」と判断して
+      // 取り込んだ内容を数秒で上書きし返してしまう。
+      // データを書き込む前に行う（途中で失敗しても、半端な内容が自動同期でDriveと混ざらないように）。
+      try{
+        ['shared:nksync:file','kininari:gd:file','kininari:gd:sync',
+         'tasks:gtaskList','tasks:gtaskSync'].forEach(function(k){ localStorage.removeItem(k); });
+        knApps.forEach(function(a){ localStorage.removeItem('shared:nksync:sync:'+a); });
+        // さらに、自動同期をいったんOFFにする。取り込んだ内容を確認してから
+        // 自分でONに戻してもらうほうが、勝手に上書きされるより安全。
+        localStorage.setItem(KN_AUTO_KEY, '0');
+        // 日記帳と気になり帳は独自の同期エンジンで、別のキーを見ている。
+        // ここを消し忘れると、リロード直後にDriveから取りに行って
+        // 取り込んだ内容に古い項目が戻ってきてしまう。
+        localStorage.setItem('autoSyncDrive', 'false');
+        localStorage.setItem('kininari:gd:auto', '0');
+      }catch(e){}
+      var anshitsuStr = (typeof obj.anshitsu==='string') ? knCleanAnshitsu(obj.anshitsu) : null;
+      var kdataStr = (obj.kininari && typeof obj.kininari.data==='string') ? obj.kininari.data : null;
       if(typeof obj.diary==='string') localStorage.setItem('diaryEntries', obj.diary);
       if(obj.diaryLastBackup) localStorage.setItem('diaryLastBackup', obj.diaryLastBackup);
-      if(typeof obj.anshitsu==='string') localStorage.setItem('image-streaming:v1', obj.anshitsu);
-      if(typeof obj.bgm==='string') localStorage.setItem('bgm:v1', obj.bgm);
-      if(typeof obj.anshitsuCleared==='string') localStorage.setItem('image-streaming:clearedAt', obj.anshitsuCleared);
+      if(anshitsuStr!==null) localStorage.setItem('image-streaming:v1', anshitsuStr);
+      // 同期済みの印は外して入れる（knUnsync の説明。Driveに無い項目を「他端末で削除」と誤解させない）
+      if(typeof obj.bgm==='string') localStorage.setItem('bgm:v1', knUnsync(obj.bgm));
       if(typeof obj.gdCid==='string' && obj.gdCid) localStorage.setItem('shared:gd:cid', obj.gdCid);
       if(typeof obj.autogenic==='string') localStorage.setItem('autogenic:v1', obj.autogenic);
-      if(typeof obj.tasks==='string') localStorage.setItem('tasks:v1', obj.tasks);
-      if(typeof obj.kininariDel==='string') localStorage.setItem('kininari:deleted:v1', obj.kininariDel);
+      if(typeof obj.tasks==='string') localStorage.setItem('tasks:v1', knUnsync(obj.tasks));
       if(typeof obj.autogenicScript==='string') localStorage.setItem('autogenic:script', obj.autogenicScript);
       if(typeof obj.autogenicCfg==='string') localStorage.setItem('autogenic:cfg', obj.autogenicCfg);
-      if(typeof obj.autogenicCleared==='string') localStorage.setItem('autogenic:clearedAt', obj.autogenicCleared);
+      /* 墓標・全消去の時刻は、バックアップに合わせる（あれば入れ、無ければ消す）。
+         この端末に残っていた古い墓標や全消去の時刻が効いたままだと、取り込んだ日記・メモ・記録が
+         次の同期で消えてしまう。データを取り込んだアプリ（またはその印が入っているアプリ）だけに行い、
+         バックアップに何も入っていないアプリは、データも印もこの端末のままにする。
+         無いときに「消す」側へ倒すのは、残すと復元したものを消しうるのに対し、
+         消して起きるのは「消したはずのものが戻る」で、取り返しがつくため。 */
+      if(typeof obj.diary==='string' || typeof obj.diaryDeleted==='string') knSetOrRemove('diaryDeleted', obj.diaryDeleted);
+      if(kdataStr!==null || typeof obj.kininariDel==='string') knSetOrRemove('kininari:deleted:v1', obj.kininariDel);
+      if(typeof obj.tasks==='string' || typeof obj.tasksGtDel==='string') knSetOrRemove('tasks:gtaskDeleted', obj.tasksGtDel);
+      if(anshitsuStr!==null || typeof obj.anshitsuCleared==='string') knSetOrRemove('image-streaming:clearedAt', obj.anshitsuCleared);
+      if(typeof obj.autogenic==='string' || typeof obj.autogenicCleared==='string') knSetOrRemove('autogenic:clearedAt', obj.autogenicCleared);
       if(Array.isArray(obj.diaryImages) && obj.diaryImages.length){
         try{
           var ddb2=await knOpenDiaryDB();
@@ -718,29 +841,20 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
         }catch(e){}
       }
       if(obj.kininari){
-        if(typeof obj.kininari.data==='string') localStorage.setItem('kininari:data:v2', obj.kininari.data);
+        if(kdataStr!==null) localStorage.setItem('kininari:data:v2', knUnsync(kdataStr));
         var files=(obj.kininari.files||[]);
         if(files.length){ var db=await knOpenDB(); for(var i=0;i<files.length;i++){ var f=files[i]; try{ var bl=await (await fetch(f.dataUrl)).blob(); await knIdbPut(db,{id:f.id,blob:bl,name:f.name,type:f.type,size:bl.size}); }catch(e){} } }
       }
-      // 同期の記録（最終同期時刻・Drive上のファイルID）を捨てる。
-      // 残したままだと、リロード直後の自動同期が「Driveのほうが新しい」と判断して
-      // 取り込んだ内容を数秒で上書きし返してしまう。
-      try{
-        ['shared:nksync:file','kininari:gd:file','kininari:gd:sync',
-         'tasks:gtaskList','tasks:gtaskSync'].forEach(function(k){ localStorage.removeItem(k); });
-        knApps.forEach(function(a){ localStorage.removeItem('shared:nksync:sync:'+a); });
-        // さらに、自動同期をいったんOFFにする。取り込んだ内容を確認してから
-        // 自分でONに戻してもらうほうが、勝手に上書きされるより安全。
-        localStorage.setItem(KN_AUTO_KEY, '0');
-        // 日記帳と気になり帳は独自の同期エンジンで、別のキーを見ている。
-        // ここを消し忘れると、リロード直後にDriveから取りに行って
-        // 取り込んだ内容に古い項目が戻ってきてしまう。
-        localStorage.setItem('autoSyncDrive', 'false');
-        localStorage.setItem('kininari:gd:auto', '0');
-      }catch(e){}
-      knMsg('取り込みました。安全のため自動同期はOFFにしています。内容を確かめてから☁でONに戻してください。再読み込みします…', true);
+      /* 「次のDrive同期で復元が元に戻る」問題への対処（ここでできる範囲）:
+         ・同期の記録を捨て、自動同期をOFFにして、すぐには混ぜない（上）
+         ・この端末の古い墓標・全消去の時刻はバックアップのものに置き換える
+         ・同期済みの印を外し、Driveに無いだけの項目は送り直させる
+         それでも、ほかの端末がバックアップより後に行った削除・全消去は Drive に残っていて、
+         同期をONにすると効く（それを打ち消すと、別の端末で消したものまで戻ってしまうため）。
+         そのことは取り込んだときに伝える。 */
+      knMsg('取り込みました。安全のため自動同期はOFFにしています。内容を確かめてから☁でONに戻してください（ONにすると、ほかの端末でこのバックアップより後に削除・全消去したものは、こちらでも消えます）。再読み込みします…', true);
       setTimeout(function(){ location.reload(); }, 2200);
-    }catch(e){ knMsg('取り込めませんでした。ファイルを確認してください。', false); }
+    }catch(e){ knMsg('取り込みの途中で失敗しました。ファイルを確認してください（途中まで入った可能性があるため、自動同期はOFFのままにしています）。', false); }
   }
 
   document.getElementById('knBackupBtn').addEventListener('click', function(){ knModalOpen(true); });
@@ -861,8 +975,20 @@ body{background:#f4ecda;font-family:-apple-system,BlinkMacSystemFont,"Hiragino K
   document.getElementById('knExport').addEventListener('click', knExport);
   document.getElementById('knImport').addEventListener('change', function(e){ var f=e.target.files&&e.target.files[0]; if(f) knDoImport(f); e.target.value=''; });
 
+  /* くつろぎの練習中にアプリごと閉じた・落ちたときは、消去動作を通らずに終わっている。
+     くつろぎは起動時に「消去動作をはじめる」を出すが、くつろぎのタブは開くまで読み込まれないので、
+     日記帳から始まると気づけない。目印が残っていたら、くつろぎのタブで始める。
+     目印が古いかどうかは、くつろぎ自身が判断する（ここでは中身の形だけ見る）。
+     共有などで開いたとき（音・気になり帳に渡すものがあるとき）は、そちらを優先する。 */
+  function knPendingAutogenic(){
+    try{
+      var o=JSON.parse(localStorage.getItem('autogenic:inPractice')||'null');
+      return !!(o && typeof o==='object' && !Array.isArray(o) && o.at);
+    }catch(e){ return false; }
+  }
   if(bgmHash){ show('bgm'); try{ history.replaceState(null,'',location.pathname+(wasShare?'':location.search)); }catch(e){} }
   else if(clipHash){ show('kininari'); try{ history.replaceState(null,'',location.pathname+(wasShare?'':location.search)); }catch(e){} }
+  else if(knPendingAutogenic()){ show('autogenic'); }
   else { show('diary'); }
 })();
 </script>

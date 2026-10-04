@@ -576,7 +576,9 @@ window.onYouTubeIframeAPIReady=function(){
                  :(c===100)?"動画が見つかりませんでした（削除・非公開の可能性）。"
                  :"再生できませんでした。「↗ YouTubeで開く」をお試しください。";
           $("pnote").textContent=msg; toast(msg,6000);
-          if(c===101||c===150){var it=byId(curId);if(it){it.noEmbed=true;save();render();}}
+          // 印を付けたら updatedAt も進めて同期に乗せる。進めないと Drive 同期のマージ
+          // （同じ時刻ならドライブ側が勝つ）で印の無い写しに戻され、自動送りがまたこの曲で止まる
+          if(c===101||c===150){var it=byId(curId);if(it&&!it.noEmbed){it.noEmbed=true;it.updatedAt=Date.now();save();touch(true);render();}}
         }
       }
     });
@@ -1337,9 +1339,16 @@ function paintTb(){
      タイマーが動いているのに切れているように見えるので、延長ボタンを点けておく。 */
   $("bPlus10").classList.toggle("on",!hit&&!!tTick);
 }
+/* フェードを途中でやめたときは音量を必ず戻す。戻さないと絞られた音量のまま鳴り続け
+   （スライダの表示とも食い違う）、次のフェードは元の音量から始まるので、
+   寝入りばなに音量が跳ね上がる。音源は就寝音とは別の音量なので、それぞれ戻す。 */
+function restoreFadeVol(){
+  applyVol(); applyScVol();
+  if(sndKind==="au") SND.setVol(S.auVol/100);
+}
 function setTimer(min){
   S.timer=min; tExtended=false;
-  if(fadeTick){clearInterval(fadeTick);fadeTick=null;}
+  if(fadeTick){clearInterval(fadeTick);fadeTick=null;restoreFadeVol();}
   if(tTick){clearInterval(tTick);tTick=null;}
   if(!min){tEnd=0;$("tleft").textContent="";paintTb();return;}
   tEnd=Date.now()+min*60000;
@@ -1386,7 +1395,7 @@ $("bPlus10").addEventListener("click",function(){
   var wasFading=!!fadeTick;
   if(wasFading){
     clearInterval(fadeTick);fadeTick=null;
-    applyVol();applyScVol();
+    restoreFadeVol();
     var cu=byId(curId);
     try{if(yt&&yt.playVideo&&cu&&!cu.noEmbed)yt.playVideo();}catch(e){}
     if(scId){ var sd=null; SOUNDS.forEach(function(x){if(x.id===scId)sd=x;}); if(sd) SND.play(sd,S.scVol/100); }
@@ -1423,13 +1432,16 @@ function syncSetLocal(d){
     // 他端末のファイル登録は実体が無く鳴らせないので受け取らない。
     var mine=(S.tracks||[]).filter(function(t){ return t.kind==="file"; });
     var got=(d.tracks||[]).filter(function(t){ return t && t.kind==="stream"; });
-    var byId={}; got.forEach(function(t){ byId[t.id]=t; });
+    // ★ここを byId と名付けると、var の巻き上げでこの関数の中の byId()（曲を引く関数）が
+    //   全部この入れ物に化け、曲を選んでいるあいだの同期が毎回「byId is not a function」で
+    //   失敗していた（アップロード前に落ちるので、変更が他端末に届かない）
+    var gotById={}; got.forEach(function(t){ gotById[t.id]=t; });
     var out=[];
     (S.tracks||[]).forEach(function(t){
       if(t.kind==="file"){ out.push(t); return; }
-      if(byId[t.id]){ out.push(byId[t.id]); delete byId[t.id]; }
+      if(gotById[t.id]){ out.push(gotById[t.id]); delete gotById[t.id]; }
     });
-    got.forEach(function(t){ if(byId[t.id]) out.push(t); });
+    got.forEach(function(t){ if(gotById[t.id]) out.push(t); });
     S.tracks=out;
     if(!out.length && mine.length) S.tracks=mine;
   }
@@ -1465,6 +1477,7 @@ function foldItems(l){
     lose.cats.forEach(function(c){ if(win.cats.indexOf(c)<0) win.cats.push(c); });
     for(var d2 in lose.plays) win.plays[d2]=Math.max(win.plays[d2]||0,lose.plays[d2]||0);
     win.fav=!!(win.fav||lose.fav);
+    if(lose.noEmbed) win.noEmbed=true;
     win.lastAt=Math.max(win.lastAt||0,lose.lastAt||0);
     win.updatedAt=Math.max(win.updatedAt||0,lose.updatedAt||0);
     if(!win.title||isBlank(win.title)){ if(lose.title&&!isBlank(lose.title)) win.title=lose.title; }
@@ -1499,6 +1512,9 @@ function syncMerge(local,remote,lastSync){
     [r.plays,l.plays].forEach(function(pp){for(var d in (pp||{})) plays[d]=Math.max(plays[d]||0,pp[d]||0);});
     o.plays=plays;
     o.lastAt=Math.max(l.lastAt||0,r.lastAt||0);
+    // 「埋め込み不可」は一度分かれば変わらない（外す操作も無い）。どちらかで分かっていれば残す。
+    // 片方の編集（★など）が勝ったときに消えると、自動送りがまたこの曲で止まる
+    if(l.noEmbed||r.noEmbed) o.noEmbed=true;
     return o;
   });
   var genres=NKSync.mergeById(local.genres,remote.genres,lastSync,tG,"id");

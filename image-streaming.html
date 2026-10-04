@@ -146,6 +146,7 @@
   .vrow{display:flex; align-items:center; gap:8px; margin-bottom:6px;}
   .vrow input[type=range]{flex:1; min-width:0; accent-color:var(--ember);}
   .vnum{font-size:11px; color:var(--dim); font-family:var(--fb); min-width:30px; text-align:right; font-variant-numeric:tabular-nums;}
+  .vnow{margin:-4px 0 9px; font-size:11.5px; color:var(--dim); line-height:1.5;}
   .vhelp{margin-top:8px; font-size:11.5px; color:var(--dim);}
   .vhelp summary{cursor:pointer;}
   .vhelp-b{margin-top:7px; line-height:1.85;}
@@ -340,6 +341,7 @@
         <div class="voicebox" id="voiceBox">
           <label class="vlbl" for="voiceSel">声</label>
           <select id="voiceSel" class="vsel"></select>
+          <div class="vnow" id="voiceNow" hidden></div>
           <div class="vpresets" id="vPresets">
             <button type="button" class="vp" data-vp="calm">おちついた</button>
             <button type="button" class="vp on" data-vp="soft">やわらかい</button>
@@ -360,6 +362,7 @@
         </div>
         <button class="testbtn" id="testBtn"></button>
         <p class="tts-note" id="ttsNote" hidden>この環境では読み上げが使えないため、合図音のみで案内します。</p>
+        <p class="tts-note" id="noJaNote" hidden>この端末には日本語の読み上げ音声が見つからないため、声の案内は使えません（合図音だけで案内し、画面も暗くしません）。端末の設定で日本語の音声を追加してから開き直すと使えます。</p>
 
         <button class="btn primary wide" id="beginBtn"></button>
       </div>
@@ -495,6 +498,7 @@
     speakCues: true,     // 目を閉じて行う練習なので、声の案内は既定でON
     dim: true,           // 練習中は画面を暗くする
     free: false,         // お題なし（浮かんだものをそのまま描写する、本来のやり方）
+    run: { free: false, scene: "" },   // 練習中の回のお題（begin で控える）
     voiceURI: "", vPitch: 1.15, vRate: 0.90, vPreset: "soft",
     activeSense: 0,
     rating: null,
@@ -593,15 +597,36 @@
     a.push(VQ_LABEL[i.q]);
     return a.join("・");
   }
+  /* ネットワークの声（Edge の Nanami Online、Chrome の Google 日本語）は、通信が切れると
+     エラーになって黙る。暗室は画面を暗くして声だけで案内するので、黙ると何も分からない。
+     くつろぎと同じく、失敗したら端末の中の声に切り替えて、その文から読み直す（speak の中）。
+     通信が切れているあいだは、はじめから端末の中の声を使う。つながったら元に戻す。 */
+  var netVoiceFailed = false;
+  function isNetVoice(v){ return !!v && v.localService === false; }
+  function offlineNow(){ try { return navigator.onLine === false; } catch(e){ return false; } }
+  function vName(v){ return String((v && (v.name || v.voiceURI)) || ""); }
+  /* 声の一覧は端末によって遅れて届く（iPhone は voiceschanged が来ないこともある）。
+     届ききる前に「日本語の声が無い」と決めつけないよう、確かめ終わったかを持つ */
+  var voicesSettled = false;
+  /* 選んである声（無ければおすすめ）。通信の具合は見ない */
+  function wantedVoice(vs){
+    if(S.voiceURI){ for(var i=0;i<vs.length;i++){ if(vs[i].voiceURI === S.voiceURI) return vs[i]; } }
+    return rankVoices(vs)[0] || null;
+  }
+  /* 日本語の声が1つでもあるか。無いと ja-JP 指定でも英語の声などで読まれて、
+     案内が聞き取れない（暗い画面のまま何も分からなくなる）ので、暗くしない判断に使う */
+  function jaVoiceReady(){ return ttsSupported && jaVoices().length > 0; }
   function pickVoice(){
-    if(!ttsSupported) return;
+    if(!ttsSupported){ voice = null; return; }
     var vs = jaVoices();
-    if(!vs.length){ voice = null; return; }
-    // 明示的に選ばれた声があればそれを最優先
-    if(S.voiceURI){
-      for(var i=0;i<vs.length;i++){ if(vs[i].voiceURI === S.voiceURI){ voice = vs[i]; renderVoices(); return; } }
+    // 声が無いときも描き直す（以前はここで戻っていたため、空の一覧が出たままだった）
+    if(!vs.length){ voice = null; renderVoices(); return; }
+    var w = wantedVoice(vs);
+    voice = w;
+    if(isNetVoice(w) && (netVoiceFailed || offlineNow())){
+      var loc = vs.filter(function(x){ return !isNetVoice(x); });
+      if(loc.length) voice = rankVoices(loc)[0];
     }
-    voice = rankVoices(vs)[0];
     renderVoices();
   }
   function renderVoices(){
@@ -609,6 +634,9 @@
     var vs = jaVoices();
     var box = $("voiceBox");
     if(box) box.style.display = (ttsSupported && vs.length) ? "" : "none";
+    // 一覧が届ききっても日本語の声が無いときだけ、そう伝える
+    var nj = $("noJaNote"); if(nj) nj.hidden = !(ttsSupported && !vs.length && voicesSettled);
+    try { renderToggle(); } catch(e){}   // 「暗くする」の説明も声の有無で変わる
     if(!vs.length) return;
     var rk = rankVoices(vs);
     var sig = rk.map(function(v){ return v.voiceURI; }).join("|");
@@ -625,6 +653,14 @@
     var has = false;
     for(var k=0;k<vs.length;k++){ if(vs[k].voiceURI === S.voiceURI){ has = true; break; } }
     sel.value = (S.voiceURI && has) ? S.voiceURI : "";
+    // 選んだ声の代わりに端末の中の声で読んでいるときは、黙って替えずに理由を出す
+    var vn = $("voiceNow"), w = wantedVoice(vs);
+    if(vn){
+      if(voice && w && voice.voiceURI !== w.voiceURI){
+        vn.textContent = "「" + vName(w) + "」はインターネットにつながっているときだけ使えるため、いまは「" + vName(voice) + "」で読みます。";
+        vn.hidden = false;
+      } else vn.hidden = true;
+    }
   }
   function mkUtter(t){
     var u = new SpeechSynthesisUtterance(t);
@@ -659,19 +695,37 @@
     for(var i=0;i<YOMI.length;i++) s = s.replace(YOMI[i][0], YOMI[i][1]);
     return s;
   }
+  /* 世代番号。止めた・次の文に入れ替えたあとに、古い発話のエラーが
+     「読み直し」を始めてしまわないようにする（cancel でもエラーが届く engine がある）。 */
+  var speakGen = 0;
+  // 声のせいで黙ったときのエラー。止めた・操作が要る・文が長すぎる、などは声を替えても直らない
+  var NET_ERR = /^(network|synthesis-failed|synthesis-unavailable|voice-unavailable|language-unavailable|)$/;
   function speak(text){
+    speakParts(splitJa(yomiText(text)), false);
+  }
+  function speakParts(parts, retry){
     try {
       if(!ttsSupported) return;
       var ss = window.speechSynthesis;
-      var parts = splitJa(yomiText(text));
+      var gen = ++speakGen;
       var go = function(){
         speakTimer = null;
-        parts.forEach(function(t){
+        if(gen !== speakGen) return;          // 待っている間に止めた・別の文に替わった
+        parts.forEach(function(t, idx){
           try {
-            var u = mkUtter(t);
+            var u = mkUtter(t), uv = voice;
             speaking.push(u);
             var drop = function(){ var i = speaking.indexOf(u); if(i >= 0) speaking.splice(i, 1); };
-            u.onend = drop; u.onerror = drop;
+            u.onend = drop;
+            u.onerror = function(ev){
+              drop();
+              var code = String((ev && ev.error) || "");
+              if(retry || gen !== speakGen || !isNetVoice(uv) || !NET_ERR.test(code)) return;
+              // ネットワークの声が黙った → 端末の中の声に替えて、失敗した文から読み直す（1回だけ）。
+              // 先の文はもう聞こえているので、頭から読み直すと重複する。
+              netVoiceFailed = true; pickVoice();
+              if(voice && !isNetVoice(voice)) speakParts(parts.slice(idx), true);
+            };
             ss.speak(u);
           } catch(e){}
         });
@@ -695,6 +749,7 @@
     } catch(e){}
   }
   function stopSpeech(){
+    speakGen++;                                   // 止めた発話のエラーで読み直さないように
     if(speakTimer){ clearTimeout(speakTimer); speakTimer = null; }
     speaking.length = 0;
     try { if(ttsSupported) window.speechSynthesis.cancel(); } catch(e){}
@@ -754,8 +809,19 @@
      一時停止・終了のときは明るく戻す。声の案内が無いと、暗い画面では
      お題も感覚の切り替えも分からなくなるので、そのときは暗くしない。 */
   var darkT = null, DARK_AFTER = 4000, PEEK_MS = 6000;
-  function darkWanted(){ return !!(S.dim && S.speakCues && ttsSupported && S.phase === "running"); }
-  function setDark(on){ var d = $("darkroom"); if(d) d.hidden = !on; }
+  // 日本語の声が無い端末では、ja-JP 指定でも案内が聞き取れないので暗くしない
+  function darkWanted(){ return !!(S.dim && S.speakCues && jaVoiceReady() && S.phase === "running"); }
+  /* シェル（index.html）の中では、上のタブ帯はこのフレームの外にあって覆えない。
+     そこだけ明るいままだと、ふと目を開けたときにまぶしいので、暗さをシェルにも伝える。 */
+  var darkShown = false;
+  function tellShellDark(on){
+    try { if(window.parent && window.parent !== window) window.parent.postMessage({ nkDark: !!on }, location.origin); } catch(e){}
+  }
+  function setDark(on){
+    var d = $("darkroom"); if(d) d.hidden = !on;
+    on = !!on;
+    if(on !== darkShown){ darkShown = on; tellShellDark(on); }
+  }
   function undark(){ if(darkT){ clearTimeout(darkT); darkT = null; } setDark(false); }
   function scheduleDark(ms){
     if(darkT){ clearTimeout(darkT); darkT = null; }
@@ -769,12 +835,15 @@
 
   /* はじめの案内。目を閉じたまま始められるよう、最初の感覚（視覚）の問いまで続けて読む */
   function introText(){
-    return S.free
+    return S.run.free
       ? "目を閉じてください。何が浮かんできても、そのまま、声に出して、詳しく描写してください。"
-      : "目を閉じて、「" + S.scene + "」を思い浮かべてください。気づいたことを、声に出して、詳しく。";
+      : "目を閉じて、「" + S.run.scene + "」を思い浮かべてください。気づいたことを、声に出して、詳しく。";
   }
-  function pendingScene(){ return S.free ? "（お題なし）" : S.scene; }
+  function pendingScene(){ return S.run.free ? "（お題なし）" : S.run.scene; }
   function begin(){
+    /* この回のお題を控えておく。練習中に別の窓（同じ端末の別タブ）で「お題なし」が
+       切り替わっても、練習中の表示や記録が始めたときの内容と食い違わないように */
+    S.run = { free: !!S.free, scene: S.scene };
     S.rating = null; $("noteEl").value = "";
     S.activeSense = 0;
     S.secondsLeft = S.durationMin * 60;
@@ -822,20 +891,43 @@
   var sync = null;
   window.__isTouch = function(urgent){ if(sync) sync.touch(!!urgent); };
   function recKey(h){ return (h && (h.ts || (h.date + "|" + (h.sec||0)))) + ""; }
+  /* 記録1件の形を確かめる。記録は保存・同期・まとめて取り込み（バックアップ）で外から入ってくる。
+     null や日付の無い記録が1件でも混ざると、描画（日付の分解）で例外になって init() ごと止まり、
+     ボタンが全部効かなくなっていた。形の合わないものは捨て、数値はそろえる。
+     知らない項目は残す（新しい版が足した項目を、古い版の同期で消さないように）。 */
+  var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  function cleanRec(h){
+    if(!h || typeof h !== "object" || Array.isArray(h)) return null;
+    if(typeof h.date !== "string" || !DATE_RE.test(h.date)) return null;
+    if(typeof h.sec !== "number" || !isFinite(h.sec)) return null;
+    var o = {};
+    for(var k in h){ if(Object.prototype.hasOwnProperty.call(h, k) && k !== "__proto__") o[k] = h[k]; }
+    o.sec = Math.max(0, Math.min(86400, h.sec));   // 1日を超える練習は無い（巨大な値で合計が壊れないように）
+    if("ts" in o && (typeof o.ts !== "number" || !isFinite(o.ts))) delete o.ts;
+    if("scene" in o && typeof o.scene !== "string") o.scene = o.scene == null ? "" : String(o.scene);
+    if("note" in o && typeof o.note !== "string") o.note = o.note == null ? "" : String(o.note);
+    if("vivid" in o && !(typeof o.vivid === "number" && o.vivid >= 1 && o.vivid <= 5)) o.vivid = null;
+    return o;
+  }
+  function cleanHistory(a){
+    if(!Array.isArray(a)) return [];
+    var out = [];
+    for(var i=0;i<a.length;i++){ var c = cleanRec(a[i]); if(c) out.push(c); }
+    return out;
+  }
   function syncGetLocal(){ return { history: S.history, clearedAt: S.clearedAt || 0 }; }
   function syncSetLocal(d){
-    S.history = Array.isArray(d && d.history) ? d.history : [];   // 形の壊れた受信で以後の描画が止まらないように
-    S.clearedAt = (d && d.clearedAt) || 0;
+    S.history = cleanHistory(d && d.history);   // 形の壊れた受信で以後の描画が止まらないように
+    S.clearedAt = (d && typeof d.clearedAt === "number" && isFinite(d.clearedAt)) ? d.clearedAt : 0;
     try { store.set(KEY, JSON.stringify(S.history)); } catch(e){}
     try { store.set(CLR_KEY, String(S.clearedAt)); } catch(e){}
     renderTenten(); renderJournal();
   }
   function syncMerge(local, remote){
     if(!remote) return local;
-    var cleared = Math.max(local.clearedAt || 0, remote.clearedAt || 0);
+    var cleared = Math.max(+local.clearedAt || 0, +remote.clearedAt || 0);
     var seen = {}, out = [];
-    [].concat(local.history || [], remote.history || []).forEach(function(h){
-      if(!h || !h.date) return;
+    [].concat(cleanHistory(local.history), cleanHistory(remote.history)).forEach(function(h){
       if(cleared && (h.ts || 0) <= cleared) return;   // 消去より前の記録は復活させない
       var k = recKey(h);
       if(seen[k]) return;
@@ -879,21 +971,29 @@
      音声ガイドのON/OFFも、隣の声の設定だけ残って本体が毎回OFFに戻るのは不親切なので
      ここに一緒に入れる（これも端末ごとの好み）。 */
   var VOICE_KEY = "image-streaming:voice";
+  function readVoicePrefs(raw){
+    try {
+      var o = JSON.parse(raw || "null");
+      return (o && typeof o === "object" && !Array.isArray(o)) ? o : null;
+    } catch(e){ return null; }
+  }
+  /* 同じ置き場には、くつろぎも声の種類（voiceURI）を書く。丸ごと書き直すと、
+     相手が足した項目や、別の窓で変えた設定を古い値で消してしまうので、
+     読み直して自分の項目だけを差し替える（read-modify-write）。 */
   function saveVoicePrefs(){
     try {
-      store.set(VOICE_KEY, JSON.stringify({
-        voiceURI: S.voiceURI, vPitch: S.vPitch, vRate: S.vRate, vPreset: S.vPreset, speakCues: S.speakCues,
-        dim: S.dim, free: S.free, cues2: 1
-      }));
+      var o = readVoicePrefs(store.get(VOICE_KEY)) || {};
+      o.voiceURI = S.voiceURI; o.vPitch = S.vPitch; o.vRate = S.vRate; o.vPreset = S.vPreset;
+      o.speakCues = S.speakCues; o.dim = S.dim; o.free = S.free; o.cues2 = 1;
+      store.set(VOICE_KEY, JSON.stringify(o));
     } catch(e){}
   }
-  function loadVoicePrefs(){
+  function loadVoicePrefs(){ var o = readVoicePrefs(store.get(VOICE_KEY)); if(o) applyVoicePrefs(o); }
+  function applyVoicePrefs(o){
     try {
-      var o = JSON.parse(store.get(VOICE_KEY) || "null");
-      if(!o) return;
       if(typeof o.voiceURI === "string") S.voiceURI = o.voiceURI;
-      if(typeof o.vPitch === "number") S.vPitch = Math.max(0.6, Math.min(1.6, o.vPitch));
-      if(typeof o.vRate  === "number") S.vRate  = Math.max(0.6, Math.min(1.3, o.vRate));
+      if(typeof o.vPitch === "number" && isFinite(o.vPitch)) S.vPitch = Math.max(0.6, Math.min(1.6, o.vPitch));
+      if(typeof o.vRate  === "number" && isFinite(o.vRate))  S.vRate  = Math.max(0.6, Math.min(1.3, o.vRate));
       if(typeof o.vPreset === "string") S.vPreset = o.vPreset;
       /* 旧版は音声ガイドが既定でOFFで、声の設定を変えただけでも OFF のまま保存していた。
          目印（cues2）の無い保存は「選んでOFFにした」とは限らないので、新しい既定（ON）を使う。
@@ -956,7 +1056,7 @@
     $("ctlDone").hidden = (p !== "done");
 
     if(p === "running" || p === "paused"){
-      $("sceneMini").textContent = S.free ? "お題なし" : S.scene;
+      $("sceneMini").textContent = S.run.free ? "お題なし" : S.run.scene;
       var ppb = $("playPauseBtn");
       if(p === "running"){ ppb.className = "btn ghost"; ppb.innerHTML = ICON.pause(16) + " 一時停止"; }
       else { ppb.className = "btn primary"; ppb.innerHTML = ICON.play(16) + " 再開"; }
@@ -1006,11 +1106,14 @@
     $("toggleIco").innerHTML = S.speakCues ? ICON.volOn(16) : ICON.volOff(16);
     $("toggleSwitch").className = "switch" + (S.speakCues ? " on" : "");
     var db = $("dimBtn"); if(!db) return;
-    var can = S.speakCues && ttsSupported;
+    // 日本語の声が無いと分かったら（一覧が届ききってから判断する）暗くしないことを伝える
+    var noJa = ttsSupported && voicesSettled && !jaVoiceReady();
+    var can = S.speakCues && ttsSupported && !noJa;
     db.className = "toggle" + (S.dim ? " on" : "") + (can ? "" : " muted");
     $("dimIco").innerHTML = ICON.moon(16);
     $("dimSwitch").className = "switch" + (S.dim ? " on" : "");
     $("dimHelp").textContent = !ttsSupported ? "この環境では読み上げが使えないため、暗くしません"
+      : noJa ? "日本語の読み上げ音声が無いため、暗くしません（案内が聞き取れないため）"
       : !S.speakCues ? "音声ガイドがOFFのあいだは暗くしません（お題や感覚の切り替えが見えなくなるため）"
       : "始めて数秒で真っ暗になります。触ると数秒だけ操作が出ます";
   }
@@ -1130,7 +1233,7 @@
     // load history
     /* 配列以外のJSON（"{}" など）でも JSON.parse は通ってしまう。そのまま入れると
        あとの .filter() で init() ごと止まり、ボタンが全部死ぬ。形まで確かめる。 */
-    try { var raw = store.get(KEY), h0 = raw ? JSON.parse(raw) : null; S.history = Array.isArray(h0) ? h0 : []; }
+    try { var raw = store.get(KEY), h0 = raw ? JSON.parse(raw) : null; S.history = cleanHistory(h0); }   // 1件ずつの形も確かめる
     catch(e){ S.history = []; }
     try { S.clearedAt = parseInt(store.get(CLR_KEY) || "0", 10) || 0; } catch(e){ S.clearedAt = 0; }
     setupSync();
@@ -1151,6 +1254,16 @@
       if($("darkroom").hidden || e.code === "Space") return;
       peek();
     });
+    /* シェルの暗いタブ帯を触ったときは、ここでも操作を見せる（画面のどこを触っても同じにする）。
+       命令はシェル（同じオリジンの親）からだけ受け付ける。 */
+    window.addEventListener("message", function(e){
+      if(e.origin !== location.origin || e.source !== window.parent || window.parent === window) return;
+      if(e.data && e.data.nkPeek && !$("darkroom").hidden) peek();
+    });
+    /* フレームごと消える（再読み込み・取り込み）ときは、暗さを解いたとシェルに伝える。
+       伝えないと、シェルのタブ帯だけが暗いまま残る。戻ってきたら（bfcache）伝え直す。 */
+    window.addEventListener("pagehide", function(){ if(darkShown) tellShellDark(false); });
+    window.addEventListener("pageshow", function(e){ if(e && e.persisted && darkShown) tellShellDark(true); });
     $("beginBtn").addEventListener("click", begin);
     $("toggleBtn").addEventListener("click", function(){ S.speakCues = !S.speakCues; if(S.speakCues) ensureAudio(); else stopSpeech(); saveVoicePrefs(); renderToggle(); });
     $("testBtn").addEventListener("click", function(){
@@ -1196,16 +1309,25 @@
       saveVoicePrefs(); pickVoice(); previewVoice();
     });
     /* くつろぎ（別のフレーム）で声の種類を変えたら、こちらにも反映する。
-       反映しないと、次にここで高さを変えたときに古い声で上書きしてしまう。 */
+       同じ端末の別の窓の暗室（PWAとブラウザのタブなど）が音声ガイド・暗転・お題なし・
+       高さ・速さを変えたときも、全部ここに取り込む。古い値のまま持っていると、
+       次にここで何か変えたときの保存で、相手の変更を元に戻してしまう。 */
     try {
       window.addEventListener("storage", function(e){
         if(!e || e.key !== VOICE_KEY) return;
-        try {
-          var o = JSON.parse(e.newValue || "null");
-          S.voiceURI = (o && typeof o.voiceURI === "string") ? o.voiceURI : "";
-        } catch(x){ return; }
+        var o = readVoicePrefs(e.newValue);
+        if(o) applyVoicePrefs(o); else S.voiceURI = "";
+        try { paintVoice(); } catch(x){}
+        renderToggle(); renderScene();
+        // 練習中に音声ガイドや暗転が切られたら、暗いままにしない
+        if(S.phase === "running" && !darkWanted()) undark();
         pickVoice();
       });
+    } catch(e){}
+    /* 通信が切れたら端末の中の声へ、つながったらネットワークの声へ戻す */
+    try {
+      window.addEventListener("online", function(){ netVoiceFailed = false; pickVoice(); });
+      window.addEventListener("offline", function(){ pickVoice(); });
     } catch(e){}
     paintVoice();
     $("playPauseBtn").addEventListener("click", function(){ if(S.phase === "running") pause(); else if(S.phase === "paused") resume(); });
@@ -1220,31 +1342,67 @@
     try { paintVoice(); } catch(e){}
     renderToggle();   // 保存してあった音声ガイドのON/OFF・暗転を反映する
     renderScene();    // 保存してあった「お題なし」を反映する
-    if(ttsSupported){ pickVoice(); try { window.speechSynthesis.onvoiceschanged = pickVoice; } catch(e){} }
+    if(ttsSupported){
+      pickVoice();
+      try { window.speechSynthesis.onvoiceschanged = function(){ voicesSettled = true; pickVoice(); }; } catch(e){}
+      /* iPhone では voiceschanged が来ないことがあるので、少し待って何度か見直す（くつろぎと同じ）。
+         3秒たっても日本語の声が無ければ、そこで初めて「声が無い」と伝える */
+      [300, 1200, 3000].forEach(function(ms){
+        setTimeout(function(){ if(ms >= 3000) voicesSettled = true; pickVoice(); }, ms);
+      });
+    }
     else { var vb = $("voiceBox"); if(vb) vb.style.display = "none"; }
 
     // keyboard: space to start / pause / resume
     document.addEventListener("keydown", function(e){
       if(e.code !== "Space") return;
-      /* 何かにフォーカスがあるときの Space は、その部品のためのもの。
-         横取りすると「記録する」「破棄」や鮮明さのボタンがキーボードで押せなくなる。 */
-      var el = e.target, tag = (el && el.tagName || "").toUpperCase();
-      if(el && el.isContentEditable) return;
-      if(tag === "TEXTAREA" || tag === "INPUT" ||
-         tag === "SELECT" || tag === "A" || tag === "OPTION") return;
-      /* ボタンは「キーボードで選んでいるとき」だけ譲る。
-         指やマウスで押したあとはフォーカスが残っているだけなので、
-         そこまで譲ると「Spaceで一時停止」が効かなくなる。 */
-      if(tag === "BUTTON"){
-        var kb = false;
-        try { kb = !!(el.matches && el.matches(":focus-visible")); } catch(err){ kb = false; }
-        if(kb) return;
-      }
+      /* 暗いあいだは、どこにフォーカスがあっても Space は一時停止。
+         黒い画面の下でフォーカスは見えないので、たまたま「終了」に残っていたフォーカスで
+         練習が終わってしまわないようにする（暗転の説明どおり「スペースは一時停止」）。 */
+      var darkNow = !$("darkroom").hidden;
+      spaceEaten = false;
+      if(!darkNow && spaceBelongsTo(e.target)) return;
       e.preventDefault();
+      spaceEaten = true;
+      /* 押しっぱなしの自動リピートでは切り替えない。切り替えると、始める→止める→再開…と
+         回り続け、目を閉じたまま一時停止で止まっていることに気づけない */
+      if(e.repeat) return;
       if(S.phase === "idle") begin();
       else if(S.phase === "running") pause();
       else if(S.phase === "paused") resume();
     });
+    /* ボタンの Space は、離したとき（keyup）に押されるブラウザがある。keydown だけ止めると、
+       ここで一時停止したあと、フォーカスの残ったボタンがもう一度押されてしまう */
+    document.addEventListener("keyup", function(e){
+      if(e.code !== "Space" || !spaceEaten) return;
+      spaceEaten = false;
+      e.preventDefault();
+    });
+  }
+  var spaceEaten = false;
+  /* その Space は、フォーカスのある部品のためのものか。
+     横取りすると「記録する」「破棄」や鮮明さのボタン、「もっと自然な声にするには」の開閉などが
+     キーボードで操作できなくなる。 */
+  var SPACE_TAGS = /^(TEXTAREA|INPUT|SELECT|OPTION|A|SUMMARY|DETAILS|LABEL|AUDIO|VIDEO|IFRAME|EMBED|OBJECT)$/;
+  var SPACE_ROLES = /^(checkbox|switch|radio|menuitem|menuitemcheckbox|menuitemradio|option|tab|treeitem|slider|spinbutton|scrollbar|combobox|textbox|searchbox|listbox|link|gridcell)$/;
+  function spaceBelongsTo(el){
+    if(!el || el === document.body || el === document.documentElement || el === document) return false;
+    if(el.isContentEditable) return true;
+    var tag = (el.tagName || "").toUpperCase();
+    if(SPACE_TAGS.test(tag)) return true;
+    var role = (el.getAttribute && el.getAttribute("role")) || "";
+    if(SPACE_ROLES.test(role)) return true;
+    /* ボタンは「キーボードで選んでいるとき」だけ譲る。
+       指やマウスで押したあとはフォーカスが残っているだけなので、
+       そこまで譲ると「Spaceで一時停止」が効かなくなる。 */
+    if(tag === "BUTTON" || role === "button"){
+      var kb = false;
+      try { kb = !!(el.matches && el.matches(":focus-visible")); } catch(err){ kb = false; }
+      return kb;
+    }
+    // tabindex を付けた独自の部品も、その部品のためのキーとして譲る
+    try { if(el.hasAttribute && el.hasAttribute("tabindex") && el.tabIndex >= 0) return true; } catch(err){}
+    return false;
   }
 
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

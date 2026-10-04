@@ -160,31 +160,76 @@
   }
 
   /* ── Drive ──────────────────────────────────────────────── */
+  // 1回の通信の上限。同期は全アプリで1本ずつ（下の withFileLock）なので、
+  // 返事の来ない通信を待ち続けると、ほかのアプリの同期まで永久に止まる
+  var API_TIMEOUT_MS = 60000;
   function api(url, tok, opt) {
     opt = opt || {};
     opt.headers = opt.headers || {};
     opt.headers.Authorization = "Bearer " + tok;
+    var timer = null;
+    try {
+      if (typeof AbortController === "function") {
+        var ctl = new AbortController();
+        opt.signal = ctl.signal;
+        timer = setTimeout(function () { try { ctl.abort(); } catch (e) {} }, API_TIMEOUT_MS);
+      }
+    } catch (e) {}
+    var done = function () { if (timer) { clearTimeout(timer); timer = null; } };
     return fetch(url, opt).then(function (r) {
+      done();
       if (r.status === 401) { store.del(TOKEN_KEY); throw new Error("401 認証の期限切れ"); }
       if (!r.ok) throw new Error(r.status + " Driveへの通信に失敗");
       return r;
-    });
+    }, function (e) { done(); throw e; });
   }
-  function findFile(tok) {
+  /** 同期ファイルを決める。返り値: { id: 正のファイル（無ければ null）, dups: [ほかの同名ファイル] }
+   *  同名のファイルが複数あることがある（旧版で全アプリが同時に初回同期した・2台が同時に作った）。
+   *  端末ごとに違うものを選ぶと、同期しているつもりで永久にすれ違ううえ、選び直したときに
+   *  「同期済みなのに無い＝削除」と誤解して消す。どの端末でも「いちばん古いもの」を正とする。 */
+  function findFiles(tok) {
     var cached = store.get(FILE_KEY);
-    if (cached) return Promise.resolve(cached);
     var q = encodeURIComponent("name='" + FILE_NAME + "' and trashed=false");
-    return api("https://www.googleapis.com/drive/v3/files?q=" + q + "&fields=files(id,modifiedTime)&pageSize=10", tok)
+    return api("https://www.googleapis.com/drive/v3/files?q=" + q + "&orderBy=createdTime&fields=files(id,createdTime,modifiedTime)&pageSize=50", tok)
       .then(function (r) { return r.json(); })
       .then(function (j) {
-        var f = (j.files || [])[0];
-        if (f) { store.set(FILE_KEY, f.id); return f.id; }
-        return null;
+        var fs = ((j && j.files) || []).filter(function (f) { return f && f.id; });
+        var seen = !cached || fs.some(function (f) { return f.id === cached; });
+        if (seen) return fs;
+        // 作った直後のファイルは一覧（検索）にすぐ出ないことがある。覚えているものは直接確かめる。
+        // 確かめずに「無い」と決めると、もう1つ作ってしまう
+        return metaFull(tok, cached).then(function (m) {
+          if (m && m.id && !m.trashed) fs.push(m);
+          return fs;
+        }, function () { return fs; });
+      }, function (e) {
+        // 一覧が取れないとき（通信の偽物・権限など）は、覚えているファイルで続ける
+        if (cached) return [{ id: cached }];
+        throw e;
+      })
+      .then(function (fs) {
+        fs.sort(function (a, b) {
+          var x = String(a.createdTime || ""), y = String(b.createdTime || "");
+          if (x !== y) return x < y ? -1 : 1;
+          return a.id < b.id ? -1 : (a.id > b.id ? 1 : 0);
+        });
+        if (!fs.length) return { id: null, dups: [] };
+        store.set(FILE_KEY, fs[0].id);
+        return { id: fs[0].id, dups: fs.slice(1) };
       });
   }
   function meta(tok, id) {
     return api("https://www.googleapis.com/drive/v3/files/" + id + "?fields=id,modifiedTime", tok)
       .then(function (r) { return r.json(); });
+  }
+  function metaFull(tok, id) {
+    return api("https://www.googleapis.com/drive/v3/files/" + id + "?fields=id,createdTime,modifiedTime,trashed", tok)
+      .then(function (r) { return r.json(); });
+  }
+  /** 中身を正のファイルへ寄せ終えた重複ファイルをゴミ箱へ（完全には消さない。30日は戻せる） */
+  function trashFile(tok, id) {
+    return api("https://www.googleapis.com/drive/v3/files/" + id + "?fields=id", tok,
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ trashed: true }) });
   }
   function download(tok, id) {
     return api("https://www.googleapis.com/drive/v3/files/" + id + "?alt=media", tok)
@@ -207,8 +252,41 @@
       .then(function (j) { if (j && j.id) store.set(FILE_KEY, j.id); return j; });
   }
 
+  /* ── 端末内の排他（全アプリ・全iframe・全タブで同期は1本ずつ）──────────
+     同期ファイルは4アプリで1つ。同時に走ると、読んでから書くまでの間に別のアプリが書き、
+     後から書いた方が先に書いた方の区画を古い内容で戻してしまう。戻された項目には
+     もう「同期済み」の印が付いているので、次の同期で「他端末で削除された」と誤解されて消える。
+     初回も、全アプリが同時に「ファイルが無い」と見て、1つずつ作ってしまう。
+     navigator.locks は iframe や別タブをまたいで効く。無い古いブラウザでは、
+     このページの中だけでも順番に流す。 */
+  var LOCK_NAME = "nksync-file";
+  var localChain = Promise.resolve();
+  function withFileLock(fn) {
+    var L = null;
+    try { L = global.navigator && global.navigator.locks; } catch (e) { L = null; }
+    if (L && typeof L.request === "function") {
+      return L.request(LOCK_NAME, function () { return fn(); });
+    }
+    var p = localChain.then(fn, fn);
+    localChain = p.then(function () {}, function () {});
+    return p;
+  }
+
+  /** 「同期済み」の印を外した写し。複数の写し（重複ファイル）を1つにまとめるときに使う。
+   *  印が付いたまま混ぜると、片方にしか無い項目が「削除された」扱いで落ちる */
+  function unmarkSynced(v) {
+    if (Array.isArray(v)) return v.map(unmarkSynced);
+    if (v && typeof v === "object") {
+      var o = {};
+      for (var k in v) if (k !== "synced") o[k] = unmarkSynced(v[k]);
+      return o;
+    }
+    return v;
+  }
+
   function errMsg(e) {
     var m = String((e && e.message) || e);
+    if (/REMOTE_CORRUPT/.test(m)) return "Googleドライブの同期ファイル（" + FILE_NAME + "）が読めないため、上書きせずに止めました。ドライブでこのファイルを確認してください。";
     if (/NOCID/.test(m)) return "先に「気になり帳」の同期設定（クライアントID）を済ませてください。";
     if (/401/.test(m)) return "Googleログインの期限が切れました。もう一度つないでください。";
     if (/403/.test(m)) return "Driveの権限が不足しています。設定を確認してください。";
@@ -275,7 +353,7 @@
     // cfg: {app, label, getLocal, setLocal, merge, syncKey}
     var SYNC_KEY = "shared:nksync:sync:" + cfg.app;   // 最終同期時刻(ISO)
     var AUTO_KEY = "shared:nksync:auto";              // 自動同期のON/OFF（共通）
-    var lazyT = null, urgT = null, busy = false;
+    var lazyT = null, urgT = null, busy = false, again = false;
     var status = { phase: "idle", msg: "", at: 0 };
     var listeners = [];
 
@@ -290,13 +368,73 @@
 
     function readRemote(tok, id) {
       return download(tok, id).then(function (txt) {
-        var o = {};
-        try { o = JSON.parse(txt) || {}; } catch (e) { o = {}; }
-        if (!o.apps) o.apps = {};
+        var o = null;
+        try { o = JSON.parse(txt); } catch (e) { o = null; }
+        // 読めないファイルを空とみなして「このアプリの区画だけ」を書き戻すと、
+        // ほかのアプリの区画がまるごと消える。壊れているときは書かずに止める
+        if (!o || typeof o !== "object" || Array.isArray(o)) throw new Error("REMOTE_CORRUPT");
+        if (o.apps == null) o.apps = {};
+        else if (typeof o.apps !== "object" || Array.isArray(o.apps)) throw new Error("REMOTE_CORRUPT");
         return o;
       });
     }
     function blankDoc() { return { app: "nikki-sync", v: 1, apps: {} }; }
+
+    // 重複ファイルは、最後に書かれてからこれだけ経ったらゴミ箱へ移す。
+    // すぐには捨てない: 更新前の版を開いたままの端末が、まだそちらへ書いているかもしれない
+    // （捨てると、その端末の「同期済み」の項目が正のファイルに無く、削除と誤解される）
+    var DUP_STALE_MS = 7 * 24 * 3600 * 1000;
+    function isStale(f) {
+      var t = Date.parse((f && f.modifiedTime) || "");
+      return isFinite(t) && Date.now() - t > DUP_STALE_MS;
+    }
+    /** 重複ファイルを全部読む。1つでも読めなければ同期を止める
+     *  （読めないまま正のファイルとだけ混ぜると、そちらにしか無い「同期済み」の項目を消してしまう） */
+    function readDups(tok, dups) {
+      var out = [];
+      return dups.reduce(function (p, f) {
+        return p.then(function () {
+          return readRemote(tok, f.id).then(function (d) { out.push({ f: f, doc: d }); });
+        });
+      }, Promise.resolve()).then(function () { return out; });
+    }
+    /** 正のファイル(doc)に重複ファイルの中身を寄せる。doc を書き換える。
+     *  このアプリの区画は、全部の写しを1つに混ぜて remote として返す。
+     *  ほかのアプリの区画は、正のファイルに無ければ移す。両方にあるものは、そのアプリが
+     *  自分で同期したときに重複ファイルから混ぜる（混ぜ方はそのアプリにしか分からない）。
+     *  ただし今回ゴミ箱へ移す重複ファイルの分は、捨てる前に pending に預けておく。 */
+    function assemble(doc, dupDocs) {
+      var mine = [];
+      if (doc.apps[cfg.app]) mine.push(doc.apps[cfg.app]);
+      var pend = (doc.pending && typeof doc.pending === "object" && !Array.isArray(doc.pending)) ? doc.pending : {};
+      var own = pend[cfg.app];
+      if (own && typeof own === "object") {
+        Object.keys(own).forEach(function (k) { if (own[k]) mine.push(own[k]); });
+      }
+      delete pend[cfg.app];
+      dupDocs.forEach(function (d) {
+        var stale = isStale(d.f);
+        var put = function (a, key, sec) {
+          if (!sec) return;
+          if (a === cfg.app) { mine.push(sec); return; }
+          if (!doc.apps[a]) { doc.apps[a] = sec; return; }
+          if (stale) (pend[a] = pend[a] || {})[key] = sec;
+        };
+        var apps = d.doc.apps || {};
+        Object.keys(apps).forEach(function (a) { put(a, d.f.id, apps[a]); });
+        // 重複ファイルに預けられていた分も引き継ぐ
+        var dp = (d.doc.pending && typeof d.doc.pending === "object") ? d.doc.pending : {};
+        Object.keys(dp).forEach(function (a) {
+          var m = dp[a]; if (!m || typeof m !== "object") return;
+          Object.keys(m).forEach(function (k) { put(a, d.f.id + "/" + k, m[k]); });
+        });
+      });
+      if (Object.keys(pend).length) doc.pending = pend; else delete doc.pending;
+      // 複数の写しを1つに。片方にしか無い項目も残すよう、印を外してから混ぜる（和集合）
+      var remote = null;
+      mine.forEach(function (sec) { remote = remote ? cfg.merge(unmarkSynced(remote), sec, 0) : sec; });
+      return remote;
+    }
 
     /** アップロード成功後に呼ぶ。ids（送信前に確定させたもの）に載っている
      *  項目にだけ印を付けて保存し直す。そのときの最新のローカルを読み直すので、
@@ -312,29 +450,30 @@
       } catch (e) {}
     }
 
-    /** 実際の同期。pull → merge → 必要なら push を1往復でやる */
-    function run(interactive) {
-      if (busy) return Promise.resolve();
-      busy = true;
-      setStatus("syncing");
-      var tok;
-      return getToken(!!interactive)
-        .then(function (t) { tok = t; return findFile(tok); })
-        .then(function (id) {
-          if (!id) {
-            // まだ無い → いまのローカルをそのまま作る
-            var snap = cfg.getLocal();
-            var doc = blankDoc();
-            doc.apps[cfg.app] = markSynced(snap);
-            var ids0 = collectIds(snap);   // 送る前に確定させる
-            return upload(tok, null, JSON.stringify(doc)).then(function (m2) {
-              commitSynced(ids0);   // 載ってから印を付ける
-              setLastSync(m2.modifiedTime || new Date().toISOString());
-            });
-          }
+    /** 実際の同期。pull → merge → 必要なら push を1往復でやる。
+     *  ファイルの読み書きは withFileLock の中で行う（全アプリで1本ずつ）。 */
+    function syncLocked(tok) {
+      return findFiles(tok).then(function (ff) {
+        var id = ff.id;
+        if (!id) {
+          // まだ無い → いまのローカルをそのまま作る
+          var snap = cfg.getLocal();
+          var doc = blankDoc();
+          doc.apps[cfg.app] = markSynced(snap);
+          var ids0 = collectIds(snap);   // 送る前に確定させる
+          return upload(tok, null, JSON.stringify(doc)).then(function (m2) {
+            commitSynced(ids0);   // 載ってから印を付ける
+            setLastSync(m2.modifiedTime || new Date().toISOString());
+          });
+        }
+        return readDups(tok, ff.dups).then(function (dupDocs) {
           return meta(tok, id).then(function (m1) {
             return readRemote(tok, id).then(function (doc) {
-              var remote = doc.apps[cfg.app] || null;
+              var before = doc.apps[cfg.app] || null;
+              var shape0 = JSON.stringify({ a: doc.apps, p: doc.pending });
+              var remote = assemble(doc, dupDocs);
+              // 重複ファイルから移した・預けた・預かり分を引き取った → 書き戻しが要る
+              var moved = JSON.stringify({ a: doc.apps, p: doc.pending }) !== shape0;
               // マージ結果はまだ印を付けない。付けるのは送信できたあと。
               // ローカルへ先に反映してから読み直すのは、各アプリの setLocal が
               // normalize で整形するため。整形後を送れば、Driveの中身と
@@ -343,15 +482,16 @@
               var snap = cfg.getLocal();
               var payload = markSynced(snap);
               var ids = collectIds(snap);   // 送る前に確定させる
-              var changed = !remote || JSON.stringify(payload) !== JSON.stringify(remote);
+              var changed = moved || !before || JSON.stringify(payload) !== JSON.stringify(before);
               // 中身が同じなら、それは全部Driveに載っているということなので印だけ付ける
               if (!changed) { commitSynced(ids); setLastSync(m1.modifiedTime); return; }
-              // 書く直前にもう一度確認（compare-and-swap）
+              // 書く直前にもう一度確認（compare-and-swap。ほかの端末とは排他できないため）
               return meta(tok, id).then(function (m2) {
                 if (m2.modifiedTime !== m1.modifiedTime) {
                   // 間に他端末が書いた → 読み直してマージし直す
                   return readRemote(tok, id).then(function (d2) {
-                    cfg.setLocal(cfg.merge(cfg.getLocal(), d2.apps[cfg.app] || null, lastSyncMs()));
+                    var remote2 = assemble(d2, dupDocs);
+                    cfg.setLocal(cfg.merge(cfg.getLocal(), remote2, lastSyncMs()));
                     var snap2 = cfg.getLocal();
                     var ids2 = collectIds(snap2);
                     d2.apps[cfg.app] = markSynced(snap2);
@@ -368,11 +508,29 @@
                 });
               });
             });
+          }).then(function () {
+            // 中身を正のファイルに寄せ終えた古い重複ファイルを片付ける（失敗しても次回またやる）
+            return dupDocs.filter(function (d) { return isStale(d.f); }).reduce(function (p, d) {
+              return p.then(function () { return trashFile(tok, d.f.id).catch(function () {}); });
+            }, Promise.resolve());
           });
-        })
-        .then(function () { busy = false; setStatus("ok"); })
-        .catch(function (e) { busy = false; setStatus("error", errMsg(e)); throw e; });
+        });
+      });
     }
+    function run(interactive) {
+      if (busy) { again = true; return Promise.resolve(); }   // 走行中の変更は、終わってからもう一度送る
+      // まだ一度もつないでいない（トークンも同期の記録も無い）なら、自動では何もしない。
+      // ログイン画面を出せないまま「失敗」になり、☁に赤い印が出続けてしまう
+      if (!interactive && !cachedToken() && !lastSyncISO()) { setStatus("off"); return Promise.resolve(); }
+      busy = true;
+      setStatus("syncing");
+      // 認証（ログイン画面を待つことがある）は排他の外で済ませ、ほかのアプリを待たせない
+      return getToken(!!interactive)
+        .then(function (tok) { return withFileLock(function () { return syncLocked(tok); }); })
+        .then(function () { busy = false; setStatus("ok"); rerun(); })
+        .catch(function (e) { busy = false; setStatus("error", errMsg(e)); rerun(); throw e; });
+    }
+    function rerun() { if (again) { again = false; schedule(true); } }
 
     function schedule(urgent) {
       if (!autoOn()) return;

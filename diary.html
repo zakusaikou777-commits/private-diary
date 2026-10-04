@@ -756,6 +756,14 @@ let backupReminderDismissed = false; // session-only dismiss for the backup remi
 // 読み込みに失敗したまま起動した印。このとき entries=[] は「日記0件」ではなく
 // 「まだ読めていない」なので、外（Drive/同期フォルダ）へ書き出してはいけない。
 let storageLoadFailed = false;
+// このタブが最後に読んだ・書いた diaryEntries の中身。保存のときに食い違っていれば、
+// 別のタブ（PWAの窓とブラウザのタブなど）が書いたので、先に取り込む（absorbOtherTab）
+let lastStoredRaw = null;
+// 別のタブで暗号化の設定が変わり、こちらの鍵では読めなくなった（読み込み直すまで保存しない）
+let storageConflict = null;
+// 起動時の読み込み（loadEntriesFromStorage）が済んだか。済む前の「別のタブが保存した」は見送る
+// （ロック中かどうかもまだ分からず、暗号文を「設定が変わった」と取り違えるため）
+let storageReady = false;
 const PBKDF2_ITER = 250000;
 
 const ENC = {
@@ -1167,6 +1175,8 @@ window.addEventListener('beforeunload', (e) => {
         async function loadEntriesFromStorage() {
             storageLoadFailed = false;
             const stored = localStorage.getItem('diaryEntries');
+            lastStoredRaw = stored;
+            storageReady = true;
             if (!stored) { entries = []; return 'empty'; }
             let parsed;
             try {
@@ -1187,18 +1197,93 @@ window.addEventListener('beforeunload', (e) => {
                 entries = [];
                 return 'locked';
             }
-            entries = Array.isArray(parsed) ? parsed : [];
+            if (!Array.isArray(parsed)) {
+                // 形の違う中身を「日記0件」として読むと、次の保存で元のデータを上書きして消してしまう。
+                // 読めなかったときと同じく控えを残し、外への同期も止める
+                console.error('保存データの形が違います');
+                try { localStorage.setItem('diaryEntries_corrupt_backup', stored); } catch (_) {}
+                entries = [];
+                storageLoadFailed = true;
+                setTimeout(() => showToast('保存データの形が読めませんでした。元のデータは控えに残し、空の状態で起動しました', 'error'), 0);
+                return 'corrupt';
+            }
+            entries = parsed;
             encEnabled = false;
             if (migrateContentFormat()) { await saveEntriesToStorage(); }
             return 'ok';
         }
 
-        async function saveEntriesToStorage() {
+        /* ── 別のタブ・窓との突き合わせ ──────────────────────────────
+           PWAの窓とブラウザのタブ、共有から開き直した窓など、日記帳が2つ開いていることがある。
+           どちらも自分の手元の一覧（entries）を丸ごと書くので、相手が書いた日記を
+           古い一覧で上書きして消してしまう。書く前に、相手が保存した分を必ず取り込む。
+           lastStoredRaw: このタブが最後に読んだ・書いた保存データ（変わっていれば相手が書いた） */
+        // 戻り値: true = 取り込めた（または変化なし）/ false = 書いてはいけない（理由は知らせ済み）
+        async function absorbOtherTab() {
+            let raw = null;
+            try { raw = localStorage.getItem('diaryEntries'); } catch (e) { return true; }
+            if (raw === lastStoredRaw) return true;
+            let parsed = null;
+            try { parsed = raw == null ? null : JSON.parse(raw); } catch (e) { parsed = null; }
+            // 消された・壊れた・形の違う中身からは取り込めるものが無い（こちらの内容で書いてよい）
+            if (!parsed || (!isEncBlob(parsed) && !Array.isArray(parsed))) { lastStoredRaw = raw; return true; }
+            let list = null;
+            if (isEncBlob(parsed)) {
+                // 相手が別の鍵（パスフレーズ変更・暗号化を有効化）で書いた → こちらの鍵では読めない。
+                // このまま書くと相手の日記も新しい鍵も消えるので、書かずに読み込み直してもらう
+                const same = encEnabled && cryptoKey && encMeta && parsed.salt === encMeta.salt;
+                if (same) { try { list = JSON.parse(await ENC.decryptToString(parsed, cryptoKey)); } catch (e) { list = null; } }
+                if (!Array.isArray(list)) { setStorageConflict(); return false; }
+            } else {
+                if (encEnabled) { setStorageConflict(); return false; }   // 相手が暗号化を解除した
+                list = parsed;
+            }
+            // 相手の分を混ぜる（新しい方が勝つ・削除は墓標で。Drive同期と同じ規則）
+            const tombs = applyRestored(entries, loadTombstones());
+            const r = mergeEntriesByUpdatedAt(entries, list.filter(e => e && typeof e === 'object'), tombs);
+            entries = dedupeEntriesByDate(r.merged).entries;
+            lastStoredRaw = raw;
+            rebindCurrentEntryAfterMerge();
+            return true;
+        }
+        function setStorageConflict() {
+            storageConflict = '別のタブで暗号化の設定が変わりました。このページを読み込み直してください（いまの変更はまだ保存していません）';
+            showToast(storageConflict, 'error');
+        }
+        // 別のタブが保存した → すぐに取り込んで画面にも出す（こちらが書くときにも必ず取り込む）
+        async function onOtherTabSaved() {
+            if (!storageReady) return;   // 起動時の読み込みがまだ（そのときに最新を読む）
+            if (appLocked) {
+                // ロック中: 解除に使う暗号文を最新にしておく（古い暗号文で解除すると、相手の日記が欠ける）
+                try { const p = JSON.parse(localStorage.getItem('diaryEntries')); if (isEncBlob(p)) pendingUnlockBlob = p; } catch (e) {}
+                return;
+            }
+            if (storageLoadFailed || storageConflict) return;
+            const before = JSON.stringify(entries);
+            if (!(await absorbOtherTab())) return;
+            if (JSON.stringify(entries) === before) return;
+            updateStats(); renderCalendar(); renderEntriesList();
+            if (currentEntry && !isDirty) renderEditor();   // 打っている最中は本文を描き直さない
+        }
+        window.addEventListener('storage', (e) => {
+            if (e.key === 'diaryEntries' || e.key === null) { onOtherTabSaved().catch(err => console.warn('[diary] 別のタブの取り込み', err)); return; }
+            if (e.key === 'autoSyncDrive') {
+                autoSyncDriveEnabled = e.newValue === 'true';
+                const cb = document.getElementById('autoSyncDrive'); if (cb) cb.checked = autoSyncDriveEnabled;
+                return;
+            }
+            if (e.key === 'diaryLastBackup') { try { updateBackupReminder(); } catch (_) {} }
+        });
+
+        async function saveEntriesToStorage(_retry = 0) {
             // ロック中（暗号化済みだが未解除）は保存しない＝暗号文を平文で上書きする事故を防ぐ
             if (encEnabled && !cryptoKey) {
                 showToast('ロックを解除してから操作してください', 'error');
                 return false;
             }
+            if (storageConflict) { showToast(storageConflict, 'error'); return false; }
+            // 別のタブが書いた分を先に取り込む（取り込まずに書くと、相手の日記を消してしまう）
+            if (!(await absorbOtherTab())) return false;
             let toStore;
             try {
                 const plain = JSON.stringify(entries);
@@ -1214,7 +1299,10 @@ window.addEventListener('beforeunload', (e) => {
                 return false;
             }
             try {
+                // 暗号化の await の間に別のタブが書いていたら、もう一度取り込んでから書き直す
+                if (localStorage.getItem('diaryEntries') !== lastStoredRaw && _retry < 3) return saveEntriesToStorage(_retry + 1);
                 localStorage.setItem('diaryEntries', toStore);
+                lastStoredRaw = toStore;
             } catch (err) {
                 console.error('保存に失敗:', err);
                 const quota = err && (err.name === 'QuotaExceededError' || err.code === 22 || err.code === 1014);
@@ -2995,8 +3083,16 @@ function insertTablePrompt() {
         /* JSONの書き出しは「復元可能」と名乗る以上、画像と墓標まで入れる。
            以前は entries だけだったので、このファイルから戻すと写真が全部
            「画像が見つかりません」になり、しかも markBackupDone で督促が消えていた。 */
+        /* 暗号化をONにしていても、この2つの書き出しは中身をそのまま（暗号化せずに）書く。
+           黙って平文を残さないよう、書き出す前に確かめる（形式は変えない。暗号化したまま
+           控えを取るなら「バックアップを共有」を使う）。 */
+        function confirmPlainExport(kind) {
+            if (!encEnabled) return true;
+            return confirm(`この${kind}は暗号化されません。パスフレーズが無くても、誰でも日記（${kind === 'JSON' ? '写真も含む' : '本文'}）を読める形で保存されます。\n\n続けますか？（暗号化したまま控えを取るには「バックアップを共有」を使ってください）`);
+        }
         async function exportJSON() {
             if (appLocked) { openUnlockModal(); return; }
+            if (!confirmPlainExport('JSON')) return;
             const p = await buildExportPayload('json');
             downloadFile(p.text, p.filename, p.mime);
             // 画像を入れられなかったバックアップで「済んだこと」にしない
@@ -3005,6 +3101,7 @@ function insertTablePrompt() {
         }
         async function exportMarkdown() {
             if (appLocked) { openUnlockModal(); return; }
+            if (!confirmPlainExport('Markdown')) return;
             const p = await buildExportPayload('md');
             downloadFile(p.text, p.filename, p.mime);
         }
@@ -3122,15 +3219,22 @@ function insertTablePrompt() {
                         data = JSON.parse(json);
                     }
                     if (!data || !data.entries || !Array.isArray(data.entries)) { showToast('不正なJSON形式です（entriesがありません）', 'error'); return; }
-                    const existingIds = new Set(entries.map(e => e.id));
+                    const existingIds = new Set(entries.map(e => String(e.id)));
                     let imported = 0;
                     const fileIds = new Set();
+                    // 戻す前から墓標があった＝「消した日記を戻す」もの。Driveや他の端末にも
+                    // 同じ墓標が残っているので、戻した時刻に書いたことにして、その墓標に負けないようにする
+                    const tombedIds = new Set(mergeTombs(loadTombstones(), Array.isArray(data.deleted) ? data.deleted : []).map(t => String(t.id)));
+                    const restoreAt = Date.now(), restoredIds = [];
                     data.entries.forEach(entry => {
                         if (!entry || typeof entry !== 'object' || !entry.id) return;
                         fileIds.add(String(entry.id));
-                        if (!existingIds.has(entry.id)) {
-                            entries.push(normalizeImportedEntry(entry));
-                            existingIds.add(entry.id);
+                        if (!existingIds.has(String(entry.id))) {
+                            const ne = normalizeImportedEntry(entry);
+                            if (tombedIds.has(ne.id)) ne.updatedAt = new Date(restoreAt).toISOString();
+                            entries.push(ne);
+                            existingIds.add(ne.id);
+                            restoredIds.push(ne.id);
                             imported++;
                         }
                     });
@@ -3158,6 +3262,10 @@ function insertTablePrompt() {
                     renderEditor();
                     // 保存できていなければ「完了」と言わない（再読込で消えるため）
                     if (!ok) return;
+                    // 戻した日記を覚えておく。Driveにだけ残っている（この端末がまだ知らない）墓標にも、
+                    // 次の同期で負けないようにするため（applyRestored）
+                    if (restoredIds.length) addRestored(restoredIds, restoreAt);
+                    if (autoSyncDriveEnabled) drivePushAll(true);
                     showToast(`インポート完了: ${imported}件` + (d.merged ? `（同じ日付${d.merged}件を統合）` : ''), 'success');
                     // 黙って欠けさせない。容量不足などで戻せなかった画像は必ず伝える
                     if (imgFailed) showToast(`画像${imgFailed}枚を端末に戻せませんでした。端末の空き容量を確かめて、もう一度取り込んでください`, 'error');
@@ -3339,7 +3447,10 @@ function insertTablePrompt() {
             if (!pass) { showToast('パスフレーズを入力してください', 'error'); return; }
             if (!pendingUnlockBlob) { closeModal('unlockModal'); return; }
             try {
-                const blob = pendingUnlockBlob;
+                // 別のタブが書いていたら、いま保存されている最新の暗号文で解除する
+                // （開いたときの古い暗号文で解除して保存すると、相手の日記が欠ける）
+                let blob = pendingUnlockBlob, raw = null;
+                try { raw = localStorage.getItem('diaryEntries'); const cur = JSON.parse(raw); if (isEncBlob(cur)) blob = cur; else raw = null; } catch (e) { raw = null; }
                 const key = await ENC.deriveKey(pass, ENC.unb64(blob.salt), blob.iter || PBKDF2_ITER);
                 const json = await ENC.decryptToString(blob, key); // 誤パスフレーズで例外
                 const arr = JSON.parse(json);
@@ -3349,6 +3460,7 @@ function insertTablePrompt() {
                 encMeta = { salt: blob.salt, iter: blob.iter || PBKDF2_ITER };
                 appLocked = false;
                 pendingUnlockBlob = null;
+                lastStoredRaw = raw;
                 if (migrateContentFormat()) { await saveEntriesToStorage(); }
                 migrateInlineImages().then(() => gcImages()).catch(() => {});
                 closeModal('unlockModal');
@@ -3384,6 +3496,9 @@ function insertTablePrompt() {
                 //   「新しいsaltを名乗るのに古い鍵で暗号化した本文」が保存され、
                 //   新旧どちらのパスフレーズでも二度と開けなくなっていた。
                 //   → 復号は差し替えの“前”に全部済ませ、差し替えは await を挟まず一息で行う。
+                // 鍵を差し替える前に、別のタブが保存した分を取り込んでおく
+                // （差し替えたあとでは、相手の古い鍵の暗号文を「設定が変わった」と取り違える）
+                if (!(await absorbOtherTab())) return;
                 let plains = null;
                 if (wasEnabled && prevKey) {
                     const read = await imgReadAllPlain();
@@ -3400,7 +3515,10 @@ function insertTablePrompt() {
                 encEnabled = true;
                 encMeta = { salt: ENC.b64(salt), iter: PBKDF2_ITER };
                 const ok = await saveEntriesToStorage();
-                if (!ok) { cryptoKey = prevKey; encEnabled = wasEnabled; encMeta = prevMeta; return; }
+                if (!ok) { cryptoKey = prevKey; encEnabled = wasEnabled; encMeta = prevMeta; storageConflict = null; return; }
+                // Drive上はまだ古い鍵の暗号文。古い鍵を覚えておかないと、以後の同期が毎回
+                // 「復号できない」で止まる（disableEncryption と同じ。次の同期で新しい鍵で書き直す）
+                if (wasEnabled && prevKey) driveRemoteKey = prevKey;
                 const f1 = document.getElementById('encNewPass'); if (f1) f1.value = '';
                 const f2 = document.getElementById('encNewPass2'); if (f2) f2.value = '';
                 // 本文だけ暗号化して画像が素のまま端末に残ると、鍵をかけた意味がない。
@@ -3410,6 +3528,8 @@ function insertTablePrompt() {
                 showToast(wasEnabled ? 'パスフレーズを変更しました' : '暗号化を有効にしました', 'success');
                 // 握り潰さない。包み直せなかった画像は開けなくなっているので必ず伝える
                 if (failed) showToast(`画像${failed}枚を新しいパスフレーズで保存し直せませんでした。設定からもう一度お試しください`, 'error');
+                // Drive の写しも新しい鍵で書き直しておく（古い鍵の暗号文を残さない）
+                if (autoSyncDriveEnabled) drivePushAll(true);
             } catch (err) {
                 cryptoKey = prevKey; encEnabled = wasEnabled; encMeta = prevMeta;
                 console.error(err);
@@ -3422,6 +3542,8 @@ function insertTablePrompt() {
             if (!cryptoKey) { showToast('先にロックを解除してください', 'error'); return; }
             if (!confirm('暗号化を解除して平文保存に戻しますか？')) return;
             const prevKey = cryptoKey, prevMeta = encMeta;
+            // 鍵を手放す前に、別のタブが保存した分を取り込んでおく（手放したあとでは読めない）
+            if (!(await absorbOtherTab())) return;
             // 画像の包みは、鍵を手放す“前”に外しておく。あとから外そうとして
             // 一時的に鍵を戻すと、その隙に走った保存や貼り付けが、捨てる直前の鍵で
             // 暗号化されてしまう（applyPassphrase と同じ理由）。
@@ -3430,7 +3552,7 @@ function insertTablePrompt() {
                 !confirm(`画像${read.failed}枚を読み出せませんでした。このまま解除すると、その画像は開けなくなります。続けますか？`)) return;
             encEnabled = false; cryptoKey = null; encMeta = null;
             const ok = await saveEntriesToStorage();
-            if (!ok) { encEnabled = true; cryptoKey = prevKey; encMeta = prevMeta; showToast('解除に失敗しました', 'error'); return; }
+            if (!ok) { encEnabled = true; cryptoKey = prevKey; encMeta = prevMeta; storageConflict = null; showToast('解除に失敗しました', 'error'); return; }
             // Drive上は暗号文のまま残るので、そのままだと以後の自動同期が毎回
             // 復号できずに止まる。解除した鍵を覚えておき、Drive側も平文で作り直す（B-3）
             driveRemoteKey = prevKey;
@@ -3519,13 +3641,32 @@ function driveClientId(){
     return v;
   }catch(e){ return DRIVECLIENTID_DEFAULT; }
 }
-function sharedTokenGet(){ try{ var o=JSON.parse(localStorage.getItem('shared:gd:token')||'null'); if(o&&o.token&&Date.now()<o.exp-60000) return o.token; }catch(e){} return null; }
+function sharedTokenRead(){ try{ var o=JSON.parse(localStorage.getItem('shared:gd:token')||'null'); if(o&&o.token&&Date.now()<o.exp-60000) return o; }catch(e){} return null; }
+function sharedTokenGet(){ var o=sharedTokenRead(); return o?o.token:null; }
 function sharedTokenSet(t,exp){ try{ localStorage.setItem('shared:gd:token', JSON.stringify({token:t, exp:Date.now()+((exp||3600)*1000)})); }catch(e){} }
 function sharedTokenClear(){ try{ localStorage.removeItem('shared:gd:token'); }catch(e){} }
 
 let driveTokenClient = null;
 let driveAccessToken = null;
+// 手元のトークンの期限（ms）。トークンは1時間で切れる。期限を見ずに使い続けると、
+// 自動同期（利用者の操作の外）で 401 → 取り直しのログイン画面がブロックされる、になる
+let driveAccessTokenExp = 0;
 let autoSyncDriveEnabled = false;
+// 返事待ちのトークン要求 { resolve, reject, timer }。GIS は失敗（ポップアップを閉じた・
+// 出せなかった）を error_callback にしか知らせず、callback は呼ばない。ここで必ず決着させないと、
+// 待っている同期が「実行中」のまま残り、以後の保存がすべて Drive へ送られなくなる
+let driveTokenWait = null;
+const DRIVE_TOKEN_TIMEOUT_MS = 90000;
+function settleDriveToken(err, token) {
+  const w = driveTokenWait; driveTokenWait = null;
+  if (!w) return;
+  clearTimeout(w.timer);
+  if (err) w.reject(err); else w.resolve(token);
+}
+// 使えるトークンが手元にあるか（期限も見る）
+function driveHasToken() {
+  return (!!driveAccessToken && Date.now() < driveAccessTokenExp - 60000) || !!sharedTokenGet();
+}
 
 function initDriveTokenClient() {
   if (driveTokenClient) return;
@@ -3537,7 +3678,10 @@ function initDriveTokenClient() {
     client_id: driveClientId(),
     scope: DRIVESCOPE,
     callback: () => {},
-    error_callback: () => showToast('Drive認証エラー', 'error')
+    error_callback: (err) => {
+      showToast('Drive認証エラー', 'error');
+      settleDriveToken(new Error('AUTH_' + ((err && err.type) || 'ERROR')));
+    }
   });
 }
 
@@ -3545,23 +3689,30 @@ function driveRequestToken(promptMode) {
   return new Promise((resolve, reject) => {
     initDriveTokenClient();
     if (!driveTokenClient) return reject(new Error('tokenClient not ready'));
+    // 前の要求がまだ返事待ちなら打ち切る。返事が来ないときのための時間切れも置く
+    settleDriveToken(new Error('AUTH_SUPERSEDED'));
+    driveTokenWait = { resolve, reject, timer: setTimeout(() => settleDriveToken(new Error('AUTH_TIMEOUT')), DRIVE_TOKEN_TIMEOUT_MS) };
     driveTokenClient.callback = (resp) => {
       if (resp && resp.access_token) {
         driveAccessToken = resp.access_token;
+        driveAccessTokenExp = Date.now() + (resp.expires_in || 3600) * 1000;
         sharedTokenSet(resp.access_token, resp.expires_in);
-        resolve(driveAccessToken);
+        settleDriveToken(null, driveAccessToken);
       } else {
-        reject(resp);
+        settleDriveToken(resp || new Error('AUTH_FAILED'));
       }
     };
-    driveTokenClient.requestAccessToken({ prompt: promptMode });
+    try { driveTokenClient.requestAccessToken({ prompt: promptMode }); }
+    catch (e) { settleDriveToken(e); }
   });
 }
 
 async function driveEnsureToken(interactive = false) {
-  if (driveAccessToken) return driveAccessToken;
-  var shared = sharedTokenGet();
-  if (shared) { driveAccessToken = shared; return shared; }
+  if (driveAccessToken && Date.now() < driveAccessTokenExp - 60000) return driveAccessToken;
+  // 期限切れ（か、まだ無い）→ 共有の置き場（他のタブ・アプリが取り直したもの）を見て、無ければ取り直す
+  driveAccessToken = null;
+  const o = sharedTokenRead();
+  if (o) { driveAccessToken = o.token; driveAccessTokenExp = o.exp; return o.token; }
   return await driveRequestToken(interactive ? 'consent' : '');
 }
 
@@ -3586,7 +3737,12 @@ async function driveFetch(url, options = {}, _retried = false) {
 }
 
 async function driveConnect() {
-  await driveRequestToken('consent');
+  try { await driveRequestToken('consent'); }
+  catch (e) {
+    // 閉じた・出せなかったときは error_callback が知らせ済み。返事が来なかったときだけここで言う
+    if (/AUTH_TIMEOUT/.test(String((e && e.message) || ''))) showToast('Googleの認証が完了しませんでした。もう一度お試しください', 'error');
+    return;
+  }
   showToast('Drive 認証OK', 'success');
 }
 
@@ -3650,6 +3806,43 @@ function mergeTombs(a, b) {
 function addTombstone(id) {
   if (!id) return;
   saveTombstones(mergeTombs(loadTombstones(), [{ id, at: Date.now() }]));
+}
+
+/* ── バックアップから戻した日記 ─────────────────────────────
+   消した日記をバックアップから戻しても、Drive（や他の端末）にはその日記の墓標が残っている。
+   次の同期で墓標が効いて、戻したばかりの日記が黙って消えていた。
+   戻した日記の id と時刻を覚えておき、同期で「戻すより前の墓標」に当たったら、
+   その墓標は捨て、日記は戻した時刻に書かれたことにする（他の端末の墓標にも勝つ）。
+   墓標に当たらない日記は触らない（他の端末で書き足した新しい版を、古い控えで上書きしないため）。 */
+const RESTORE_KEY = 'diaryRestored';
+function loadRestored() {
+  try {
+    const a = JSON.parse(localStorage.getItem(RESTORE_KEY) || '[]');
+    const cut = Date.now() - TOMB_TTL_MS;
+    return Array.isArray(a) ? a.filter(r => r && r.id && (r.at || 0) > cut) : [];
+  } catch (e) { return []; }
+}
+function addRestored(ids, at) {
+  const m = {};
+  loadRestored().concat(ids.map(id => ({ id: String(id), at }))).forEach(r => { if (!m[r.id] || m[r.id] < r.at) m[r.id] = r.at; });
+  try { localStorage.setItem(RESTORE_KEY, JSON.stringify(Object.keys(m).map(id => ({ id, at: m[id] })))); } catch (e) {}
+}
+/** list（手元の日記。書き換える）と墓標を突き合わせ、残す墓標を返す */
+function applyRestored(list, tombs) {
+  const rs = loadRestored();
+  if (!rs.length) return tombs || [];
+  const at = {}, hit = {};
+  rs.forEach(r => { at[r.id] = r.at; });
+  const keep = (tombs || []).filter(t => {
+    const r = t && at[t.id];
+    if (r && (t.at || 0) <= r) { hit[t.id] = Math.max(hit[t.id] || 0, t.at || 0); return false; }
+    return true;
+  });
+  (list || []).forEach(e => {
+    if (!e || hit[e.id] === undefined) return;
+    if (entryTime(e) <= hit[e.id]) e.updatedAt = new Date(at[e.id]).toISOString();
+  });
+  return keep;
 }
 
 function entryTime(e) {
@@ -3763,7 +3956,7 @@ function setDriveSyncProblem(msg) {
 async function drivePullAndMerge(quiet = false) {
   syncInFlight++;   // 取り込み中は掃除を止める（受け取った画像を先に消してしまうため）
   try {
-    if (quiet && !driveAccessToken && !sharedTokenGet()) return; // 静かな取り込みは認証を求めない
+    if (quiet && !driveHasToken()) return; // 静かな取り込みは認証を求めない（期限切れも含む）
     const blocked = syncBlockedReason();
     if (blocked) { if (!quiet) showToast(blocked, 'error'); return; }
     await driveEnsureToken(!quiet);
@@ -3788,8 +3981,9 @@ async function drivePullAndMerge(quiet = false) {
       return;
     }
     // Drive由来データも信頼せずサニタイズ・正規化してからマージ（#5）
-    const incoming = data.entries.map(normalizeImportedEntry);
-    const tombs = mergeTombs(loadTombstones(), Array.isArray(data.deleted) ? data.deleted : []);
+    const incoming = data.entries.filter(e => e && typeof e === 'object' && e.id).map(normalizeImportedEntry);
+    // バックアップから戻した日記に当たる墓標は捨てる（戻した日記が次の同期で消えないように）
+    const tombs = applyRestored(entries, mergeTombs(loadTombstones(), Array.isArray(data.deleted) ? data.deleted : []));
     saveTombstones(tombs);
     // 他端末で貼った画像も受け取る（これが無いと本文に「画像が見つかりません」が並ぶ）
     let imgFailed = 0;
@@ -3934,7 +4128,7 @@ async function drivePushRun(quiet = false) {
 async function drivePushAllOnce(quiet) {
   syncInFlight++;   // 送信中は掃除を止める（相手から受け取った画像を消さないため）
   try {
-    if (quiet && !driveAccessToken && !sharedTokenGet()) {
+    if (quiet && !driveHasToken()) {
       // 自動同期はユーザー操作なしで認証ポップアップを開けない（ブロックされる）ため、
       // 有効なトークンが無いときは静かにスキップする。次回の手動操作で再認証される。
       return;
@@ -3969,7 +4163,7 @@ async function drivePushAllOnce(quiet) {
       }
       if (rawRemote) {
         remote = await decodeRemoteSyncPayload(rawRemote); // 開けなければ例外
-        if (remote && Array.isArray(remote.entries)) remoteEntries = remote.entries.map(normalizeImportedEntry);
+        if (remote && Array.isArray(remote.entries)) remoteEntries = remote.entries.filter(e => e && typeof e === 'object' && e.id).map(normalizeImportedEntry);
         if (remote && Array.isArray(remote.deleted)) remoteTombs = remote.deleted;
         if (remote && Array.isArray(remote.images)) remoteImages = remote.images;
       }
@@ -3981,7 +4175,11 @@ async function drivePushAllOnce(quiet) {
     }
 
     // 2) マージ（新しい方が勝つ＋墓標で削除を反映）
-    const tombs = mergeTombs(loadTombstones(), remoteTombs);
+    //    バックアップから戻した日記に当たる墓標は捨てる。捨てた墓標は Drive にも書き戻さない。
+    //    戻した日記の時刻を進めたら、それも「変わった」に数えて手元に保存する（before を先に取る）
+    const beforeRestore = JSON.stringify(entries);
+    const tombs = applyRestored(entries, mergeTombs(loadTombstones(), remoteTombs));
+    const restoredNow = JSON.stringify(entries) !== beforeRestore;
     saveTombstones(tombs);
     // 相手が持っていた画像を先に取り込む。取り込まずに書き戻すと、
     // マージで残った相手の日記から画像だけが失われる。
@@ -4001,7 +4199,7 @@ async function drivePushAllOnce(quiet) {
     entries = d.entries;
     // 開いていた日記がマージで消えたら、その場でエディタを閉じて知らせる（B-2）
     const lostCurrent = rebindCurrentEntryAfterMerge();
-    const changed = JSON.stringify(entries) !== before;
+    const changed = restoredNow || JSON.stringify(entries) !== before;
     // 3) マージ結果をまずローカルへ。ここで保存できないならDriveも触らない
     if (changed && !(await saveEntriesToStorage())) return;
 
@@ -4262,7 +4460,12 @@ function toggleAutoSyncDrive() {
     if(d.nkSync==='markdown'){ try{ window.exportMarkdown(); }catch(err){} return; }
     if(d.nkSync==='share'){ try{ window.shareBackup(); }catch(err){} return; }
     if(d.nkSync==='security'){ try{ window.openSecurityModal(); }catch(err){} setTimeout(reportEnc,400); return; }
-    if(d.nkSync==='cid'){ try{ localStorage.removeItem('shared:gd:token'); }catch(err){} return; }
+    if(d.nkSync==='cid'){
+      try{ localStorage.removeItem('shared:gd:token'); }catch(err){}
+      // クライアントIDが変わった。古いIDで作ったログイン部品と手元のトークンも捨てる（次の要求で作り直す）
+      try{ driveAccessToken=null; driveAccessTokenExp=0; driveTokenClient=null; }catch(err){}
+      return;
+    }
   });
 
   /* 入口を☁に一本化するため、日記帳自身の 💾エクスポート と 🔐セキュリティ は隠す。

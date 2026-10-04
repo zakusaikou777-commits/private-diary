@@ -371,6 +371,18 @@ function safeLink(u) {
   // カードに一切出ず、消えたように見えていた。
   return /^(https?:\/\/|mailto:|tel:)/i.test(u.trim());
 }
+/** 同じページを二度クリップしたかを見分けるためのURLの形（# 以降と末尾の / は区別しない） */
+function clipUrlKey(u) {
+  const s = typeof u === "string" ? u.trim() : "";
+  if (!s) return "";
+  try {
+    const x = new URL(s);
+    x.hash = "";
+    return x.href.replace(/\/+$/, "");
+  } catch (e) {
+    return s.replace(/#.*$/, "").replace(/\/+$/, "");
+  }
+}
 /** 使ってよいURLか。javascript: が本文のリンクに入ると、押した時点で
  *  このオリジンで任意のJSが動き、Googleのトークンまで読めてしまう。 */
 function urlAllowedKn(u) {
@@ -488,7 +500,9 @@ const SRS_ST = { NEW: 0, LEARNING: 1, DONE: 2 };
 
 function srsDueAfter(days, from) {
   const n = Number(days);
-  const safe = Number.isFinite(n) ? Math.max(0, Math.round(n)) : 1;
+  // 上限を付ける。巨大な日数だと日付が作れず（Invalid Date）次回が NaN になり、
+  // そのメモは二度と「今日の復習」に出てこなくなる。
+  const safe = Number.isFinite(n) ? Math.min(Math.max(0, Math.round(n)), 3650) : 1;
   const d = new Date(from || Date.now());
   d.setDate(d.getDate() + safe);
   d.setHours(SRS_HOUR, 0, 0, 0);
@@ -500,23 +514,35 @@ function srsClampBox(b) {
   return Math.min(Math.max(0, Math.round(n)), SRS_STEPS.length - 1);
 }
 
+/** 固定間隔（日）は整数の 0〜365 にそろえる。巨大な値だと次回が作れず（NaN）永久に
+ *  出てこなくなり、小数だと「今日の9時」に丸められて、答えてもすぐ期限に戻ってしまう。 */
+function srsClampIv(v) {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? Math.min(Math.max(0, n), 365) : 0;
+}
+/** 復習した回数。小数や Infinity（JSON では null になる）が入らないよう整数にする */
+function srsClampCount(v) {
+  const n = Math.floor(Number(v));
+  return Number.isFinite(n) ? Math.min(Math.max(0, n), 100000) : 0;
+}
+
 /** 壊れた値・古い形・他端末から来た変な値でも必ず使える形にそろえる */
 function srsNormalize(s) {
   if (!s || typeof s !== "object" || Array.isArray(s)) return null;
   const st = [0, 1, 2].includes(Number(s.st)) ? Number(s.st) : SRS_ST.NEW;
-  const iv = Math.max(0, Number(s.iv) || 0);
+  const iv = srsClampIv(s.iv);
   let d = Number(s.d);
   // 0 や極端に先の日付は「永久に復習に出てこない」「次回 NaN」になるので入れ直す
   const FAR = Date.now() + 3650 * 86400000;
   if (!Number.isFinite(d) || d <= 0 || d > FAR) d = srsDueAfter(iv > 0 ? iv : SRS_STEPS[0]);
   if (st === SRS_ST.DONE) d = 0;
-  return { b: srsClampBox(s.b), d: d, rv: Math.max(0, Number(s.rv) || 0), st: st, iv: iv };
+  return { b: srsClampBox(s.b), d: d, rv: srsClampCount(s.rv), st: st, iv: iv };
 }
 
 /** 復習を始める（days=0 なら今すぐ対象にする） */
 function srsStart(memo, days, iv) {
-  const interval = Math.max(0, Number(iv) || 0);
-  const wait = days == null ? (interval > 0 ? interval : SRS_STEPS[0]) : Number(days);
+  const interval = srsClampIv(iv);
+  const wait = days == null ? (interval > 0 ? interval : SRS_STEPS[0]) : Math.min(Math.max(0, Number(days) || 0), 365);
   return {
     ...memo,
     srs: {
@@ -553,7 +579,7 @@ function srsReview(memo, result) {
     return { ...memo, srs: next };
   }
   if (next.iv > 0) {                       // 固定間隔（毎週など）
-    next.d = srsDueAfter(result === "ok" ? next.iv : Math.max(1, Math.round(next.iv / 3)));
+    next.d = srsDueAfter(result === "ok" ? next.iv : srsAgainDays(memo));
     next.st = SRS_ST.LEARNING;
     return { ...memo, srs: next };
   }
@@ -583,6 +609,13 @@ function srsNextDays(memo) {
   if (s.iv > 0) return s.iv;
   const step = srsClampBox(s.b) + 1;
   return step >= SRS_STEPS.length ? 0 : SRS_STEPS[step];
+}
+
+/** 「まだ」を押したときの間隔（ボタンに出す）。srsReview と同じ式を使う。
+ *  以前はボタンが常に「1日後」と出ていて、固定間隔のメモ（毎月など）の実際の予定と食い違っていた。 */
+function srsAgainDays(memo) {
+  const s = srsNormalize(memo && memo.srs);
+  return s && s.iv > 0 ? Math.max(1, Math.round(s.iv / 3)) : SRS_STEPS[0];
 }
 
 function srsFmtDue(ts) {
@@ -3546,7 +3579,13 @@ function DataModal({
   };
   const connect = gWrap(() => onGdConnect(cidInput.trim()), "接続しました。");
   const push = gWrap(() => onGdPush(), "Driveに保存しました。");
-  const pull = gWrap(() => onGdPull(), "Driveから取り込みました。");
+  const pullRun = gWrap(() => onGdPull(), "Driveから取り込みました。");
+  // 「取得」はマージではなく置き換え。この端末にしか無いメモや、まだ送っていない変更
+  // （復習の記録を含む）は消えるので、押す前に必ず確かめる。
+  const pull = () => {
+    if (!window.confirm("Driveの内容で、この端末のメモを置き換えます。\n\nこの端末にしか無いメモや、まだDriveへ送っていない変更（復習の記録を含む）は消えます。\n\nふだんは「自動で同期する」をONにしておくと、両方の変更をまとめて取り込めるので安全です。\n\n置き換えますか？")) return;
+    return pullRun();
+  };
   return React.createElement("div", {
     className: "modal-bg",
     onClick: onClose
@@ -3616,7 +3655,7 @@ function DataModal({
     type: "checkbox",
     checked: gdAuto,
     onChange: e => onGdSetAuto(e.target.checked)
-  }), "\u81EA\u52D5\u3067\u540C\u671F\u3059\u308B\uFF08\u958B\u3044\u305F\u3068\u304D\u53D6\u5F97\u30FB\u5909\u66F4\u6642\u306B\u4FDD\u5B58\uFF09"), React.createElement("p", {
+  }), "\u81EA\u52D5\u3067\u540C\u671F\u3059\u308B\uFF08\u958B\u3044\u305F\u3068\u304D\u30FB\u753B\u9762\u306B\u623B\u3063\u305F\u3068\u304D\u53D6\u5F97\uFF0F\u5909\u66F4\u6642\u306B\u4FDD\u5B58\uFF09"), React.createElement("p", {
     className: "ai-foot"
   }, "\u5225\u306E\u7AEF\u672B\u3067\u306F\u540C\u3058Google\u30A2\u30AB\u30A6\u30F3\u30C8\u3067\u63A5\u7D9A\u3059\u308B\u3068\u540C\u3058\u30C7\u30FC\u30BF\u306B\u306A\u308A\u307E\u3059\u3002\u540C\u6642\u306B\u4E21\u65B9\u3067\u7DE8\u96C6\u3057\u305F\u5834\u5408\u306F", React.createElement("b", null, "\u6700\u5F8C\u306E\u4FDD\u5B58\u304C\u512A\u5148"), "\u3055\u308C\u307E\u3059\u3002", React.createElement("button", {
     className: "linklike",
@@ -3771,6 +3810,7 @@ function CalendarPanel({
 /* 集中復習。1件ずつ出して「覚えた / まだ / あとで」で答える。
    スマホでも押しやすいよう、ボタンは大きめの横並びにしている。 */
 function ReviewFocus({ memo, index, total, onAnswer, onClose }) {
+  const bodyRef = useRef(null);
   useEffect(() => {
     const onKey = e => {
       if (e.isComposing || e.keyCode === 229) return;
@@ -3778,6 +3818,15 @@ function ReviewFocus({ memo, index, total, onAnswer, onClose }) {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const el = e.target;
       if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) return;
+      // ボタンやリンクに合わせて Enter / スペースを押したときは、そのボタン自身の操作にする。
+      // 以前は「まだ」や「終了」に合わせて Enter を押しても「覚えた」で記録されていた。
+      // 後ろの画面のボタン（「順番に復習する」など）は押させない。
+      const ctl = (e.key === "Enter" || e.key === " ") && el && el.closest ? el.closest("button,a,summary,[role=button]") : null;
+      if (ctl) {
+        if (ctl.closest(".rf-card")) return;
+        e.preventDefault();
+        if (e.key === " ") return;
+      }
       if (e.key === "Escape") { onClose(); return; }
       // スペースは本文のスクロールに使うので「覚えた」には割り当てない
       if (e.key === "1") onAnswer("again");
@@ -3787,8 +3836,29 @@ function ReviewFocus({ memo, index, total, onAnswer, onClose }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onAnswer, onClose]);
+  // 開いたら本文にフォーカスを移す。後ろの「順番に復習する」にフォーカスが残っていると、
+  // スペースや Enter がそちらに効いてしまう。次のメモは本文の先頭から見せる。
+  useEffect(() => {
+    const b = bodyRef.current;
+    if (!b) return;
+    b.scrollTop = 0;
+    const a = document.activeElement;
+    if (!a || !a.closest || !a.closest(".rf-card")) {
+      try { b.focus({ preventScroll: true }); } catch (er) {}
+    }
+  }, [memo.id]);
+  // マウスや指で押したボタンにはフォーカスを残さない。残すと、本文を読もうとして押した
+  // スペースがそのボタンをもう一度押し、まだ見ていない次のメモに勝手に答えてしまう。
+  // （キーボードで押したとき＝detail が 0 のときは、そのままにしておく）
+  const answer = (e, result) => {
+    if (e && e.detail > 0 && bodyRef.current) {
+      try { bodyRef.current.focus({ preventScroll: true }); } catch (er) {}
+    }
+    onAnswer(result);
+  };
 
   const nextDays = srsNextDays(memo);
+  const againDays = srsAgainDays(memo);
   const link = (memo.links || []).filter(safeLink)[0] || null;
   return React.createElement("div", {
     className: "rf-back",
@@ -3803,18 +3873,18 @@ function ReviewFocus({ memo, index, total, onAnswer, onClose }) {
       React.createElement("span", { className: "tag-pill" }, React.createElement("span", { className: "dot" }), memo.category),
       (memo.tags || []).map(t => React.createElement("span", { key: t, className: "rf-tag" }, "#" + t))
     ),
-    React.createElement("div", { className: "rf-body" }, looksLikeHtmlKn(memo.body || "")
+    React.createElement("div", { className: "rf-body", ref: bodyRef, tabIndex: -1 }, looksLikeHtmlKn(memo.body || "")
       ? React.createElement(RichBody, { html: memo.body || "" })
       : React.createElement("div", { className: "body" }, memo.body || "")),
     link && React.createElement("a", {
       className: "rf-link", href: link, target: "_blank", rel: "noopener"
     }, hostname(link) + " \u3092\u958B\u304F"),
     React.createElement("div", { className: "rf-btns" },
-      React.createElement("button", { className: "rf-b", onClick: () => onAnswer("again") },
-        React.createElement("b", null, "\u307E\u3060"), React.createElement("small", null, SRS_STEPS[0] + "\u65E5\u5F8C")),
-      React.createElement("button", { className: "rf-b", onClick: () => onAnswer("later") },
+      React.createElement("button", { className: "rf-b", onClick: e => answer(e, "again") },
+        React.createElement("b", null, "\u307E\u3060"), React.createElement("small", null, againDays + "\u65E5\u5F8C")),
+      React.createElement("button", { className: "rf-b", onClick: e => answer(e, "later") },
         React.createElement("b", null, "\u3042\u3068\u3067"), React.createElement("small", null, "\u660E\u65E5")),
-      React.createElement("button", { className: "rf-b ok", onClick: () => onAnswer("ok") },
+      React.createElement("button", { className: "rf-b ok", onClick: e => answer(e, "ok") },
         React.createElement("b", null, "\u899A\u3048\u305F"),
         React.createElement("small", null, nextDays ? "\u6B21\u306F" + nextDays + "\u65E5\u5F8C" : "\u5B8C\u4E86\u306B\u3059\u308B"))
     )
@@ -3873,6 +3943,7 @@ function App() {
   }, []);
   const [focusQueue, setFocusQueue] = useState(null);    // 集中復習の並び（id の配列）
   const [focusIdx, setFocusIdx] = useState(0);
+  const [focusPrep, setFocusPrep] = useState(false);     // 集中復習の前に他端末の分を取り込み中
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [expanded, setExpanded] = useState(new Set());
   const [actionsId, setActionsId] = useState(null);
@@ -3931,6 +4002,16 @@ function App() {
   // 古いレンダーの関数から呼ばれても最新の gdPush が走るようにしておく
   const gdPushRef = useRef(null);
   const pushTimer = useRef(null);
+  // 同期（送信・受信マージ）は1本ずつ順番に走らせる。並べて走らせると、あとから終わった方が
+  // 古い内容でDriveを上書きしたり、古いマージ結果でこの端末の新しい変更を巻き戻したりする。
+  const syncChain = useRef(Promise.resolve());
+  const pushQueued = useRef(null);      // まだ始まっていない送信（あとから頼まれた分は相乗りする）
+  const gdPushOnceRef = useRef(null);
+  // 利用者の変更ごとに増える番号。送信中に変更があったか（＝もう一度送るべきか）を見分ける
+  const localRev = useRef(0);
+  const seenRev = useRef(0);            // 送信の予約を判断した時点の localRev
+  const lastPullAt = useRef(0);         // 最後に Drive を見に行った時刻（取りに行きすぎないため）
+  const pullOnReturnRef = useRef(null);
   const [notifyOn, setNotifyOn] = useState(() => {
     try {
       return localStorage.getItem("kininari:notify") === "1";
@@ -4004,15 +4085,25 @@ function App() {
     // 端末間マージのため、実際に中身が変わった項目にだけ updatedAt を打つ。
     // 取り込み（インポート/Drive受信）のときは stamp:false で抑止する。
     const stamp = !opts || opts.stamp !== false;
+    // atomic: 保存できたときだけ画面に反映する（クリップの取り込みで使う）。
+    // 保存に失敗したのに画面にだけ載ると、そのあとの操作が全部保存に失敗し、再読み込みで消える。
+    const atomic = !!(opts && opts.atomic);
     nextMemos = stamp ? stampUpdated(nextMemos, memos) : nextMemos;
     nextFolders = stamp ? stampUpdated(nextFolders, folders) : nextFolders;
-    setMemos(nextMemos);
-    setFolders(nextFolders);
+    if (!atomic) {
+      setMemos(nextMemos);
+      setFolders(nextFolders);
+    }
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         memos: nextMemos,
         notebooks: nextFolders
       }));
+      if (atomic) {
+        setMemos(nextMemos);
+        setFolders(nextFolders);
+      }
+      if (stamp) localRev.current++;
       return true;
     } catch (e) {
       setToast({
@@ -4057,120 +4148,166 @@ function App() {
   useEffect(() => {
     const h = window.location.hash || "";
     const m = h.match(/(?:#|&)knadd=([^&]+)/);
-    if (m) {
+    if (!m) return;
+    // 中身を見る前にURLから消す。壊れたリンク・悪意のあるリンクで取り込みが落ちても、
+    // 再読み込みのたびに同じ所で落ちて画面が真っ白のまま戻らない、ということがないように。
+    try {
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    } catch (e) {}
+    const failed = () => setToast({
+      title: "クリップを取り込めませんでした",
+      body: "受け取った内容の形式が正しくありません。"
+    });
+    try {
       let clip = null;
       try {
         clip = JSON.parse(decodeURIComponent(m[1]));
       } catch (e) {}
-      if (clip) {
-        let data = {
-          memos: [],
-          notebooks: []
-        };
-        try {
-          const v = localStorage.getItem(STORAGE_KEY);
-          if (v) {
-            const p = JSON.parse(v);
-            if (p) data = p;
-          }
-        } catch (e) {}
-        const curMemos = (data.memos || []).map(normalizeMemo);
-        let curFolders = (data.notebooks || []).map(normalizeFolder);
-        let nbId = null;
-        const fname = (clip.f || "").trim();
-        if (fname) {
-          let found = curFolders.find(x => (x.name || "").trim().toLowerCase() === fname.toLowerCase());
-          if (!found) {
-            found = normalizeFolder({
-              id: uid(),
-              name: fname,
-              parentId: null,
-              pinned: false
-            }, curFolders.length);
-            curFolders = [...curFolders, found];
-          }
-          nbId = found.id;
-        }
-        const esc = s => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-        const escA = s => esc(s).replace(/"/g, "&quot;");
-        // タグを別に受け取ったときは、本文の末尾に付いている同じタグ行を落とす
-        // （古い版の拡張では本文にしか入れられなかったため、両方入って重複する）
-        let note = String(clip.n || "");
-        if (Array.isArray(clip.tags) && clip.tags.length) {
-          note = note.replace(/(?:\r?\n)+[ \t]*#[^\n]*$/, "").replace(/\s+$/, "");
-        }
-        let body = "";
-        if (clip.img) body += `<img src="${escA(clip.img)}" alt="">`;
-        if (note) body += `<div>${esc(note).replace(/\n/g, "<br>")}</div>`;
-        const cats = ["メモ", "アイデア", "調べる", "やること", "行きたい"];
-        // タグ（拡張からは配列か、空白・カンマ区切りの文字列で届く）
-        const clipTags = [];
-        const rawTags = Array.isArray(clip.tags) ? clip.tags : String(clip.tags || "").split(/[,、\s]+/);
-        rawTags.forEach(t => {
-          const v = String(t || "").replace(/^#/, "").trim().slice(0, 24);
-          if (v && !clipTags.includes(v) && clipTags.length < 12) clipTags.push(v);
-        });
-        const memo = {
-          id: uid(),
-          title: String(clip.t || clip.u || "(無題)").slice(0, 300),
-          body,
-          category: cats.includes(clip.c) ? clip.c : "調べる",
-          tags: clipTags,
-          links: safeLink(clip.u) ? [clip.u] : [],
-          notebookId: nbId,
-          date: null,
-          time: null,
-          remind: null,
-          srs: null,
-          attachments: [],
-          done: false,
-          pinned: false,
-          createdAt: Date.now()
-        };
-        // 復習の予定つきで届いたら、そのまま復習に入れる
-        //   clip.srs … {b,d,rv,st,iv} をそのまま引き継ぐ（拡張ですでに何回か復習した項目）
-        //   clip.rv  … 「今日から復習を始める」ときの間隔（0=自動 / 7=毎週 など）
-        if (clip.srs && typeof clip.srs === "object") {
-          memo.srs = srsNormalize(clip.srs);
-        } else if (clip.rv != null) {
-          const started = srsStart(memo, null, Number(clip.rv) || 0);
-          memo.srs = started.srs;
-        }
-        const saved = persist([normalizeMemo(memo), ...curMemos], curFolders);
-        // 保存が終わったことを Chrome拡張に知らせる。拡張はこの印を見て裏タブを
-        // 閉じるので、印を立てるのは「Driveへ送り終えてから」にする。3秒デバウンス
-        // 任せにすると、タブが先に閉じてタイマーごとキャンセルされ、クリップが
-        // この端末にしか残らない（しかも印だけ付いて次の同期で消えることがある）。
-        const tellSaved = () => {
-          try {
-            window.__kininariClipSaved = true;
-          } catch (e) {}
-        };
-        // 保存自体に失敗したときは知らせない（拡張側で取りこぼしが分かるように）
-        if (!saved) {
-          setToast({
-            title: "クリップを保存できませんでした",
-            body: "保存容量の上限に達した可能性があります。"
-          });
-        } else if (gdAuto && gdCid && gdLinked && gdPushRef.current) {
-          skipPush.current = true;   // デバウンスは使わず、ここで直接送る
-          const done = () => tellSaved();
-          gdPushRef.current().then(done).catch(done);
-          setTimeout(tellSaved, 12000);   // 通信が返ってこないときの保険
-        } else {
-          tellSaved();
-          skipPush.current = false;
-        }
-        setFreshId(memo.id);
-        setTimeout(() => setFreshId(f => f === memo.id ? null : f), 1600);
-        setToast({
-          title: "気になり帳に追加しました",
-          body: memo.title
-        });
+      if (!clip || typeof clip !== "object" || Array.isArray(clip)) {
+        failed();
+        return;
       }
+      // 届いた値はすべて型を確かめてから使う。文字列のつもりの所に数値やオブジェクトが
+      // 来ると、.trim() などで落ちて画面ごと消えていた（f:123 で真っ白になった）。
+      const str = v => typeof v === "string" ? v : typeof v === "number" && Number.isFinite(v) ? String(v) : "";
+      let data = {
+        memos: [],
+        notebooks: []
+      };
       try {
-        window.history.replaceState(null, "", window.location.pathname + window.location.search);
+        const v = localStorage.getItem(STORAGE_KEY);
+        if (v) {
+          const p = JSON.parse(v);
+          if (p) data = p;
+        }
       } catch (e) {}
+      const curMemos = (data.memos || []).map(normalizeMemo);
+      let curFolders = (data.notebooks || []).map(normalizeFolder);
+      // 保存が終わったことを Chrome拡張に知らせる。拡張はこの印を見て裏タブを
+      // 閉じるので、印を立てるのは「Driveへ送り終えてから」にする。3秒デバウンス
+      // 任せにすると、タブが先に閉じてタイマーごとキャンセルされ、クリップが
+      // この端末にしか残らない（しかも印だけ付いて次の同期で消えることがある）。
+      const tellSaved = () => {
+        try {
+          window.__kininariClipSaved = true;
+        } catch (e) {}
+      };
+      const url = str(clip.u).trim();
+      // 同じページを10分以内に続けて受け取ったら（拡張の送り直しなど）、2件目は作らない。
+      // 拡張が送り直しをやめられるよう、保存済みの合図は立てる。
+      const urlKey = clipUrlKey(url);
+      const nowMs = Date.now();
+      const dup = urlKey ? curMemos.find(x => nowMs - (Number(x.createdAt) || 0) < 10 * 60 * 1000 && (x.links || []).some(l => clipUrlKey(l) === urlKey)) : null;
+      if (dup) {
+        tellSaved();
+        setFreshId(dup.id);
+        setTimeout(() => setFreshId(f => f === dup.id ? null : f), 1600);
+        setToast({
+          title: "もう追加してあります",
+          body: dup.title
+        });
+        return;
+      }
+      let nbId = null;
+      const fname = str(clip.f).trim().slice(0, 100);
+      if (fname) {
+        let found = curFolders.find(x => (x.name || "").trim().toLowerCase() === fname.toLowerCase());
+        if (!found) {
+          found = normalizeFolder({
+            id: uid(),
+            name: fname,
+            parentId: null,
+            pinned: false,
+            createdAt: Date.now()
+          }, curFolders.length);
+          curFolders = [...curFolders, found];
+        }
+        nbId = found.id;
+      }
+      const esc = s => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const escA = s => esc(s).replace(/"/g, "&quot;");
+      const cats = ["メモ", "アイデア", "調べる", "やること", "行きたい"];
+      // タグ（拡張からは配列か、空白・カンマ区切りの文字列で届く）
+      const clipTags = [];
+      const rawTags = Array.isArray(clip.tags) ? clip.tags : typeof clip.tags === "string" ? clip.tags.split(/[,、\s]+/) : [];
+      rawTags.forEach(t => {
+        const v = str(t).replace(/^#/, "").trim().slice(0, 24);
+        if (v && clipTags.indexOf(v) < 0 && clipTags.length < 12) clipTags.push(v);
+      });
+      // タグを別に受け取ったときは、本文の末尾に付いている同じタグ行を落とす
+      // （古い版の拡張では本文にしか入れられなかったため、両方入って重複する）。
+      // 落とすのは、その行の語がすべて受け取ったタグのときだけ。以前は「#」で始まる最後の行を
+      // 何でも消していて、コードのコメント（# TODO …）や「#1 はこれ」のような本文が消えていた。
+      let note = str(clip.n);
+      if (clipTags.length) {
+        const tm = note.match(/(?:\r?\n)+[ \t]*(#[^\n]*)$/);
+        if (tm) {
+          const toks = tm[1].split(/[\s,、]+/).filter(Boolean);
+          const onlyTags = toks.length > 0 && toks.every(t => t.charAt(0) === "#" && clipTags.indexOf(t.slice(1).trim().slice(0, 24)) >= 0);
+          if (onlyTags) note = note.slice(0, tm.index).replace(/\s+$/, "");
+        }
+      }
+      // 画像は http(s) か data:image だけ（それ以外は表示できず、壊れた画像の枠だけが残る）
+      const img = str(clip.img).trim();
+      let body = "";
+      if (/^(https?:|data:image\/)/i.test(img)) body += `<img src="${escA(img)}" alt="">`;
+      if (note) body += `<div>${esc(note).replace(/\n/g, "<br>")}</div>`;
+      const memo = {
+        id: uid(),
+        title: (str(clip.t).trim() || url || "(無題)").slice(0, 300),
+        body,
+        category: typeof clip.c === "string" && cats.indexOf(clip.c) >= 0 ? clip.c : "調べる",
+        tags: clipTags,
+        links: safeLink(url) ? [url] : [],
+        notebookId: nbId,
+        date: null,
+        time: null,
+        remind: null,
+        srs: null,
+        attachments: [],
+        done: false,
+        pinned: false,
+        createdAt: Date.now()
+      };
+      // 復習の予定つきで届いたら、そのまま復習に入れる
+      //   clip.srs … {b,d,rv,st,iv} をそのまま引き継ぐ（拡張ですでに何回か復習した項目）
+      //   clip.rv  … 「今日から復習を始める」ときの間隔（0=自動 / 7=毎週 など）。数値か数字の文字列だけ受け取る
+      if (clip.srs && typeof clip.srs === "object") {
+        memo.srs = srsNormalize(clip.srs);
+      } else {
+        const rv = typeof clip.rv === "number" ? clip.rv : typeof clip.rv === "string" && clip.rv.trim() ? Number(clip.rv) : NaN;
+        if (Number.isFinite(rv)) memo.srs = srsStart(memo, null, rv).srs;
+      }
+      // atomic: 保存できなかったときは画面にも載せない（載せると、そのあとの操作まで保存に
+      // 失敗し続け、再読み込みでまとめて消える）
+      const saved = persist([normalizeMemo(memo), ...curMemos], curFolders, { atomic: true });
+      // 保存自体に失敗したときは、成功の表示も拡張への合図も出さない（取りこぼしが分かるように）。
+      // 以前は直後の「追加しました」で失敗の知らせが上書きされ、消えたことに気づけなかった。
+      if (!saved) {
+        setToast({
+          title: "クリップを保存できませんでした",
+          body: "保存容量の上限に達した可能性があります。不要なメモや画像を減らしてから、もう一度送ってください。"
+        });
+        return;
+      }
+      if (gdAuto && gdCid && gdLinked && gdPushRef.current) {
+        skipPush.current = true;   // デバウンスは使わず、ここで直接送る
+        seenRev.current = localRev.current;   // この変更は下で直接送るので、予約で二重に送らない
+        const done = () => tellSaved();
+        gdPushRef.current().then(done).catch(done);
+        setTimeout(tellSaved, 12000);   // 通信が返ってこないときの保険
+      } else {
+        tellSaved();
+        skipPush.current = false;
+      }
+      setFreshId(memo.id);
+      setTimeout(() => setFreshId(f => f === memo.id ? null : f), 1600);
+      setToast({
+        title: "気になり帳に追加しました",
+        body: memo.title
+      });
+    } catch (e) {
+      failed();
     }
   }, []);
   useEffect(() => {
@@ -4291,16 +4428,51 @@ function App() {
     return () => window.removeEventListener("message", onMsg);
   }, [embedded, syncState, gdSync, gdLinked]);
 
-  const gdPush = async () => {
-    // 送る中身は必ず「いま保存されている内容」から取る（readLive のコメント参照）。
-    // 読めなかったときは、空のデータでDriveを上書きしてしまうより中止する。
-    const live = readLive();
-    if (!live.ok) throw new Error("保存データを読めなかったため中止しました");
-    const curMemos = live.memos,
-      curFolders = live.folders;
+  // 同期の状態（ファイルIDと最終同期時刻）は state ではなく保存先から読む。送信は前のレンダーの
+  // 関数のまま続けて走ることがあり、state だと直前の同期時刻が古いまま見えるため。
+  const gdSyncInfo = () => {
+    try {
+      return {
+        file: localStorage.getItem("kininari:gd:file") || "",
+        sync: localStorage.getItem("kininari:gd:sync") || "",
+        linked: localStorage.getItem("kininari:gd:linked") === "1",
+        auto: localStorage.getItem("kininari:gd:auto") === "1"
+      };
+    } catch (e) {
+      return { file: gdFileId, sync: gdSync, linked: gdLinked, auto: gdAuto };
+    }
+  };
+  /** 同期の処理を順番待ちの列に並べる。前の処理が通信で固まっても、後ろが永久に
+   *  止まらないよう90秒で見切る。 */
+  const runSync = fn => {
+    const prev = syncChain.current;
+    const waitPrev = new Promise(res => {
+      const t = setTimeout(res, 90000);
+      const go = () => { clearTimeout(t); res(); };
+      prev.then(go, go);
+    });
+    const p = waitPrev.then(() => fn());
+    syncChain.current = p.catch(() => {});
+    return p;
+  };
+  /** 3秒待ってから送る（続けて編集したときは、まとめて1回にする） */
+  const schedulePush = () => {
+    if (pushTimer.current) clearTimeout(pushTimer.current);
+    pushTimer.current = setTimeout(() => {
+      pushTimer.current = null;
+      setSyncState({ phase: "syncing" });
+      (gdPushRef.current || gdPush)().then(() => setSyncState({ phase: "ok", at: Date.now() })).catch(e => setSyncState({
+        phase: "error",
+        at: Date.now(),
+        msg: syncErrMsg(e)
+      }));
+    }, 3000);
+  };
+  const gdPushOnce = async () => {
+    const st = gdSyncInfo();
     const token = await gdGetToken(gdCid, false);
-    const found = gdFileId ? null : await gdFindFile(token);
-    let id = gdFileId || (found || {}).id;
+    const found = st.file ? null : await gdFindFile(token);
+    let id = st.file || (found || {}).id;
     if (found && found.duplicates) {
       setToast({
         title: "Driveに同じ名前のファイルが複数あります",
@@ -4309,30 +4481,37 @@ function App() {
     }
     // 書き込む前に、最終同期より後に他端末が更新していないか確認する。
     // 更新されていれば、先にマージしてから書く（相手の変更を潰さない）
-    if (id && gdSync) {
+    let remote = null;
+    if (id && st.sync) {
       const cur = await gdGetMeta(token, id);
-      if (cur.modifiedTime && cur.modifiedTime > gdSync) {
+      if (cur.modifiedTime && cur.modifiedTime > st.sync) {
         const obj = JSON.parse(await gdDownload(token, id));
         if (Array.isArray(obj.memos)) {
           await restoreBackupFiles(obj.files);
-          const tombs = tombstonesMerge(obj.deleted);
-          const lastSync = new Date(gdSync).getTime();
-          const mm = mergeById(curMemos, (obj.memos || []).map(normalizeMemo), lastSync, tombs);
-          const mf = mergeById(curFolders, (obj.notebooks || []).map(normalizeFolder), lastSync, tombs);
-          skipPush.current = true;
-          // ローカルへはまだ印を付けずに反映する。印を付けるのは送信できたあと。
-          applyMerged(mm, mf);
-          const merged = JSON.stringify(await buildBackupObject(markSynced(mm), markSynced(mf)));
-          const m2 = await gdUpdate(token, id, merged);
-          commitSynced(mm, mf);
-          gdSetFile(id);
-          gdSetSyncTime(m2.modifiedTime || new Date().toISOString());
-          setGdLinked(true);
-          return;
+          remote = obj;
         }
       }
     }
-    const content = JSON.stringify(await buildBackupObject(markSynced(curMemos), markSynced(curFolders)));
+    // 送る中身は必ず「いま保存されている内容」から取る（readLive のコメント参照）。
+    // ★通信を待ち終えてから読む。待つ前に読んだ内容でマージして書き戻していたため、
+    //   その間に付けた復習や追加したメモが巻き戻って消えていた。ここから applyMerged
+    //   までは await を挟まない（読んでから書くまでの間に変更が割り込まない）。
+    // 読めなかったときは、空のデータでDriveを上書きしてしまうより中止する。
+    const live = readLive();
+    if (!live.ok) throw new Error("保存データを読めなかったため中止しました");
+    let upMemos = live.memos,
+      upFolders = live.folders;
+    if (remote) {
+      const tombs = tombstonesMerge(remote.deleted);
+      const lastSync = new Date(st.sync).getTime();
+      upMemos = mergeById(upMemos, (remote.memos || []).map(normalizeMemo), lastSync, tombs);
+      upFolders = mergeById(upFolders, (remote.notebooks || []).map(normalizeFolder), lastSync, tombs);
+      skipPush.current = true;
+      // ローカルへはまだ印を付けずに反映する。印を付けるのは送信できたあと。
+      applyMerged(upMemos, upFolders);
+    }
+    const rev = localRev.current;   // ここまでの変更は、送る中身に入っている
+    const content = JSON.stringify(await buildBackupObject(markSynced(upMemos), markSynced(upFolders)));
     let meta;
     if (id) meta = await gdUpdate(token, id, content);else {
       meta = await gdCreate(token, content);
@@ -4340,15 +4519,32 @@ function App() {
     }
     // 送れたものに印を付けて保存しておく（次回、Driveに無ければ他端末での削除と判断できる）。
     // 送信中に増えたメモには印を付けないので、それが次の同期で消えることもない。
-    commitSynced(curMemos, curFolders);
+    commitSynced(upMemos, upFolders);
     gdSetFile(id);
     gdSetSyncTime(meta.modifiedTime || new Date().toISOString());
     setGdLinked(true);
+    // 送っている間に付けた変更は、まだDriveに無い。自動同期中で送信の予約も無ければ入れておく
+    // （ここで取りこぼすと、次に何か編集するまでDriveに載らない）
+    if (localRev.current !== rev && gdSyncInfo().auto && !pushTimer.current) schedulePush();
+  };
+  gdPushOnceRef.current = gdPushOnce;
+  /** Driveへ送る。同時に2本は走らせず、まだ始まっていない送信があればそれに相乗りする
+   *  （始まった時点の最新の内容を送るので、頼まれた分の変更は取りこぼさない）。 */
+  const gdPush = () => {
+    if (pushQueued.current) return pushQueued.current;
+    const p = runSync(() => {
+      pushQueued.current = null;
+      return gdPushOnceRef.current();
+    });
+    pushQueued.current = p;
+    return p;
   };
   gdPushRef.current = gdPush;
-  const gdPull = async () => {
+  // 「Driveから取得」＝Driveの内容で置き換える（確認は DataModal で取る）。
+  // 送信の途中に割り込むと、置き換えた直後に古い送信結果と食い違うので、同期の列に並べる。
+  const gdPull = () => runSync(async () => {
     const token = await gdGetToken(gdCid, false);
-    let id = gdFileId || ((await gdFindFile(token)) || {}).id;
+    let id = gdSyncInfo().file || ((await gdFindFile(token)) || {}).id;
     if (!id) throw new Error("Driveにデータが見つかりません。先に「アップロード」してください。");
     const obj = JSON.parse(await gdDownload(token, id));
     if (!Array.isArray(obj.memos)) throw new Error("データ形式が不正です");
@@ -4363,80 +4559,114 @@ function App() {
     setGdLinked(true);
     const meta = await gdGetMeta(token, id);
     gdSetSyncTime(meta.modifiedTime || new Date().toISOString());
-  };
+  });
+  /** Driveの方が新しければ取り込んでマージする（この端末の変更は消さない）。
+   *  開いたとき・画面に戻ったとき・集中復習を始める前に使う。 */
+  const gdPullMerge = () => runSync(async () => {
+    lastPullAt.current = Date.now();
+    const st = gdSyncInfo();
+    const token = await gdGetToken(gdCid, false);
+    const id = st.file || ((await gdFindFile(token)) || {}).id;
+    if (!id) return false;
+    const meta = await gdGetMeta(token, id);
+    if (!meta.modifiedTime || (st.sync && meta.modifiedTime <= st.sync)) return false;
+    const obj = JSON.parse(await gdDownload(token, id));
+    if (!Array.isArray(obj.memos)) return false;
+    await restoreBackupFiles(obj.files);
+    // 通信の間に連携を解除されていたら取り込まない（解除したのに同期の印が戻らないように）
+    if (!gdSyncInfo().linked) return false;
+    // 置き換えではなくマージ。id ごとに updatedAt の新しい方を採用し、
+    // 墓標で削除を反映する（旧版は「リモートに同じidがあれば無条件で
+    // リモート優先」だったため、この端末の編集が消えていた）
+    // ここから下は await を挟まない（ローカルの最新を読んでから書き戻すまでに変更が割り込まない）
+    let localData = {
+      memos: [],
+      notebooks: []
+    };
+    try {
+      const v = localStorage.getItem(STORAGE_KEY);
+      if (v) localData = JSON.parse(v) || localData;
+    } catch (e) {}
+    const lastSync = st.sync ? new Date(st.sync).getTime() : 0;
+    const tombs = tombstonesMerge(obj.deleted);
+    const remoteMemos = (obj.memos || []).map(normalizeMemo);
+    const remoteNbs = (obj.notebooks || []).map(normalizeFolder);
+    const mergedMemos = mergeById((localData.memos || []).map(normalizeMemo), remoteMemos, lastSync, tombs);
+    const mergedNbs = mergeById((localData.notebooks || []).map(normalizeFolder), remoteNbs, lastSync, tombs);
+    // マージ結果がDrive側と一致するなら書き戻す必要はない
+    const same = itemSig({ m: mergedMemos, f: mergedNbs }) === itemSig({ m: remoteMemos, f: remoteNbs });
+    skipPush.current = same;
+    // 画面のリセットを伴わない applyMerged を使う（裏で走る同期なので、
+    // 検索中やフォルダを開いている最中に表示が「すべて」に戻ってはいけない）
+    applyMerged(mergedMemos, mergedNbs);
+    // 印を付けてよいのは「Driveに載っていた分」だけ。マージ結果全体に
+    // 付けると、まだ一度も送っていないローカルのメモにまで印が付き、
+    // 送信前にタブを閉じた／通信に失敗したときに次の同期で消えてしまう。
+    commitSynced(remoteMemos, remoteNbs, !same);
+    gdSetFile(id);
+    gdSetSyncTime(meta.modifiedTime);
+    return true;
+  });
+  const pullAndReport = () => gdPullMerge().then(r => {
+    setSyncState({ phase: "ok", at: Date.now() });
+    return r;
+  }, e => {
+    setSyncState({ phase: "error", at: Date.now(), msg: syncErrMsg(e) });
+    return false;
+  });
+  const canAutoSync = !loading && gdAuto && !!gdCid && gdLinked;
   useEffect(() => {
     if (loading || !gdAuto || !gdCid || !gdLinked) return;
     let alive = true;
-    (async () => {
-      try {
-        const token = await gdGetToken(gdCid, false);
-        const id = gdFileId || ((await gdFindFile(token)) || {}).id;
-        if (!id || !alive) return;
-        const meta = await gdGetMeta(token, id);
-        if (alive && meta.modifiedTime && (!gdSync || meta.modifiedTime > gdSync)) {
-          const obj = JSON.parse(await gdDownload(token, id));
-          if (Array.isArray(obj.memos)) {
-            await restoreBackupFiles(obj.files);
-            // 置き換えではなくマージ。id ごとに updatedAt の新しい方を採用し、
-            // 墓標で削除を反映する（旧版は「リモートに同じidがあれば無条件で
-            // リモート優先」だったため、この端末の編集が消えていた）
-            let localData = {
-              memos: [],
-              notebooks: []
-            };
-            try {
-              const v = localStorage.getItem(STORAGE_KEY);
-              if (v) localData = JSON.parse(v) || localData;
-            } catch (e) {}
-            const lastSync = gdSync ? new Date(gdSync).getTime() : 0;
-            const tombs = tombstonesMerge(obj.deleted);
-            const remoteMemos = (obj.memos || []).map(normalizeMemo);
-            const remoteNbs = (obj.notebooks || []).map(normalizeFolder);
-            const mergedMemos = mergeById((localData.memos || []).map(normalizeMemo), remoteMemos, lastSync, tombs);
-            const mergedNbs = mergeById((localData.notebooks || []).map(normalizeFolder), remoteNbs, lastSync, tombs);
-            // マージ結果がDrive側と一致するなら書き戻す必要はない
-            const same = itemSig({ m: mergedMemos, f: mergedNbs }) === itemSig({ m: remoteMemos, f: remoteNbs });
-            skipPush.current = same;
-            // 画面のリセットを伴わない applyMerged を使う（裏で走る同期なので、
-            // 検索中やフォルダを開いている最中に表示が「すべて」に戻ってはいけない）
-            applyMerged(mergedMemos, mergedNbs);
-            // 印を付けてよいのは「Driveに載っていた分」だけ。マージ結果全体に
-            // 付けると、まだ一度も送っていないローカルのメモにまで印が付き、
-            // 送信前にタブを閉じた／通信に失敗したときに次の同期で消えてしまう。
-            commitSynced(remoteMemos, remoteNbs, !same);
-            gdSetFile(id);
-            gdSetSyncTime(meta.modifiedTime);
-          }
-        }
-        if (alive) setSyncState({ phase: "ok", at: Date.now() });
-      } catch (e) {
-        // 旧版はここで完全に握りつぶしていたため、同期が止まっても気づけなかった
-        if (alive) setSyncState({ phase: "error", at: Date.now(), msg: syncErrMsg(e) });
-      }
-    })();
+    gdPullMerge().then(() => {
+      if (alive) setSyncState({ phase: "ok", at: Date.now() });
+    }).catch(e => {
+      // 旧版はここで完全に握りつぶしていたため、同期が止まっても気づけなかった
+      if (alive) setSyncState({ phase: "error", at: Date.now(), msg: syncErrMsg(e) });
+    });
     return () => {
       alive = false;
     };
   }, [loading, gdLinked]);
+  // 開いたままのタブでも、画面に戻ってきたら他端末の変更（スマホでの復習など）を取り込む。
+  // 取り込まないと、もう済んだ復習が「今日の復習」に残り、ここで答えると向こうの記録を
+  // 上書きしてしまう（メモ単位で新しい方が勝つため）。通信を増やしすぎないよう1分に1回まで。
+  pullOnReturnRef.current = () => {
+    if (!canAutoSync) return;
+    if (Date.now() - lastPullAt.current < 60000) return;
+    lastPullAt.current = Date.now();
+    pullAndReport();
+  };
+  useEffect(() => {
+    const onBack = () => {
+      if (document.visibilityState === "hidden") return;
+      if (pullOnReturnRef.current) pullOnReturnRef.current();
+    };
+    document.addEventListener("visibilitychange", onBack);
+    window.addEventListener("focus", onBack);
+    return () => {
+      document.removeEventListener("visibilitychange", onBack);
+      window.removeEventListener("focus", onBack);
+    };
+  }, []);
   useEffect(() => {
     if (loading || !gdAuto || !gdCid || !gdLinked) return;
+    // 前回からこの端末で利用者の変更があったか（同期の書き込みと同じ描画にまとまっても見分ける）
+    const userChanged = localRev.current !== seenRev.current;
+    seenRev.current = localRev.current;
     if (skipPush.current) {
+      // 同期そのものの書き込み（マージの反映・送信済みの印）なので送らない。ただし、
+      // 利用者の変更で予約済みの送信は取り消さない（以前はここで取り消され、同期の最中に
+      // 付けた復習が Drive に載らないままになっていた）。
       skipPush.current = false;
-      return;
+      if (!userChanged) return;
     }
-    if (pushTimer.current) clearTimeout(pushTimer.current);
-    pushTimer.current = setTimeout(() => {
-      setSyncState({ phase: "syncing" });
-      (gdPushRef.current || gdPush)().then(() => setSyncState({ phase: "ok", at: Date.now() })).catch(e => setSyncState({
-        phase: "error",
-        at: Date.now(),
-        msg: syncErrMsg(e)
-      }));
-    }, 3000);
-    return () => {
-      if (pushTimer.current) clearTimeout(pushTimer.current);
-    };
+    schedulePush();
   }, [memos, folders]);
+  // 予約した送信を止めるのは画面を閉じるときだけ
+  useEffect(() => () => {
+    if (pushTimer.current) clearTimeout(pushTimer.current);
+  }, []);
   const saveNotify = v => {
     try {
       localStorage.setItem("kininari:notify", v ? "1" : "0");
@@ -4811,27 +5041,36 @@ function App() {
     if (includeSub) return activeFolder == null ? memos : subtreeMemos;
     return memos.filter(m => (m.notebookId || null) === activeFolder);
   }, [memos, subtreeMemos, activeFolder, includeSub, searching]);
+  // 検索・分類・タグの絞り込み。復習の一覧（今日の復習／覚え中）にも同じように効かせる
+  // （以前は復習の一覧では無視され、検索欄やタグが効いているように見えて効いていなかった）
+  const passFilters = m => {
+    if (catFilter !== "all" && m.category !== catFilter) return false;
+    if (tagFilter && !(m.tags || []).includes(tagFilter)) return false;
+    if (searching) {
+      const s = (m.title + " " + (m.body || "") + " " + (m.tags || []).join(" ")).toLowerCase();
+      if (!s.includes(q.trim().toLowerCase())) return false;
+    }
+    return true;
+  };
+  // 復習の一覧は「次にやる順」に並べる（期限切れが上、完了は下）
+  const byReviewOrder = (a, b) => {
+    const due = m => (m.srs && m.srs.d) ? m.srs.d : Infinity;
+    return due(a) - due(b) || b.createdAt - a.createdAt;
+  };
   const visible = useMemo(() => {
     const nowMs = reviewTick;
     // 復習は「いま開いているフォルダ」ではなく全体から拾う。
     // でないと、フォルダ分けしている人はバッジの件数と一覧が食い違う。
     let list = (revFilter ? memos : baseMemos).filter(m => {
-      if (revFilter === "due") return srsIsDue(m, nowMs);
-      if (revFilter === "learning") return isLearning(m);
-      if (catFilter !== "all" && m.category !== catFilter) return false;
-      if (tagFilter && !(m.tags || []).includes(tagFilter)) return false;
-      if (hideDone && m.done) return false;
-      if (searching) {
-        const s = (m.title + " " + (m.body || "") + " " + (m.tags || []).join(" ")).toLowerCase();
-        if (!s.includes(q.trim().toLowerCase())) return false;
-      }
-      return true;
+      if (revFilter === "due" && !srsIsDue(m, nowMs)) return false;
+      if (revFilter === "learning" && !isLearning(m)) return false;
+      // 「完了を隠す」はタスクの完了の話なので、復習の一覧には効かせない
+      if (!revFilter && hideDone && m.done) return false;
+      return passFilters(m);
     });
     const dval = m => m.date ? Number(m.date.replace(/-/g, "") + (m.time ? m.time.replace(":", "") : "0000")) : Infinity;
     if (revFilter) {
-      // 復習の一覧は「次にやる順」に並べる（期限切れが上、完了は下）
-      const due = m => (m.srs && m.srs.d) ? m.srs.d : Infinity;
-      list.sort((a, b) => due(a) - due(b) || b.createdAt - a.createdAt);
+      list.sort(byReviewOrder);
     } else {
       list.sort((a, b) => {
         if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
@@ -4841,21 +5080,42 @@ function App() {
     }
     return list;
   }, [baseMemos, memos, catFilter, tagFilter, hideDone, q, sort, searching, revFilter, reviewTick]);
-  // 復習の対象件数（サイドの見出しとボタンに出す）
+  // 復習の対象件数（サイドの見出しとボタンに出す）。絞り込みに関係なく全体の件数。
   const dueMemos = useMemo(() => memos.filter(m => srsIsDue(m, reviewTick)), [memos, reviewTick]);
   const learningMemos = useMemo(() => memos.filter(isLearning), [memos]);
-  // 消えた項目（他端末の削除など）は飛ばして、次に生きているものを出す
+  // 消えた項目（他端末の削除など）に加えて、もう期限でない項目（他端末で答え済み・復習から
+  // 外した・完了した）も飛ばす。古い並びのまま出すと二重に答えて、向こうの記録を上書きする。
   let focusMemo = null;
   let focusAt = focusIdx;
   if (focusQueue && focusQueue.length) {
+    const nowF = Date.now();
     for (let i = focusIdx; i < focusQueue.length; i++) {
       const hit = memos.find(m => m.id === focusQueue[i]);
-      if (hit) { focusMemo = hit; focusAt = i; break; }
+      if (hit && srsIsDue(hit, nowF)) { focusMemo = hit; focusAt = i; break; }
     }
   }
-  const openFocus = () => {
-    const ids = visible.filter(m => srsIsDue(m, reviewTick)).map(m => m.id);
-    if (!ids.length) return;
+  // 集中復習を始める。自動同期中なら、先に他端末の復習を取り込んでから並べる
+  // （スマホで済ませた分を、古い一覧のままここで答え直して上書きしないため）。
+  // 通信が遅いときは待ちすぎずに始める（あとから取り込めた分は、出す直前の確認で飛ばす）。
+  const openFocus = async () => {
+    if (focusPrep) return;
+    if (canAutoSync && Date.now() - lastPullAt.current > 10000) {
+      setFocusPrep(true);
+      lastPullAt.current = Date.now();
+      await Promise.race([pullAndReport(), new Promise(r => setTimeout(r, 5000))]);
+      setFocusPrep(false);
+    }
+    const live = readLive();
+    const now = Date.now();
+    const ids = (live.ok ? live.memos : memos).filter(m => srsIsDue(m, now) && passFilters(m)).sort(byReviewOrder).map(m => m.id);
+    setReviewTick(now);
+    if (!ids.length) {
+      setToast({
+        title: "今日の復習はありません",
+        body: "ほかの端末で済ませた分を取り込みました。"
+      });
+      return;
+    }
     setFocusQueue(ids);
     setFocusIdx(0);
   };
@@ -4866,7 +5126,8 @@ function App() {
     if (!focusQueue || next >= focusQueue.length) { setFocusQueue(null); setFocusIdx(0); return; }
     setFocusIdx(next);
   };
-  const subFolders = showSubRows ? childrenOf(activeFolder) : [];
+  // 復習の一覧は全体から拾うので、いま開いているフォルダのサブフォルダは出さない
+  const subFolders = showSubRows && !revFilter ? childrenOf(activeFolder) : [];
   const remaining = memos.filter(m => !m.done).length;
   const crumbs = pathOf(activeFolder);
   const actionsFolder = folders.find(f => f.id === actionsId);
@@ -5076,12 +5337,13 @@ function App() {
     onClick: () => setRevFilter(v => v === "learning" ? "" : "learning")
   }, "\u899A\u3048\u4E2D", learningMemos.length ? React.createElement("b", null, learningMemos.length) : null), revFilter === "due" && visible.length > 0 && React.createElement("button", {
     className: "rev-go",
+    disabled: focusPrep,
     onClick: openFocus
-  }, "\u9806\u756A\u306B\u5FA9\u7FD2\u3059\u308B"), revFilter === "due" && visible.length === 0 && React.createElement("span", {
+  }, focusPrep ? "\u540C\u671F\u4E2D\u2026" : "\u9806\u756A\u306B\u5FA9\u7FD2\u3059\u308B"), revFilter === "due" && visible.length === 0 && React.createElement("span", {
     className: "rev-none"
-  }, "\u4ECA\u65E5\u306E\u5FA9\u7FD2\u306F\u3042\u308A\u307E\u305B\u3093"), revFilter === "learning" && visible.length === 0 && React.createElement("span", {
+  }, dueMemos.length ? "\u6761\u4EF6\u306B\u5408\u3046\u5FA9\u7FD2\u306F\u3042\u308A\u307E\u305B\u3093" : "\u4ECA\u65E5\u306E\u5FA9\u7FD2\u306F\u3042\u308A\u307E\u305B\u3093"), revFilter === "learning" && visible.length === 0 && React.createElement("span", {
     className: "rev-none"
-  }, "\u899A\u3048\u4E2D\u306E\u30E1\u30E2\u306F\u3042\u308A\u307E\u305B\u3093")), React.createElement("div", {
+  }, learningMemos.length ? "\u6761\u4EF6\u306B\u5408\u3046\u30E1\u30E2\u306F\u3042\u308A\u307E\u305B\u3093" : "\u899A\u3048\u4E2D\u306E\u30E1\u30E2\u306F\u3042\u308A\u307E\u305B\u3093")), React.createElement("div", {
     className: "filters"
   }, React.createElement("button", {
     className: "f" + (catFilter === "all" ? " on" : ""),
@@ -5292,6 +5554,7 @@ const CSS = `
 .rf-meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .rf-tag{font-size:11.5px;opacity:.7}
 .rf-body{font-size:14px;line-height:1.7;max-height:40vh;overflow:auto}
+.rf-body:focus{outline:none}
 .rf-body img{max-width:100%;height:auto;border-radius:8px}
 .rf-link{font-size:12.5px}
 .rf-btns{display:grid;grid-template-columns:1fr 1fr 1.3fr;gap:8px;margin-top:4px}
