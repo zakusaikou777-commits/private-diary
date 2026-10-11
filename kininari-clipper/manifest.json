@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "気になり帳クリッパー",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "見ているページ（ニュースなど）をワンクリックで気になり帳に保存します。",
   "action": {
     "default_popup": "popup.html",
@@ -26,6 +26,9 @@
     "48": "icon48.png",
     "128": "icon128.png"
   },
+  "optional_permissions": [
+    "history"
+  ],
   "optional_host_permissions": [
     "https://*/*",
     "http://*/*"

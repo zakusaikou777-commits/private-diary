@@ -304,8 +304,13 @@ var DEFAULT_GENRES=[
    ファイルの実体は専用のDBに置く。localStorageに入れると数MBで即あふれるし、
    Driveへ同期すると毎回何十MBも往復してしまう（URLだけは軽いので同期する）。 */
 var AU_DB_NAME="BgmAudioDB", AU_STORE="tracks";
-var auDb=(function(){
-  return new Promise(function(res,rej){
+/* 開いたものは使い回すが、失敗したら捨てて次にまた開く。失敗した Promise を持ち続けると、
+   一度こけただけ（タイムアウト・他のタブが塞いでいた など）で、開き直すまで音源を追加できない
+   （シェルの nkOpenAuDb と同じ）。 */
+var auDbP=null;
+function auDb(){
+  if(auDbP) return auDbP;
+  var p=new Promise(function(res,rej){
     var settled=false;
     var fin=function(f){return function(v){ if(settled)return; settled=true; clearTimeout(t); f(v); };};
     var ok=fin(res), ng=fin(rej);
@@ -313,15 +318,31 @@ var auDb=(function(){
     var r;
     try{ r=indexedDB.open(AU_DB_NAME,1); }catch(e){ return ng(e); }
     r.onupgradeneeded=function(){ try{ var db=r.result; if(!db.objectStoreNames.contains(AU_STORE)) db.createObjectStore(AU_STORE,{keyPath:"id"}); }catch(e){} };
-    r.onsuccess=function(){ var db=r.result; try{ db.onversionchange=function(){ try{db.close();}catch(e){} }; }catch(e){} ok(db); };
+    r.onsuccess=function(){
+      var db=r.result;
+      if(settled){ try{db.close();}catch(e){} return; }   // 時間切れのあとに開けたもの。使わないので閉じる
+      // 閉じたものを使い回すと、以後の読み書きが全部失敗する。閉じたら次に開き直す
+      try{ db.onversionchange=function(){ try{db.close();}catch(e){} if(auDbP===p) auDbP=null; }; }catch(e){}
+      ok(db);
+    };
     r.onerror=function(){ ng(r.error||new Error("IDB_ERROR")); };
     // blocked を拾わないと success も error も来ず、永久に待ち続ける
     r.onblocked=function(){ ng(new Error("IDB_BLOCKED")); };
   });
-})();
-auDb.catch(function(e){ console.error("[bgm] 音源DBを開けません",e); });
-function auTx(mode){ return auDb.then(function(db){ return db.transaction(AU_STORE,mode).objectStore(AU_STORE); }); }
-function auPut(rec){ return auTx("readwrite").then(function(st){ return new Promise(function(res,rej){ var r=st.put(rec); r.onsuccess=function(){res(true);}; r.onerror=function(){rej(r.error);}; }); }); }
+  auDbP=p;
+  p.catch(function(e){ if(auDbP===p) auDbP=null; console.error("[bgm] 音源DBを開けません",e); });
+  return p;
+}
+auDb();
+function auTx(mode){ return auDb().then(function(db){ return db.transaction(AU_STORE,mode).objectStore(AU_STORE); }); }
+/* 書けたかどうかは transaction の完了で見る。put の success のあとでも、容量不足などで
+   transaction ごと取り消されることがあり、そこで「追加しました」と出すと、実体の無い登録が残る。 */
+function auPut(rec){ return auTx("readwrite").then(function(st){ return new Promise(function(res,rej){
+  var tx=st.transaction, r=null;
+  tx.oncomplete=function(){res(true);};
+  tx.onabort=tx.onerror=function(){rej(tx.error||(r&&r.error)||new Error("IDB_ABORT"));};
+  try{ r=st.put(rec); }catch(e){ rej(e); }
+}); }); }
 function auGet(id){ return auTx("readonly").then(function(st){ return new Promise(function(res){ var r=st.get(id); r.onsuccess=function(){res(r.result||null);}; r.onerror=function(){res(null);}; }); }); }
 function auKeys(){ return auTx("readonly").then(function(st){ return new Promise(function(res){ var r=st.getAllKeys(); r.onsuccess=function(){res(r.result||[]);}; r.onerror=function(){res([]);}; }); }); }
 function auDel(id){ return auTx("readwrite").then(function(st){ return new Promise(function(res){ var r=st.delete(id); r.onsuccess=function(){res(true);}; r.onerror=function(){res(false);}; }); }); }
@@ -387,7 +408,13 @@ function normalize(){
     return {id:String(g.id||g.name),name:String(g.name),q:String(g.q||g.name),
             updatedAt:(typeof g.updatedAt==="number"?g.updatedAt:0)};
   });
-  var seenG={}; S.genres=S.genres.filter(function(g){if(seenG[g.id])return false;seenG[g.id]=1;return true;});
+  var seenG=Object.create(null); S.genres=S.genres.filter(function(g){if(seenG[g.id])return false;seenG[g.id]=1;return true;});
+  /* 同じ名前のジャンルは1つにまとめる。新しく足すジャンルのIDは名前ではなく採番なので（addGenre）、
+     別々の端末で同じ名前を足すと2つ並ぶ。どの端末でも同じ方が残るよう、IDの小さい方を残す
+     （端末ごとに違う方を残すと、同期のたびに入れ替わる）。登録は名前で引くので、どちらを残しても外れない。 */
+  var gByName=Object.create(null);
+  S.genres.forEach(function(g){var p=gByName[g.name];if(!p||g.id<p.id)gByName[g.name]=g;});
+  S.genres=S.genres.filter(function(g){return gByName[g.name]===g;});
 
   // 形の壊れた登録はここで落とす（vid/list を信用するのはこの関門を通ったものだけ）
   // 黙って消すと気づけないので、落とした数は必ず知らせる（墓標は積まない＝ほかの端末からは消さない）
@@ -400,6 +427,7 @@ function normalize(){
     if(!it.vid&&!it.list){ dropped++; return false; }
     it.kind=it.vid?"video":"playlist";   // v が取れるものは必ず「動画」として鳴らす
     if(it.title!=null) it.title=String(it.title);
+    if(it.start!=null){ var st0=Math.floor(+it.start); if(it.vid&&isFinite(st0)&&st0>0) it.start=st0; else delete it.start; }   // 開始位置（秒）
     return true;
   });
   if(dropped) setTimeout(function(){
@@ -427,9 +455,12 @@ function normalize(){
   });
   S.items=out;
 
-  var have={}; S.genres.forEach(function(g){have[g.name]=1;});
+  var have=Object.create(null), usedId=Object.create(null);
+  S.genres.forEach(function(g){have[g.name]=1;usedId[g.id]=1;});
   S.items.forEach(function(it){it.cats.forEach(function(c){
-    if(c&&!have[c]){S.genres.push({id:c,name:c,q:c+" BGM",updatedAt:0});have[c]=1;}
+    // IDは名前にする（端末間で同じになる）。ただし名前を変えたジャンルがその名前をIDに持っていたら採番する
+    // （同じIDが2つあると、次に開いたときや同期で片方が消える）
+    if(c&&!have[c]){S.genres.push({id:usedId[c]?"g"+uid():c,name:c,q:c+" BGM",updatedAt:0});have[c]=1;}
   });});
 }
 normalize();
@@ -483,14 +514,28 @@ function parseYt(u){
   /* YouTubeアプリの共有は watch?v=XXX&list=RDXXX が普通で、鳴らすべきは v の動画。
      list が付いていても動画として扱い、/playlist?list= と明示されたときだけ再生リストにする。 */
   if(list && /\/playlist\b/.test(u)) return {kind:"playlist",vid:"",list:list};
-  if(v) return {kind:"video",vid:v,list:list||""};
+  if(v) return {kind:"video",vid:v,list:list||"",start:parseStart(u)};
   if(list) return {kind:"playlist",vid:"",list:list};
   return null;
 }
+/* 開始位置（&t=90 / &t=1m30s / ?start=90 / #t=90）。共有の「開始位置」で付く。
+   秒に直して返す。無いとき・読めないときは 0（これまでの登録は start を持たないので、頭から鳴る） */
+function parseStart(u){
+  var m=String(u||"").match(/[?&#](?:t|start)=([0-9hms]+)/i); if(!m) return 0;
+  var s=m[1].toLowerCase(), n;
+  if(/^\d+$/.test(s)) n=+s;
+  else{
+    var h=s.match(/(\d+)h/), mi=s.match(/(\d+)m/), se=s.match(/(\d+)s/);
+    n=(h?+h[1]*3600:0)+(mi?+mi[1]*60:0)+(se?+se[1]:0);
+  }
+  return isFinite(n)&&n>0?Math.floor(n):0;
+}
+function startOf(it){return it&&it.kind!=="playlist"&&it.start>0?it.start:0;}
 function watchUrl(it){
   if(it.kind==="playlist") return "https://www.youtube.com/playlist?list="+encodeURIComponent(it.list);
   var u="https://www.youtube.com/watch?v="+encodeURIComponent(it.vid);
   if(it.list) u+="&list="+encodeURIComponent(it.list);
+  if(startOf(it)) u+="&t="+startOf(it)+"s";
   return u;
 }
 function isBlank(t){return !t||t==="(タイトル未取得)"||/^[A-Za-z0-9_-]{11}$/.test(t);}
@@ -511,6 +556,8 @@ function oembedTitle(it){
       .catch(function(){ done=true; res(null); });
   });
 }
+/* 取りに行っているあいだに同期が入ると、S.items は写しに入れ替わる。手元に持っている古い it に
+   書いても保存されず、取れたタイトルが消える。書く前に必ず id で引き直すこと（byId(it.id)）。 */
 function setTitleIfBlank(it,t){
   if(!it||!t) return false;
   if(!isBlank(it.title)) return false;
@@ -536,14 +583,14 @@ function cueForTitle(it){
   var iv=setInterval(function(){
     tries++;
     var d=null; try{d=yt.getVideoData();}catch(e){}
-    if(d&&d.title&&d.video_id===it.vid){ setTitleIfBlank(it,d.title); restore(iv); }
+    if(d&&d.title&&d.video_id===it.vid){ setTitleIfBlank(byId(it.id),d.title); restore(iv); }
     else if(tries>14||curId) restore(iv);   // 途中で何か選ばれたらすぐ返す
   },400);
 }
 function resolveTitle(it){
   if(!isBlank(it.title)) return;
   oembedTitle(it).then(function(t){
-    if(t){ setTitleIfBlank(it,t); return; }
+    if(t){ setTitleIfBlank(byId(it.id),t); return; }
     cueForTitle(it);
   });
 }
@@ -566,19 +613,28 @@ window.onYouTubeIframeAPIReady=function(){
           if(curId)cue(byId(curId),false);
         },
         onStateChange:function(e){
-          if(e.data===1){$("bPlay").textContent="⏸ 一時停止";grabTitle();}
+          if(e.data===1){$("bPlay").textContent="⏸ 一時停止";grabTitle();playOk();}
           else $("bPlay").textContent="▶ 再生";
-          if(e.data===0) next(true);
+          if(e.data===0){
+            // 再生リストは1本終わるごとに ENDED が来る。まだ続きがあるなら、そのままリストに任せる
+            if(playlistHasMore()) return;
+            next(true);
+          }
         },
         onError:function(e){
-          var c=e.data;
+          var c=e.data, it=byId(curId);
           var msg=(c===101||c===150)?"この動画は埋め込み再生が許可されていません。「↗ YouTubeで開く」からどうぞ。"
                  :(c===100)?"動画が見つかりませんでした（削除・非公開の可能性）。"
                  :"再生できませんでした。「↗ YouTubeで開く」をお試しください。";
           $("pnote").textContent=msg; toast(msg,6000);
           // 印を付けたら updatedAt も進めて同期に乗せる。進めないと Drive 同期のマージ
           // （同じ時刻ならドライブ側が勝つ）で印の無い写しに戻され、自動送りがまたこの曲で止まる
-          if(c===101||c===150){var it=byId(curId);if(it&&!it.noEmbed){it.noEmbed=true;it.updatedAt=Date.now();save();touch(true);render();}}
+          if(c===101||c===150){if(it&&!it.noEmbed){it.noEmbed=true;it.updatedAt=Date.now();save();touch(true);render();}}
+          /* 削除・非公開（100）も印を付けて、自動送りでは飛ばす。埋め込み不可と違って公開に戻ることが
+             あるので別の印（gone）にし、鳴りはじめたら外す（playOk）。再生リストには付けない
+             （中の1本が消えただけのことが多い）。 */
+          else if(c===100){if(it&&it.kind==="video"&&!it.gone){it.gone=true;it.updatedAt=Date.now();save();touch(true);render();}}
+          skipAfterError();
         }
       }
     });
@@ -595,8 +651,8 @@ function cue(it,play){
          起動直後に一瞬音が出てしまう（就寝用アプリでは許されない）。 */
       if(play) yt.loadPlaylist({list:it.list,listType:"playlist"});
       else yt.cuePlaylist({list:it.list,listType:"playlist"});
-    } else if(play){ yt.loadVideoById(it.vid); }
-    else { yt.cueVideoById(it.vid); }
+    } else if(play){ yt.loadVideoById(it.vid,startOf(it)); }
+    else { yt.cueVideoById(it.vid,startOf(it)); }
   }catch(e){ return false; }
   return true;
 }
@@ -613,23 +669,90 @@ function countPlay(it){
 }
 function playItem(id){
   var it=byId(id); if(!it) return;
+  if(advT){clearTimeout(advT);advT=null;}   // エラーのあと次へ進む予定は、ほかの曲を選んだら取り消す
   curId=id;
   if(it.noEmbed){ countPlay(it); window.open(watchUrl(it),"_blank","noopener"); updateNow(); render(); return; }
   if(cue(it,true)) countPlay(it);
   else if(!ytReady||!yt) $("pnote").textContent="プレーヤーを準備しています。用意ができ次第、この曲を再生します。";
   updateNow(); render();
 }
+/* 一覧から選んで鳴らす。そのときの並びを、次・前の順番として控える（countPlay で並びが変わる前に）。 */
+function pickPlay(id){ snapQueue(); advOn=false; advTried={}; playItem(id); }
 function idxOf(l,id){for(var k=0;k<l.length;k++)if(l[k].id===id)return k;return -1;}
+
+/* ── 次・前の順番 ───────────────────────────────────
+   visible() は呼ぶたびに並べ直す（最近聞いた順・よく聞く順）。鳴らすと countPlay でその曲が
+   先頭へ動くので、毎回 visible() から「次」を探すと、直前の曲へ戻って2曲を行ったり来たりしていた。
+   再生を始めたときの並びを id の列として控え、それを順にたどる。 */
+var queue=null, queueKey="";
+function qKey(){return S.filter+"|"+S.gfilter;}
+function snapQueue(l){ l=l||visible(); queue=l.map(function(x){return x.id;}); queueKey=qKey(); return l; }
+/* 控えた並びを、いまの一覧に合わせて返す。絞り込み（★・ジャンルなど）を変えたら取り直す。
+   それ以外は並びを崩さず、消した曲・条件から外れた曲は抜き、新しく加わった曲は末尾に足す。 */
+function playQueue(){
+  var l=visible();
+  if(!queue||queueKey!==qKey()) return snapQueue(l);
+  var have={}, inQ={}, out=[];
+  l.forEach(function(x){have[x.id]=x;});
+  queue.forEach(function(id){ if(have[id]&&!inQ[id]){ inQ[id]=1; out.push(have[id]); } });
+  l.forEach(function(x){ if(!inQ[x.id]) out.push(x); });
+  queue=out.map(function(x){return x.id;});
+  return out;
+}
+/* 再生リストの続きがあるか（いまの1本が最後でなければ true） */
+function playlistHasMore(){
+  var it=byId(curId); if(!it||it.kind!=="playlist"||!ytReady||!yt) return false;
+  try{ var pl=yt.getPlaylist(), i=yt.getPlaylistIndex(); return !!(pl&&pl.length)&&i>=0&&i<pl.length-1; }catch(e){ return false; }
+}
+function plIndex(){ try{ return yt.getPlaylistIndex(); }catch(e){ return -1; } }
+
+/* 再生できなかった曲では ENDED が来ないので、自動送りがそこで止まり、就寝中は無音のまま朝になっていた。
+   続けて流している途中（自動送り・「次」・鳴りはじめたあと）なら、少し待ってさらに次へ進む。
+   待っているあいだに鳴りはじめたら取りやめる（playOk）。プレーヤーの状態は見ない
+   （エラーのあとも BUFFERING のままのことがあり、それを見ると先へ進めなくなる）。
+   一覧から選んだ曲がいきなり鳴らないときは、案内を出すだけにする（起きて操作しているので）。
+   ★一巡して1曲も鳴らなければ止める（鳴らない曲どうしで回り続けないように）。 */
+var advOn=false, advTried={}, advT=null;
+function skipAfterError(){
+  var failed=curId, it=byId(failed); if(!it) return;
+  if(advT){clearTimeout(advT);advT=null;}
+  // 再生リストは中の1本が鳴らないだけのことが多い。続きがあれば、リストの中で先へ進む
+  // （YouTube が自分で先へ進めていたら、二重に飛ばさない）
+  if(it.kind==="playlist"&&playlistHasMore()){
+    var i0=plIndex();
+    advT=setTimeout(function(){ advT=null; if(curId===failed&&plIndex()===i0){ try{yt.nextVideo();}catch(e){} } },1500);
+    return;
+  }
+  if(!advOn) return;
+  advTried[failed]=1;
+  var left=playQueue().filter(function(x){return !x.noEmbed&&!x.gone&&!advTried[x.id];});
+  if(!left.length){
+    advOn=false; advTried={};
+    var m="続けて再生できる曲が見つからなかったため、ここで止めます。";
+    $("pnote").textContent=m; toast(m,8000);
+    return;
+  }
+  advT=setTimeout(function(){ advT=null; if(curId===failed) next(true); },1500);
+}
+/* 鳴りはじめた。失敗の数えをやり直し、「見つからない」の印が付いていたら外す（公開に戻った動画など） */
+function playOk(){
+  if(advT){clearTimeout(advT);advT=null;}   // エラーのあとで持ち直した。次へは進まない
+  advOn=true; advTried={};
+  var it=byId(curId);
+  if(it&&it.gone){ delete it.gone; it.updatedAt=Date.now(); save(); touch(true); render(); updateNow(); }
+}
 function next(auto){
-  var l=visible(); if(!l.length) return;
+  var l=playQueue(); if(!l.length) return;
   var i=idxOf(l,curId);
+  advOn=true;
   /* 自動送りは利用者の操作の外なので、埋め込み不可の曲を window.open で開こうとしても
      ポップアップが止められ、就寝中に無音で終わってしまう。自動のときは飛ばす。
-     （手で「次」を押したときは、これまでどおり YouTube を開く）*/
-  var ok=auto?l.filter(function(x){return !x.noEmbed;}):l;
+     （手で「次」を押したときは、これまでどおり YouTube を開く）
+     見つからない動画（gone）と、いま続けて失敗している曲（advTried）も、自動のときは飛ばす。 */
+  var ok=auto?l.filter(function(x){return !x.noEmbed&&!x.gone&&!advTried[x.id];}):l;
   if(!ok.length){
-    $("pnote").textContent="続けて流せるものがありません。残っているのは、埋め込み再生が許可されていない曲だけです。";
-    toast("埋め込み再生が許可されていない曲しか残っていないため、ここで止めます。",6000);
+    $("pnote").textContent="続けて流せるものがありません。残っているのは、埋め込み再生が許可されていない曲か、見つからない動画だけです。";
+    toast("埋め込み再生が許可されていない曲か、見つからない動画しか残っていないため、ここで止めます。",6000);
     return;
   }
   var n=0;
@@ -644,11 +767,12 @@ function next(auto){
     }
   }
   playItem(ok[n].id);
-  if(ok.length<l.length) $("pnote").textContent="埋め込み再生が許可されていない曲は、自動送りでは飛ばしています。";
+  if(ok.length<l.length) $("pnote").textContent="埋め込み再生が許可されていない曲や見つからない動画は、自動送りでは飛ばしています。";
 }
 function prev(){
-  var l=visible(); if(!l.length) return;
+  var l=playQueue(); if(!l.length) return;
   var i=idxOf(l,curId);
+  advOn=false; advTried={};
   playItem(l[(i-1+l.length)%l.length].id);
 }
 function applyVol(){
@@ -666,6 +790,7 @@ function updateNow(){
   bits.push(playCount(it)+"回");
   bits.push(it.kind==="playlist"?"再生リスト":"動画");
   if(it.noEmbed)bits.push("埋め込み不可");
+  if(it.gone)bits.push("見つかりません");
   if(S.gfilter&&S.gfilter!=="__none")bits.push("次へ: "+S.gfilter+"の中");
   $("nowMeta").textContent=bits.join(" · ");
 }
@@ -716,7 +841,10 @@ function addGenre(){
   n=n.trim(); if(!n) return null;
   if(genreByName(n)){toast("そのジャンルはすでにあります。",3000);return n;}
   var q=prompt("YouTubeで探すときの検索語（空欄なら「"+n+" BGM」）","");
-  S.genres.push({id:n,name:n,q:(q||"").trim()||(n+" BGM"),updatedAt:Date.now()});
+  /* IDは名前にせず採番する。名前を変えたジャンルは元の名前をIDに持ち続けるので、
+     その名前で新しく足すとIDがぶつかり、次に開いたときや同期で片方が消えていた。
+     （既にある「ID＝名前」のジャンルはそのまま使える。IDは突き合わせにしか使わない） */
+  S.genres.push({id:"g"+uid(),name:n,q:(q||"").trim()||(n+" BGM"),updatedAt:Date.now()});
   save(); touch(true); renderGenreSearch(); renderAddCats(); renderGFilters();
   return n;
 }
@@ -832,6 +960,7 @@ function render(){
        +   '<div class="body"><div class="t">'+esc(it.title||it.vid)+'</div><div class="m">'
        +     ((it.cats&&it.cats.length)?esc(it.cats.join("・")):"未分類")+' · '+ago(it.lastAt)+' · '+playCount(it)+'回'
        +     (it.noEmbed?' · <span style="color:var(--red-d)">埋め込み不可</span>':'')
+       +     (it.gone?' · <span style="color:var(--red-d)">見つかりません</span>':'')
        +   '</div></div>'
        +   '<div class="acts">'
        +     '<button class="mini'+(it.fav?" fav":"")+'" data-fav="'+eid+'" title="お気に入り">'+(it.fav?"★":"☆")+'</button>'
@@ -864,7 +993,7 @@ function render(){
 $("list").addEventListener("click",function(e){
   var b=e.target.closest("button,img"); if(!b) return;
   var id=b.getAttribute("data-play");
-  if(id) return playItem(id);
+  if(id) return pickPlay(id);
   if((id=b.getAttribute("data-fav"))){var a=byId(id);if(a){a.fav=!a.fav;a.updatedAt=Date.now();save();touch(true);render();}return;}
   if((id=b.getAttribute("data-open"))){
     var o=byId(id);
@@ -875,7 +1004,9 @@ $("list").addEventListener("click",function(e){
   if(b.getAttribute("data-ecancel")){editId=null;render();return;}
   if(b.getAttribute("data-ecnew")){
     var nn=addGenre();
-    if(nn&&editId){var t2=byId(editId);if(t2){t2.cats=t2.cats||[];if(t2.cats.indexOf(nn)<0)t2.cats.push(nn);save();}}
+    // updatedAt を進めて同期に乗せる（data-ec と同じ）。進めないと、同期のマージ（同じ時刻ならドライブ側が勝つ）で
+    // ジャンルを足す前の写しに戻され、いま足したジャンルがこの曲から外れる
+    if(nn&&editId){var t2=byId(editId);if(t2){t2.cats=t2.cats||[];if(t2.cats.indexOf(nn)<0){t2.cats.push(nn);t2.updatedAt=Date.now();}save();touch(true);}}
     render(); renderGFilters(); return;
   }
   var ec=b.getAttribute("data-ec");
@@ -920,6 +1051,7 @@ function addItem(url,name,cats){
   }
   var it={id:key,kind:p.kind,vid:p.vid,list:p.list||"",title:(name||"").trim()||"(タイトル未取得)",
           cats:(cats||[]).slice(),fav:false,plays:{},lastAt:0,updatedAt:Date.now()};
+  if(p.start) it.start=p.start;   // 「〇分〇秒から」で共有されたURLは、そこから鳴らす
   S.delItems=S.delItems.filter(function(t){return t.id!==it.id;});  // 消した動画を入れ直したら墓標を外す
   S.items.unshift(it); save(); touch(true); render(); renderGFilters();
   var blank=isBlank(it.title);
@@ -947,7 +1079,9 @@ var SND=(function(){
   // まるごとメモリに固定され続けるので、切り替えるたびに解放する。
   var localUrl=null;
   function freeLocalUrl(){ if(localUrl){ try{ URL.revokeObjectURL(localUrl); }catch(e){} localUrl=null; } }
-  function post(m){ try{ parent.postMessage({nkSound:m},"*"); }catch(e){} }
+  /* やりとりの相手はシェル（同じオリジンの親）だけ。"*" で送ると、よそのページに埋め込まれたときに
+     その親へ再生の様子が漏れる。受け取りも、よそからの偽の知らせで曲が送られたりしないように確かめる。 */
+  function post(m){ try{ parent.postMessage({nkSound:m},location.origin); }catch(e){} }
   function localVolSupported(){
     if(localVolOk!==null) return localVolOk;
     try{var o=scA.volume;scA.volume=0.37;localVolOk=Math.abs(scA.volume-0.37)<0.02;scA.volume=o;}catch(e){localVolOk=false;}
@@ -955,6 +1089,7 @@ var SND=(function(){
   }
   if(emb){
     window.addEventListener("message",function(e){
+      if(e.origin!==location.origin||e.source!==parent) return;
       var d=e.data; if(!d||!d.nkSoundState) return;
       st.id=d.nkSoundState.id; st.playing=!!d.nkSoundState.playing;
       if(typeof d.nkSoundState.volOk==="boolean") st.volOk=d.nkSoundState.volOk;
@@ -1094,7 +1229,7 @@ function mediaMeta(title){
 $("vol").addEventListener("input",function(e){S.vol=+e.target.value;save();applyVol();});
 $("scVol").addEventListener("input",function(e){S.scVol=+e.target.value;save();applyScVol();});
 $("bPlay").addEventListener("click",function(){
-  if(!curId){var l=visible();if(l.length)return playItem(l[0].id);toast("先に一覧に登録してください。",3500);return;}
+  if(!curId){var l=visible();if(l.length)return pickPlay(l[0].id);toast("先に一覧に登録してください。",3500);return;}
   if(!ytReady||!yt){
     /* 黙って何も起きないのが一番わるい。押した意図を覚えて、用意ができ次第鳴らす */
     cue(byId(curId),true);
@@ -1143,7 +1278,7 @@ function auAddFiles(files){
     return f && (/^audio\//i.test(f.type||"") || AUDIO_EXT.test(f.name||""));
   });
   if(!list.length){ toast("音声ファイルではありません。",4000); return; }
-  auDb.then(function(){
+  auDb().then(function(){
     var added=0, failed=0, chain=Promise.resolve();
     list.forEach(function(f){
       chain=chain.then(function(){
@@ -1169,7 +1304,7 @@ function auAddFiles(files){
       if(failed) toast("音源を"+failed+"件保存できませんでした。端末の空き容量を確認してください。",7000);
     });
   }).catch(function(){
-    toast("音源の保存先を開けませんでした。このアプリの他のタブを閉じて、開き直してください。",8000);
+    toast("音源の保存先を開けませんでした。このアプリの他のタブを閉じてから、もう一度追加してください。",8000);
   });
 }
 function auAddStream(url,name){
@@ -1300,13 +1435,24 @@ function updateDrift(){
 
 /* ── Wake Lock（手動ON）───────────────────────────── */
 function wakeSupported(){return "wakeLock" in navigator;}
+/* 頼んでから届くまでのあいだに 💡 を切られることがある。届いた時点で「いま欲しいか」（wakeWanted）を
+   見て、要らなければすぐ返す。握ったままにすると、ボタンはOFFなのに画面が消えず電池を使い続ける。
+   頼んでいる最中にもう一度頼まない（2つ目を握ると、1つ目は誰も返さない）。 */
+var wakeReq=null;
 function wakeAcquire(){
   if(!wakeSupported()) return Promise.resolve(false);
-  return navigator.wakeLock.request("screen").then(function(l){
-    wakeLock=l;
-    l.addEventListener("release",function(){wakeLock=null;paintWake();});
-    return true;
-  }).catch(function(){return false;});
+  if(wakeLock) return Promise.resolve(true);
+  if(wakeReq) return wakeReq;
+  try{
+    wakeReq=navigator.wakeLock.request("screen").then(function(l){
+      wakeReq=null;
+      if(!wakeWanted){ try{l.release();}catch(e){} return false; }   // 待っている間に要らなくなった
+      wakeLock=l;
+      l.addEventListener("release",function(){ if(wakeLock===l) wakeLock=null; paintWake(); });
+      return true;
+    },function(){ wakeReq=null; return false; });
+  }catch(e){ wakeReq=null; return Promise.resolve(false); }
+  return wakeReq;
 }
 function wakeRelease(){try{if(wakeLock)wakeLock.release();}catch(e){}wakeLock=null;}
 function paintWake(){
@@ -1318,6 +1464,7 @@ $("bWake").addEventListener("click",function(){
   if(wakeWanted){wakeWanted=false;wakeRelease();paintWake();updateDrift();toast("画面は通常どおり消えます。",3000);return;}
   wakeWanted=true;
   wakeAcquire().then(function(ok){
+    if(!wakeWanted) return;   // 届く前に切られた（切ったときの案内はもう出ている）
     if(!ok)wakeWanted=false;
     paintWake();updateDrift();
     toast(ok?"画面を消さないようにしました。電池を多く使うので、就寝時はスリープタイマーと併用してください。"
@@ -1348,7 +1495,7 @@ function restoreFadeVol(){
 }
 function setTimer(min){
   S.timer=min; tExtended=false;
-  if(fadeTick){clearInterval(fadeTick);fadeTick=null;restoreFadeVol();}
+  if(fadeTick){clearInterval(fadeTick);fadeTick=null;fadeStep=null;restoreFadeVol();}
   if(tTick){clearInterval(tTick);tTick=null;}
   if(!min){tEnd=0;$("tleft").textContent="";paintTb();return;}
   tEnd=Date.now()+min*60000;
@@ -1361,17 +1508,24 @@ function tickTimer(){
   $("tleft").textContent="残り "+m+":"+(s<10?"0":"")+s;
   if(left<=0){clearInterval(tTick);tTick=null;paintTb();beginFade();}
 }
+var fadeStep=null, fadeYt=false;
 function beginFade(){
-  var SECS=20,t=0;
+  var SECS=20;
+  /* 絞り具合は、止める予定の時刻（tEnd）からの実時間で決める。0.5秒ずつ足していくと、
+     画面を消して間引かれた・凍結されたタイマーではフェードが何分にも伸び、そのあいだ鳴り続けた。
+     予定の時刻をフェードの長さより過ぎてから気づいたときは、絞らずにその場で止める。 */
+  var t0=tEnd||Date.now();
   var v0=S.vol, sv0=curBaseVol(), canSc=scVolSupported();
+  // 「+10分」で戻すのは、このとき実際に鳴っていたものだけ（止めてあった YouTube を鳴らし出さない）
+  var st=-1; try{if(ytReady&&yt)st=yt.getPlayerState();}catch(e){}
+  fadeYt=(st===1||st===3);
   $("tleft").textContent="停止中…";
-  fadeTick=setInterval(function(){
-    t+=0.5;
-    var k=Math.max(0,1-t/SECS);
+  fadeStep=function(){
+    var k=Math.max(0,Math.min(1,1-(Date.now()-t0)/(SECS*1000)));
     if(ytReady&&yt&&yt.setVolume){try{yt.setVolume(Math.round(v0*k));}catch(e){}}
     if(canSc) SND.setVol(Math.max(0,sv0*k));
     if(k<=0){
-      clearInterval(fadeTick);fadeTick=null;
+      clearInterval(fadeTick);fadeTick=null;fadeStep=null;
       try{if(yt&&yt.pauseVideo)yt.pauseVideo();}catch(e){}
       SND.stop();
       scId=null;auId_cur=null;sndKind=null;renderSc();
@@ -1381,8 +1535,18 @@ function beginFade(){
       setTimer(0);
       toast("スリープタイマーで停止しました。おやすみなさい。",6000);
     }
-  },500);
+  };
+  fadeTick=setInterval(fadeStep,500);   // 先に立ててから1回目を回す（その場で止めたときに片付けられるように）
+  fadeStep();
 }
+/* 裏に回っているあいだはタイマーが間引かれ、凍結されることもある。
+   戻ってきたら（resume は凍結からの復帰）、待たずにいまの時刻へ追いつかせる。 */
+function catchUpTimer(){
+  if(document.visibilityState==="hidden") return;
+  if(tTick) tickTimer(); else if(fadeTick&&fadeStep) fadeStep();
+}
+document.addEventListener("visibilitychange",catchUpTimer);
+document.addEventListener("resume",catchUpTimer);
 Array.prototype.forEach.call(document.querySelectorAll("#tbar .tb[data-t]"),function(b){
   b.addEventListener("click",function(){
     var m=+b.getAttribute("data-t");
@@ -1394,10 +1558,10 @@ Array.prototype.forEach.call(document.querySelectorAll("#tbar .tb[data-t]"),func
 $("bPlus10").addEventListener("click",function(){
   var wasFading=!!fadeTick;
   if(wasFading){
-    clearInterval(fadeTick);fadeTick=null;
+    clearInterval(fadeTick);fadeTick=null;fadeStep=null;
     restoreFadeVol();
     var cu=byId(curId);
-    try{if(yt&&yt.playVideo&&cu&&!cu.noEmbed)yt.playVideo();}catch(e){}
+    try{if(fadeYt&&yt&&yt.playVideo&&cu&&!cu.noEmbed)yt.playVideo();}catch(e){}
     if(scId){ var sd=null; SOUNDS.forEach(function(x){if(x.id===scId)sd=x;}); if(sd) SND.play(sd,S.scVol/100); }
   }
   if(tTick&&tEnd>Date.now()){
@@ -1584,7 +1748,7 @@ if(window.NKSync){
 setTimeout(function(){
   S.items.filter(function(it){return isBlank(it.title);}).slice(0,8)
     .forEach(function(it,i){
-      setTimeout(function(){oembedTitle(it).then(function(t){if(t)setTitleIfBlank(it,t);});},300*i);
+      setTimeout(function(){oembedTitle(it).then(function(t){if(t)setTitleIfBlank(byId(it.id),t);});},300*i);
     });
 },1200);
 })();

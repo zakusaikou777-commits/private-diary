@@ -312,6 +312,8 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
 </script>
 <!-- Babel removed: JSX precompiled -->
 <script src="https://accounts.google.com/gsi/client" async defer></script>
+<!-- Googleの認証とDriveの通信は全アプリ共通の sync.js（NKSync.drive）を使う。読み込んだだけでは何もしない -->
+<script src="sync.js"></script>
 </head>
 <body>
 <div id="root"></div>
@@ -383,6 +385,25 @@ function clipUrlKey(u) {
     return s.replace(/#.*$/, "").replace(/\/+$/, "");
   }
 }
+// 受け取ったクリップの番号（拡張が1回の保存ごとに振る）。同じ番号が二度届いたら
+// （拡張の送り直し・タブの復元など）2件目は作らない。30日・500件で古いものから捨てる。
+const CLIP_NONCE_KEY = "kininari:clipNonces";
+const CLIP_NONCE_TTL = 30 * 24 * 3600 * 1000;
+function clipNoncesGet() {
+  try {
+    const a = JSON.parse(localStorage.getItem(CLIP_NONCE_KEY) || "[]");
+    if (!Array.isArray(a)) return [];
+    const cut = Date.now() - CLIP_NONCE_TTL;
+    return a.filter(x => x && typeof x.n === "string" && (x.at || 0) > cut);
+  } catch (e) { return []; }
+}
+function clipNonceAdd(n, memoId) {
+  try {
+    const list = clipNoncesGet().filter(x => x.n !== n);
+    list.push({ n, at: Date.now(), id: memoId || null });
+    localStorage.setItem(CLIP_NONCE_KEY, JSON.stringify(list.slice(-500)));
+  } catch (e) {}
+}
 /** 使ってよいURLか。javascript: が本文のリンクに入ると、押した時点で
  *  このオリジンで任意のJSが動き、Googleのトークンまで読めてしまう。 */
 function urlAllowedKn(u) {
@@ -395,6 +416,12 @@ function normalizeUrlKn(raw) {
   if (/^www\./i.test(u)) u = "https://" + u;
   if (!/^[a-z][a-z0-9+.-]*:/i.test(u) && /^[^\s/]+\.[^\s/]{2,}/.test(u)) u = "https://" + u;
   return u;
+}
+/** 日本語入力の変換中に押されたキーか。変換を確定するEnterで、メモの追加や
+ *  フォルダ名の確定まで走らないようにする。React の合成イベントには isComposing が
+ *  無いので nativeEvent を見る。Safari は確定のEnterで isComposing が偽になるため 229 も見る。 */
+function isImeEnter(e) {
+  return !!(e && ((e.nativeEvent && e.nativeEvent.isComposing) || e.isComposing || e.keyCode === 229));
 }
 const itemTime = o => (o && (o.updatedAt || o.createdAt)) || 0;
 // 同期できた項目に印を付ける。次回以降、Driveから消えていれば
@@ -418,18 +445,29 @@ function stampUpdated(next, prev) {
   });
 }
 // 端末間マージ: id ごとに updatedAt の新しい方を採用し、墓標で削除を反映する
+// lastSync は「このファイルと最後に同期した時刻」。分からない（0）ときは初めての相手として扱う。
 function mergeById(localList, remoteList, lastSync, tombs) {
   const tombAt = new Map();
   (tombs || []).forEach(t => { if (t && t.id) tombAt.set(t.id, Math.max(tombAt.get(t.id) || 0, t.at || 0)); });
   const byId = new Map();
   (remoteList || []).forEach(o => byId.set(o.id, o));
   (localList || []).forEach(o => {
+    // 初めての相手（連携の解除後・別のファイルに替わったときを含む）なら、synced 印は
+    // 前の相手との同期の名残。信用せずに外す。外さないと、このファイルに無いだけの
+    // メモが「他端末で削除された」と判断されて消える（印を付けたまま残しても次の同期で消える）。
+    if (!lastSync && o.synced) {
+      o = { ...o };
+      delete o.synced;
+    }
     const r = byId.get(o.id);
     if (!r) {
       // ローカルにしか無い場合。旧版は「最終同期より後か」を時刻で見ていたが、
       // Driveのサーバー時刻と端末の時計を比べる形だったため、端末の時計が
       // 遅れていると追加直後のメモが消えていた。synced 印で判定する。
-      if (!o.synced) byId.set(o.id, o);
+      // 同期済みでも、削除（墓標）より後にこの端末で編集していれば残す（編集が削除に勝つ）。
+      // 墓標が無いのに Drive から消えているものは、これまでどおり削除として扱う。
+      const t = tombAt.get(o.id);
+      if (!o.synced || (t && t < itemTime(o))) byId.set(o.id, o);
       return;
     }
     if (itemTime(o) > itemTime(r)) byId.set(o.id, o);
@@ -630,31 +668,51 @@ function srsFmtDue(ts) {
   return (d.getMonth() + 1) + "/" + d.getDate();
 }
 
+// 壊れた・古い・他端末から来た変な値でも、描画で落ちない形にそろえる。文字列のつもりの所に
+// オブジェクトが入ると React ごと落ち、そのまま保存されているので再読み込みのたびに同じ所で落ちる。
+const normStr = v => typeof v === "string" ? v : typeof v === "number" && Number.isFinite(v) ? String(v) : "";
+const normStrs = a => (Array.isArray(a) ? a : []).map(normStr).filter(Boolean);
 function normalizeMemo(m) {
-  const links = Array.isArray(m.links) ? m.links : m.link ? [m.link] : [];
+  m = m && typeof m === "object" && !Array.isArray(m) ? m : {};
+  const links = normStrs(Array.isArray(m.links) ? m.links : m.link ? [m.link] : []);
   const o = {
     ...m,
     title: typeof m.title === "string" ? m.title : String(m.title == null ? "" : m.title).slice(0, 300),
     body: typeof m.body === "string" ? sanitizeMemoHtml(m.body) : "",
-    tags: Array.isArray(m.tags) ? m.tags : [],
+    category: typeof m.category === "string" && m.category ? m.category : "メモ",
+    tags: Array.isArray(m.tags) && m.tags.every(t => typeof t === "string") ? m.tags : normStrs(m.tags),
     links,
-    notebookId: m.notebookId || null,
-    attachments: Array.isArray(m.attachments) ? m.attachments : [],
+    notebookId: normStr(m.notebookId) || null,
+    date: /^\d{4}-\d{2}-\d{2}$/.test(normStr(m.date)) ? m.date : null,
+    time: /^\d{1,2}:\d{2}$/.test(normStr(m.time)) ? m.time : null,
+    attachments: (Array.isArray(m.attachments) ? m.attachments : [])
+      .filter(a => a && typeof a === "object" && normStr(a.id))
+      .map(a => typeof a.id === "string" && typeof a.name === "string" && typeof a.type === "string" ? a
+        : { ...a, id: normStr(a.id), name: normStr(a.name) || "file", type: normStr(a.type) }),
     remind: typeof m.remind === "number" ? m.remind : null,
+    done: !!m.done,
+    pinned: !!m.pinned,
     srs: srsNormalize(m.srs),
-    updatedAt: typeof m.updatedAt === "number" ? m.updatedAt : (m.createdAt || 0)
+    createdAt: typeof m.createdAt === "number" && Number.isFinite(m.createdAt) ? m.createdAt : Number(m.createdAt) || 0,
+    updatedAt: typeof m.updatedAt === "number" ? m.updatedAt : (Number(m.createdAt) || 0)
   };
   delete o.link;
+  if (o.gcalEventId != null && typeof o.gcalEventId !== "string") delete o.gcalEventId;
   return o;
 }
 function normalizeFolder(f, i) {
-  return {
+  f = f && typeof f === "object" && !Array.isArray(f) ? f : {};
+  const o = {
     color: NB_COLORS[i % NB_COLORS.length],
     ...f,
-    parentId: f.parentId ?? null,
+    name: typeof f.name === "string" ? f.name : String(f.name == null ? "" : f.name).slice(0, 100),
+    parentId: normStr(f.parentId) || null,
     pinned: !!f.pinned,
-    updatedAt: typeof f.updatedAt === "number" ? f.updatedAt : (f.createdAt || 0)
+    createdAt: typeof f.createdAt === "number" && Number.isFinite(f.createdAt) ? f.createdAt : Number(f.createdAt) || 0,
+    updatedAt: typeof f.updatedAt === "number" ? f.updatedAt : (Number(f.createdAt) || 0)
   };
+  if (typeof o.color !== "string") o.color = NB_COLORS[(i || 0) % NB_COLORS.length];
+  return o;
 }
 const PinIcon = () => React.createElement("svg", {
   viewBox: "0 0 24 24"
@@ -704,7 +762,7 @@ const BellIcon = ({
 }));
 function htmlToText(s) {
   if (!s) return "";
-  if (!looksLikeHtmlKn(s)) return s;
+  if (!looksLikeHtmlKn(s)) return unescapeKn(s);
   try {
     // <template> の中身は inert（img の読み込みや onerror が走らない）
     const t = document.createElement("template");
@@ -717,6 +775,19 @@ function htmlToText(s) {
 const KN_HTML_RE = /<\/?(a|b|i|u|s|em|strong|br|p|div|span|img|font|h[1-6]|ul|ol|li|blockquote|hr|pre|code|table|thead|tbody|tr|td|th)\b[^>]*>/i;
 function looksLikeHtmlKn(s) {
   return KN_HTML_RE.test(s || "");
+}
+// タグの無い本文も「エディタが書き出したHTML（& < > や連続した空白はエスケープ済み）」として読む。
+// 1行だけの本文はエディタが <div> で包まないため、以前は素の文章と見なされて「Q&amp;A」が
+// そのまま表示され、開き直して保存するたびに &amp;amp; と増えていった。
+// 旧版の素の文章（Q&A など）は &…; の形を含まないので、これまでどおりに見える。
+const KN_ENT_RE = /&(amp|lt|gt|quot|apos|nbsp|#\d{1,7}|#[xX][0-9a-fA-F]{1,6});/g;
+const KN_ENT = { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: "\u00a0" };
+function unescapeKn(s) {
+  return String(s || "").replace(KN_ENT_RE, (all, e) => {
+    if (KN_ENT[e] != null) return KN_ENT[e];
+    const n = /^#[xX]/.test(e) ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+    try { return n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : all; } catch (er) { return all; }
+  });
 }
 const KN_SAFE_STYLE = new Set(["color", "background-color", "font-size", "font-family", "font-weight", "font-style", "text-decoration", "text-decoration-line", "text-align"]);
 const KN_SAFE_ATTR = new Set(["alt", "target", "rel", "size", "face", "color", "data-kid", "colspan", "rowspan"]);
@@ -826,6 +897,7 @@ function seedData() {
     time: null,
     done: false,
     pinned: false,
+    seed: 1,
     createdAt: Date.now() - 4000
   }, {
     id: uid(),
@@ -840,6 +912,7 @@ function seedData() {
     remind: 30,
     done: false,
     pinned: false,
+    seed: 1,
     createdAt: Date.now() - 3000
   }, {
     id: uid(),
@@ -853,6 +926,7 @@ function seedData() {
     time: null,
     done: false,
     pinned: false,
+    seed: 1,
     createdAt: Date.now() - 2000
   }, {
     id: uid(),
@@ -866,12 +940,23 @@ function seedData() {
     time: null,
     done: false,
     pinned: false,
+    seed: 1,
     createdAt: Date.now() - 1000
   }];
   return {
     memos,
     notebooks: []
   };
+}
+/** 初回に入れた見本のメモで、一度も触っていないもの。すでにメモのあるDriveへ初めて
+ *  つなぐとき、これまで送ってしまうと、端末を足すたびに見本が全端末に4件ずつ増えていく。
+ *  印（seed）の無い旧版の見本は、中身が見本とまったく同じものだけを見本とみなす。 */
+function isUntouchedSeed(m) {
+  if (!m || m.synced || itemTime(m) > (m.createdAt || 0)) return false;
+  if (m.seed) return true;
+  const sig = o => JSON.stringify([o.title, o.body || "", o.category, o.tags || [], o.links || [], o.time || null, o.remind ?? null, o.notebookId || null]);
+  const mine = sig(normalizeMemo(m));
+  return seedData().memos.some(s => sig(normalizeMemo(s)) === mine);
 }
 const IDB_NAME = "kininari",
   IDB_STORE = "files";
@@ -951,12 +1036,28 @@ async function hydrateBodyImages(rootEl) {
 // いない」と判断して実体ごと消してしまい、保存しても画像が出なくなる。
 // このタブが開いている間は消さない（本当に不要なら次回起動時に掃除される）。
 const pendingFileIds = new Set();
+// ただし pendingFileIds はタブごと。クリップや共有で裏に開いたタブも起動時に掃除を走らせるので、
+// 別のタブで書きかけの画像まで消していた。保存した時刻（at）を記録に入れておき、
+// どのメモからも使われていないうえに、しばらく（7日）たったものだけを消す。
+const ATT_GC_AGE = 7 * 24 * 3600 * 1000;
 async function gcAttachments(memos) {
   try {
     const used = new Set(pendingFileIds);
     memos.forEach(m => memoFileIds(m).forEach(id => used.add(id)));
     const keys = await idbKeys();
-    for (const k of keys) if (!used.has(k)) await idbDelete(k);
+    const cut = Date.now() - ATT_GC_AGE;
+    for (const k of keys) {
+      if (used.has(k)) continue;
+      const rec = await idbGet(k);
+      if (!rec) continue;
+      // 時刻の無いもの（この仕組みより前の記録）は、ほかで使われていないとは言い切れない。
+      // いきなり消さず、いまの時刻を付けて寝かせる（7日たっても使われていなければ消える）。
+      if (!rec.at) {
+        await idbPut({ ...rec, at: Date.now() });
+        continue;
+      }
+      if (rec.at < cut) await idbDelete(k);
+    }
   } catch (e) {}
 }
 function blobToDataUrl(blob) {
@@ -994,8 +1095,28 @@ async function buildBackupObject(memos, folders) {
     deleted: tombstonesGet()
   };
 }
-async function restoreBackupFiles(files) {
+/** 同期ファイル（Drive）に書く中身。添付の中身は別ファイル（kn-att-…）に置くので入れない。
+ *  attExternal は「添付は別ファイル」の印。★書き出し（バックアップ）は buildBackupObject の方で、
+ *  そちらは今までどおり画像を中に含める（ファイル1つで持ち運べるように）。 */
+function buildSyncObject(memos, folders) {
+  return {
+    app: "kininari",
+    memos,
+    notebooks: folders,
+    files: [],
+    attExternal: 1,
+    deleted: tombstonesGet()
+  };
+}
+/** onlyMissing: 同期で受け取ったとき（まだ更新していない端末が画像を埋め込んで送ってくる）。
+ *  端末に無いものだけを入れる。受け取るたびに全部の画像を書き直していたのをやめる */
+async function restoreBackupFiles(files, onlyMissing) {
+  let have = null;
+  if (onlyMissing && (files || []).length) {
+    try { have = new Set(await idbKeys()); } catch (e) { have = new Set(); }
+  }
   for (const fl of files || []) {
+    if (!fl || (have && have.has(fl.id))) continue;
     try {
       const blob = await (await fetch(fl.dataUrl)).blob();
       await idbPut({
@@ -1003,7 +1124,8 @@ async function restoreBackupFiles(files) {
         blob,
         name: fl.name,
         type: fl.type,
-        size: blob.size
+        size: blob.size,
+        at: Date.now()
       });
     } catch (e) {}
   }
@@ -1021,183 +1143,185 @@ function readSharedCid() {
     return old;
   } catch (e) { return SHARED_GD_CID; }
 }
-const GD_SCOPE = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/calendar.events";
 const GD_FILE_NAME = "kininari-data.json";
-function sharedTokenGet() {
-  try {
-    var o = JSON.parse(localStorage.getItem('shared:gd:token') || 'null');
-    if (o && o.token && Date.now() < o.exp - 60000) return o.token;
-  } catch (e) {}
-  return null;
+const GD_FILE_KEY = "kininari:gd:file";   // いま使っている同期ファイルのid（NKSync.drive.findFiles が覚える）
+// Google の認証と Drive の通信は、全アプリ共通の sync.js（NKSync.drive）に任せる。
+// トークンは shared:gd:token に「許可された権限」と一緒に入るので、入口（index.html）の
+// 「今すぐ全部同期」が取ったトークンも、ログイン画面を出さずにそのまま使える。
+// 以前はここに自前の取り方があり、権限の違うトークンでほかのアプリと上書きし合っていた。
+const GD_STALE_MSG = "同期の部品（sync.js）が古いままです。ページを再読み込みしてください。";
+function gdDrive() {
+  return (window.NKSync && NKSync.drive) || null;
 }
-function sharedTokenSet(t, exp) {
-  try {
-    localStorage.setItem('shared:gd:token', JSON.stringify({
-      token: t,
-      exp: Date.now() + (exp || 3600) * 1000
-    }));
-  } catch (e) {}
+/** NKSync.drive を返す。古いキャッシュで sync.js が食い違っているときは同期しない
+ *  （旧来の取り方を残すと、権限の違うトークンで上書きし合う問題が戻るため） */
+function gdNeed() {
+  const D = gdDrive();
+  if (!D) throw new Error(GD_STALE_MSG);
+  return D;
 }
-function sharedTokenClear() {
+/** トークンを得る。interactive（利用者の操作から）のときは、クリックの処理の中で
+ *  await を挟まずに呼ぶこと。ログイン画面を出せるのはクリックの直後だけ。 */
+function gdGetToken(interactive) {
   try {
-    localStorage.removeItem('shared:gd:token');
-  } catch (e) {}
-}
-let _gdClient = null,
-  _gdToken = null,
-  _gdExp = 0,
-  _gdCid = null;
-function gisReady() {
-  return typeof google !== "undefined" && google.accounts && google.accounts.oauth2;
-}
-function currentGdCid() {
-  try {
-    return readSharedCid();
+    const D = gdNeed();
+    return D.getToken({ scope: D.STD_SCOPE, interactive: !!interactive });
   } catch (e) {
-    return SHARED_GD_CID;
+    return Promise.reject(e);
   }
 }
-function gdGetToken(clientId, interactive) {
-  return new Promise((resolve, reject) => {
-    clientId = clientId || SHARED_GD_CID;
-    const shared = sharedTokenGet();
-    if (shared && !interactive) return resolve(shared);
-    if (!gisReady()) return reject(new Error("Googleの読み込みが未完了です。少し待って再度お試しください。"));
-    if (_gdToken && Date.now() < _gdExp - 60000 && _gdCid === clientId) return resolve(_gdToken);
-    if (!_gdClient || _gdCid !== clientId) {
-      _gdClient = google.accounts.oauth2.initTokenClient({
-        client_id: clientId,
-        scope: GD_SCOPE,
-        callback: () => {}
-      });
-      _gdCid = clientId;
-    }
-    // ポップアップを閉じられた／ブロックされたとき、GIS は callback ではなく
-    // error_callback を呼ぶ。両方を用意しておかないと Promise が永久に未解決になり、
-    // 「同期中…」の表示のままリロードするまで固まる。時間切れの保険も置く。
-    let settled = false;
-    const to = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      reject(new Error("認証がタイムアウトしました"));
-    }, 90000);
-    const seal = fn => arg => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(to);
-      fn(arg);
-    };
-    const ok = seal(resolve),
-      ng = seal(reject);
-    _gdClient.callback = resp => {
-      if (resp && resp.access_token) {
-        _gdToken = resp.access_token;
-        _gdExp = Date.now() + (resp.expires_in || 3600) * 1000;
-        sharedTokenSet(resp.access_token, resp.expires_in);
-        ok(_gdToken);
-      } else ng(new Error("認証に失敗しました"));
-    };
-    _gdClient.error_callback = () => ng(new Error("認証がキャンセルされました"));
-    try {
-      _gdClient.requestAccessToken({
-        prompt: interactive ? "consent" : ""
-      });
-    } catch (e) {
-      ng(e);
-    }
+/** ファイルの情報。無い（削除された）ときは null を返す。ゴミ箱に入っているかは trashed で分かる */
+function gdMeta(D, token, id) {
+  return D.meta(token, id, "id,modifiedTime,trashed").catch(e => {
+    if (e && e.status === 404) return null;
+    throw e;
   });
 }
-/** Drive への通信をまとめて包む。401（期限切れ・権限取り消し）のときは
- *  共有トークンを捨てる。捨てないと、時計上は期限内なので次も同じ死んだ
- *  トークンを返し続け、最大1時間「期限が切れました」が出たままになる。
- *  （カレンダー側と sync.js には同じ回復処理が入っている） */
-async function gdFetch(url, opt) {
-  const r = await fetch(url, opt);
-  if (r.status === 401) {
-    sharedTokenClear();
-    _gdToken = null;
-    _gdExp = 0;
-    throw new Error("401 Googleログインの期限が切れました");
-  }
-  return r;
-}
-async function gdFindFile(token) {
-  const q = encodeURIComponent(`name='${GD_FILE_NAME}' and trashed=false`);
-  // 並び順を指定しないと、同名ファイルが複数あったときにどれが返るか不定になる。
-  // 2台が同時に初回セットアップすると kininari-data.json が2つでき、
-  // 端末ごとに別のファイルへ固定されて「同期成功」と出しながら永久にすれ違う。
-  // 作成が古いものを正とし、複数あるときは呼び出し側へ知らせる。
-  const r = await gdFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,modifiedTime,createdTime)&orderBy=createdTime&pageSize=10`, {
-    headers: {
-      Authorization: "Bearer " + token
+/** 同時に n 件まで並べて走らせる。失敗があれば、全部終わってから最初の失敗を投げる */
+async function runLimited(items, n, fn) {
+  let i = 0, err = null;
+  const worker = async () => {
+    while (i < items.length) {
+      const x = items[i++];
+      try { await fn(x); } catch (e) { if (!err) err = e; }
     }
-  });
-  if (!r.ok) throw new Error("Drive 検索に失敗 (" + r.status + ")");
-  const j = await r.json();
-  const files = j.files || [];
-  if (!files[0]) return null;
-  if (files.length > 1) files[0].duplicates = files.length;
-  return files[0];
-}
-async function gdCreate(token, content) {
-  const boundary = "kininari" + Date.now();
-  const meta = {
-    name: GD_FILE_NAME,
-    mimeType: "application/json"
   };
-  const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
-  const r = await gdFetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime", {
-    method: "POST",
-    headers: {
-      Authorization: "Bearer " + token,
-      "Content-Type": "multipart/related; boundary=" + boundary
-    },
-    body
-  });
-  if (!r.ok) throw new Error("Drive 作成に失敗 (" + r.status + ")");
-  return r.json();
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
+  if (err) throw err;
 }
-async function gdUpdate(token, id, content) {
-  const r = await gdFetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media&fields=id,modifiedTime`, {
-    method: "PATCH",
-    headers: {
-      Authorization: "Bearer " + token,
-      "Content-Type": "application/json"
-    },
-    body: content
-  });
-  if (!r.ok) throw new Error("Drive 更新に失敗 (" + r.status + ")");
-  return r.json();
+/* ── 添付（画像・ファイル）の同期 ─────────────────────────────
+   以前は送るたびに全部の画像を base64 にして同期ファイル（JSON）に埋め、受け取るたびに全部の
+   画像を書き直していた。画像が増えるほど同期が重くなる。いまは添付1件ごとに appDataFolder
+   （利用者のマイドライブには出ない場所）の別ファイル kn-att-<添付id> に置き、まだ載せていない
+   ものだけを送り、端末に無いものだけを取りに行く。
+   ★書き出し（バックアップ）は今までどおり画像を中に含める（buildBackupObject）。 */
+const GD_ATT_PREFIX = "kn-att-";
+const GD_ATT_KEY = "kininari:gd:att";        // {添付id: Driveのファイルid}。この端末が「Driveに載っている」と知っている分
+const GD_ATT_GC_KEY = "kininari:gd:attgc";   // Drive上の添付を最後に見直した時刻
+const GD_ATT_GC_EVERY = 24 * 3600 * 1000;
+// どのメモからも使われていない添付を消すまでの猶予。ほかの端末が「添付を送った直後、
+// 同期ファイルを書く前」のものを消さないよう、更新から30日たったものだけを消す。
+const GD_ATT_KEEP = 30 * 24 * 3600 * 1000;
+const ATT_EVENT = "kn:att";                  // 添付を取ってきたときの知らせ（画像の無い表示を描き直す）
+const gdAttGone = new Set();                 // Driveにも無かった添付（このページを開いている間は探し直さない）
+function gdAttMapGet() {
+  try {
+    const o = JSON.parse(localStorage.getItem(GD_ATT_KEY) || "null");
+    return o && typeof o === "object" && !Array.isArray(o) ? o : null;
+  } catch (e) { return null; }
 }
-async function gdDownload(token, id) {
-  const r = await gdFetch(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`, {
-    headers: {
-      Authorization: "Bearer " + token
+/** 控えを書き換える。通信を待つ間に別の処理が書いた分を消さないよう、必ず最新を読んでから直す */
+function gdAttMapUpdate(fn) {
+  const m = gdAttMapGet() || {};
+  fn(m);
+  try { localStorage.setItem(GD_ATT_KEY, JSON.stringify(m)); } catch (e) {}
+  return m;
+}
+/** Drive上の添付ファイルの一覧 → {添付id: ファイル}。appDataFolder はほかのアプリと共用なので名前で選ぶ */
+async function gdAttList(D, token) {
+  const fs = await D.list(token, { q: "'appDataFolder' in parents and trashed=false", space: "appDataFolder", fields: "id,name,modifiedTime,appProperties" });
+  const out = Object.create(null);
+  fs.forEach(f => {
+    const name = String(f.name || "");
+    if (name.indexOf(GD_ATT_PREFIX) !== 0) return;
+    const kid = (f.appProperties && f.appProperties.kid) || name.slice(GD_ATT_PREFIX.length);
+    if (kid) out[kid] = f;
+  });
+  return out;
+}
+/** メモが使っている添付のうち、まだDriveに載っていないものを送る（同時に3件まで）。
+ *  この端末に実体が無いもの（ほかの端末の画像で、まだ取ってきていない）は送れないので飛ばす */
+async function gdAttUpload(D, token, memos) {
+  const map = gdAttMapGet() || {};
+  const ids = new Set();
+  memos.forEach(m => memoFileIds(m).forEach(id => ids.add(id)));
+  const todo = [...ids].filter(id => !map[id]);
+  await runLimited(todo, 3, async id => {
+    const rec = await idbGet(id).catch(() => null);
+    if (!rec || !rec.blob) return;
+    const r = await D.upload(token, {
+      name: GD_ATT_PREFIX + id,
+      space: "appDataFolder",
+      content: rec.blob,
+      mime: rec.type || rec.blob.type || "application/octet-stream",
+      appProperties: { kid: id }
+    });
+    if (r && r.id) gdAttMapUpdate(m => { m[id] = r.id; });
+  });
+}
+/** メモが使っているのに端末に無い添付を、Driveの別ファイルから取ってくる（同時に3件まで）。
+ *  Driveにも無いものは、これまでどおり画像の無いまま。取ってきた件数を返す */
+async function gdAttFetchMissing(D, token, memos) {
+  const info = {};
+  const want = new Set();
+  memos.forEach(m => {
+    (m.attachments || []).forEach(a => { if (a && a.id) info[a.id] = a; });
+    memoFileIds(m).forEach(id => want.add(id));
+  });
+  if (!want.size) return 0;
+  const have = new Set(await idbKeys());
+  const missing = [...want].filter(id => !have.has(id) && !gdAttGone.has(id));
+  if (!missing.length) return 0;
+  let map = gdAttMapGet() || {};
+  if (missing.some(id => !map[id])) {
+    // ほかの端末が送った分は控えに無い。一覧を見て控えに足す（控えはそのまま送る判断にも使う）
+    const remote = await gdAttList(D, token);
+    map = gdAttMapUpdate(m => { for (const kid in remote) m[kid] = remote[kid].id; });
+  }
+  let got = 0;
+  await runLimited(missing, 3, async id => {
+    const fid = map[id];
+    if (!fid) { gdAttGone.add(id); return; }
+    let blob;
+    try {
+      blob = await D.download(token, fid, "blob");
+    } catch (e) {
+      if (e && e.status === 404) {
+        gdAttMapUpdate(m => { delete m[id]; });
+        gdAttGone.add(id);
+        return;
+      }
+      throw e;
     }
+    const a = info[id] || {};
+    await idbPut({ id, blob, name: a.name || "画像", type: a.type || blob.type || "", size: blob.size, at: Date.now() });
+    got++;
   });
-  if (!r.ok) throw new Error("Drive 取得に失敗 (" + r.status + ")");
-  return r.text();
+  if (got) {
+    try { window.dispatchEvent(new Event(ATT_EVENT)); } catch (e) {}
+  }
+  return got;
 }
-async function gdGetMeta(token, id) {
-  const r = await gdFetch(`https://www.googleapis.com/drive/v3/files/${id}?fields=id,modifiedTime`, {
-    headers: {
-      Authorization: "Bearer " + token
-    }
-  });
-  if (!r.ok) throw new Error("Drive 情報取得に失敗 (" + r.status + ")");
-  return r.json();
+/** どのメモからも使われていない添付ファイルを Drive から消す（更新から30日たったものだけ）。
+ *  remote は、この送信の中で取った Drive の一覧（gdAttList） */
+async function gdAttCleanup(D, token, memos, remote) {
+  const used = new Set();
+  memos.forEach(m => memoFileIds(m).forEach(id => used.add(id)));
+  const cut = Date.now() - GD_ATT_KEEP;
+  for (const kid in remote) {
+    if (used.has(kid)) continue;
+    const t = Date.parse(remote[kid].modifiedTime || "") || 0;
+    if (!t || t >= cut) continue;
+    try {
+      await D.remove(token, remote[kid].id);
+      gdAttMapUpdate(m => { delete m[kid]; });
+    } catch (e) {}
+  }
 }
 const GCAL_BASE = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 function syncErrMsg(e) {
   const m = String(e && e.message || e);
+  if (m === GD_STALE_MSG) return m;
   if (/403/.test(m)) return "Driveの権限が不足しています。設定を確認してください。";
   if (/401/.test(m)) return "Googleログインの期限が切れました。もう一度サインインしてください。";
-  if (/読み込みが未完了|認証に失敗/.test(m)) return "自動サインインできませんでした。同期ボタンから手動で接続してください。";
+  if (/読み込みが未完了|認証に失敗|ポップアップ|キャンセル/.test(m)) return "自動サインインできませんでした。同期ボタンから手動で接続してください。";
+  if (/通信がタイムアウト/.test(m)) return "通信がタイムアウトしました。電波の良いところでもう一度お試しください。";
   if (/Failed to fetch|NetworkError/i.test(m)) return "ネットワークに接続できませんでした。";
   return "同期に失敗しました：" + m.slice(0, 80);
 }
 function calErr(e) {
   const m = String(e && e.message || e);
+  if (m === GD_STALE_MSG) return m;
   if (/403/.test(m)) return "カレンダーの権限が不足しています。一度ログインし直すか、Cloud側でCalendar APIとスコープの設定が必要です。";
   if (/401/.test(m)) return "Googleログインが必要です。";
   return "通信に失敗しました。時間をおいて再度お試しください。";
@@ -1236,65 +1360,47 @@ function gcalResource(memo) {
   }
   return res;
 }
+// カレンダーも NKSync.drive.api で呼ぶ（期限切れ・権限不足のトークンを捨てる作法をそろえる）
 async function gcalInsert(token, memo) {
-  const r = await fetch(GCAL_BASE, {
+  return gdNeed().api(GCAL_BASE, token, {
     method: "POST",
     headers: {
-      Authorization: "Bearer " + token,
       "Content-Type": "application/json"
     },
     body: JSON.stringify(gcalResource(memo))
   });
-  if (!r.ok) throw new Error("calendar " + r.status);
-  return r.json();
 }
 async function gcalPatch(token, id, memo) {
-  const r = await fetch(GCAL_BASE + "/" + encodeURIComponent(id), {
+  return gdNeed().api(GCAL_BASE + "/" + encodeURIComponent(id), token, {
     method: "PATCH",
     headers: {
-      Authorization: "Bearer " + token,
       "Content-Type": "application/json"
     },
     body: JSON.stringify(gcalResource(memo))
   });
-  if (!r.ok) throw new Error("calendar " + r.status);
-  return r.json();
 }
 async function gcalDelete(token, id) {
-  const r = await fetch(GCAL_BASE + "/" + encodeURIComponent(id), {
-    method: "DELETE",
-    headers: {
-      Authorization: "Bearer " + token
-    }
-  });
-  if (!r.ok && r.status !== 404 && r.status !== 410) throw new Error("calendar " + r.status);
+  try {
+    await gdNeed().api(GCAL_BASE + "/" + encodeURIComponent(id), token, { method: "DELETE", as: "none" });
+  } catch (e) {
+    // もう消えている予定は、消せたものとして扱う
+    if (!(e && (e.status === 404 || e.status === 410))) throw e;
+  }
   return true;
 }
 async function gcalListUpcoming(token, maxResults) {
   const u = GCAL_BASE + "?singleEvents=true&orderBy=startTime&maxResults=" + (maxResults || 12) + "&timeMin=" + encodeURIComponent(new Date().toISOString());
-  const r = await fetch(u, {
-    headers: {
-      Authorization: "Bearer " + token
-    }
-  });
-  if (!r.ok) throw new Error("calendar " + r.status);
-  const j = await r.json();
-  return j.items || [];
+  const j = await gdNeed().api(u, token);
+  return (j && j.items) || [];
 }
 async function calRun(fn) {
-  let token = null;
-  try {
-    token = await gdGetToken(currentGdCid(), false);
-  } catch (e) {}
-  if (!token) token = await gdGetToken(currentGdCid(), true);
+  // ★ボタンのクリックから呼ばれる。ログイン画面を止められないよう、await を挟まずに頼む
+  const token = await gdGetToken(true);
   try {
     return await fn(token);
   } catch (e) {
-    if (/40[13]/.test(String(e && e.message || e))) {
-      sharedTokenClear();
-      const t2 = await gdGetToken(currentGdCid(), true);
-      return await fn(t2);
-    }
+    // 期限切れ・権限不足のトークンは NKSync.drive が捨てている。取り直して1回だけやり直す
+    if (e && (e.status === 401 || e.status === 403)) return await fn(await gdGetToken(true));
     throw e;
   }
 }
@@ -1323,6 +1429,13 @@ function useAttachmentUrls(attachments) {
   const [urls, setUrls] = useState({});
   const ref = useRef({});
   const idsKey = (attachments || []).map(a => a.id).join(",");
+  // 添付をDriveから取ってきたら、まだ出ていないものを探し直す
+  const [attTick, setAttTick] = useState(0);
+  useEffect(() => {
+    const on = () => setAttTick(t => t + 1);
+    window.addEventListener(ATT_EVENT, on);
+    return () => window.removeEventListener(ATT_EVENT, on);
+  }, []);
   useEffect(() => {
     let alive = true;
     const ids = (attachments || []).map(a => a.id);
@@ -1353,7 +1466,7 @@ function useAttachmentUrls(attachments) {
     return () => {
       alive = false;
     };
-  }, [idsKey]);
+  }, [idsKey, attTick]);
   useEffect(() => () => {
     Object.values(ref.current).forEach(u => URL.revokeObjectURL(u));
     ref.current = {};
@@ -1429,7 +1542,8 @@ async function ingestFiles(fileList) {
         blob: file,
         name,
         type: file.type || "",
-        size: file.size
+        size: file.size,
+        at: Date.now()
       });
       pendingFileIds.add(id);
       out.push({
@@ -1596,7 +1710,7 @@ async function migrateBodyImages(memos) {
         try {
           const blob = await (await fetch(im.getAttribute("src"))).blob();
           const id = uid();
-          await idbPut({ id, blob, name: "画像", type: blob.type, size: blob.size });
+          await idbPut({ id, blob, name: "画像", type: blob.type, size: blob.size, at: Date.now() });
           im.removeAttribute("src");
           im.setAttribute("data-kid", id);
           moved++;
@@ -1701,7 +1815,7 @@ function RichEditor({
   useEffect(() => {
     if (!ref.current) return;
     const v = value || "";
-    if (looksLikeHtmlKn(v)) ref.current.innerHTML = v;else ref.current.innerText = v;
+    if (looksLikeHtmlKn(v)) ref.current.innerHTML = v;else ref.current.innerText = unescapeKn(v);
     updateEmpty();
     hydrateBodyImages(ref.current).then(us => {
       madeUrls.current.push(...us);
@@ -1860,8 +1974,12 @@ function RichEditor({
           blob,
           name: f.name || "画像",
           type: blob.type || "image/jpeg",
-          size: blob.size
+          size: blob.size,
+          at: Date.now()
         });
+        // 添付と同じく、保存ボタンを押すまでは掃除の対象から外す。外さないと、
+        // 書いている途中に自動同期のマージが走った時点で本文の画像が消える。
+        pendingFileIds.add(id);
         const u = URL.createObjectURL(blob);
         madeUrls.current.push(u);
         document.execCommand("insertHTML", false, '<img data-kid="' + id + '" src="' + u + '" alt="">');
@@ -2118,7 +2236,7 @@ function LinkDialog({ init, onClose, onApply, onRemove }) {
     React.createElement("input", {
       ref: urlRef, className: "kn-dlg-i", value: url, placeholder: "https://", inputMode: "url",
       onChange: e => setUrl(e.target.value),
-      onKeyDown: e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); onApply(text, url); } }
+      onKeyDown: e => { if (e.key === "Enter" && !isImeEnter(e)) { e.preventDefault(); onApply(text, url); } }
     }),
     React.createElement("p", { className: "kn-dlg-n" }, "\u8868\u793A\u3059\u308B\u30C6\u30AD\u30B9\u30C8\u3092\u7A7A\u306B\u3059\u308B\u3068\u3001URL\u3092\u305D\u306E\u307E\u307E\u8868\u793A\u3057\u307E\u3059\u3002"),
     React.createElement("div", { className: "kn-dlg-f" },
@@ -2198,7 +2316,7 @@ function LinksEditor({
     // 打ちかけのまま保存しても捨てない（タグ欄と同じ理由）
     onBlur: () => { if (val.trim()) add(val); },
     onKeyDown: e => {
-      if (e.isComposing || e.keyCode === 229) return;
+      if (isImeEnter(e)) return;
       if (e.key === "Enter") {
         e.preventDefault();
         add(val);
@@ -2283,7 +2401,7 @@ function TagEditor({
     onBlur: () => { const v = currentVal(); if (v && v.trim()) add(v); },
     onKeyDown: e => {
       // 変換確定のEnterはここで扱わない（IME側の操作なので通す）
-      if (composing.current || e.isComposing || e.keyCode === 229) return;
+      if (composing.current || isImeEnter(e)) return;
       if (e.key === "Enter" || e.key === ",") {
         e.preventDefault();
         add(currentVal());
@@ -2372,19 +2490,24 @@ function memoMarks(memo) {
 }
 function RichBody({ html }) {
   const ref = useRef(null);
-  const made = useRef([]);
   useEffect(() => {
     if (!ref.current) return;
     let alive = true;
-    hydrateBodyImages(ref.current).then(us => {
-      if (alive) made.current.push(...us);else us.forEach(u => URL.revokeObjectURL(u));
+    const made = [];
+    const hydrate = () => hydrateBodyImages(ref.current).then(us => {
+      if (alive) made.push(...us);else us.forEach(u => URL.revokeObjectURL(u));
     });
-    return () => { alive = false; };
+    hydrate();
+    // 画像をDriveから取ってきたら、まだ出ていないものを埋め直す
+    window.addEventListener(ATT_EVENT, hydrate);
+    // html が変わると中身ごと描き直され、前回の画像は使われなくなる。閉じるときまで
+    // 持ち越すと、同期や編集のたびに画像の分だけメモリが増えていくので、ここで返す。
+    return () => {
+      alive = false;
+      window.removeEventListener(ATT_EVENT, hydrate);
+      made.forEach(u => URL.revokeObjectURL(u));
+    };
   }, [html]);
-  useEffect(() => () => {
-    made.current.forEach(u => URL.revokeObjectURL(u));
-    made.current = [];
-  }, []);
   return React.createElement("div", {
     ref: ref,
     className: "memo-rich",
@@ -2761,7 +2884,7 @@ function MemoCard({
   // 押せば全画面で全部読めるので、ここは冒頭の数行だけでよい。
   memo.body && (full
     ? (looksLikeHtmlKn(memo.body) ? React.createElement(RichBody, { html: memo.body })
-                                  : React.createElement("div", { className: "body" }, memo.body))
+                                  : React.createElement("div", { className: "body" }, unescapeKn(memo.body)))
     : React.createElement("div", { className: "body excerpt" }, memoExcerpt(memo.body))),
   !full && memoMarks(memo),
   memo.tags && memo.tags.length > 0 && React.createElement("div", {
@@ -3008,6 +3131,7 @@ function FolderTreeContent({
     placeholder: "\u30D5\u30A9\u30EB\u30C0\u540D",
     onChange: e => setVal(e.target.value),
     onKeyDown: e => {
+      if (isImeEnter(e)) return;   // 変換の確定・取り消しで、作成や入力欄の終了まで走らせない
       if (e.key === "Enter") commit();
       if (e.key === "Escape") {
         setAdding(false);
@@ -3118,7 +3242,7 @@ function FolderActionsModal({
     placeholder: "\u30B5\u30D6\u30D5\u30A9\u30EB\u30C0\u540D",
     onChange: e => setSubVal(e.target.value),
     onKeyDown: e => {
-      if (e.key === "Enter" && subVal.trim()) {
+      if (e.key === "Enter" && !isImeEnter(e) && subVal.trim()) {
         onAddSub(folder.id, subVal.trim());
         onClose();
       }
@@ -3142,7 +3266,7 @@ function FolderActionsModal({
     value: renameVal,
     onChange: e => setRenameVal(e.target.value),
     onKeyDown: e => {
-      if (e.key === "Enter" && renameVal.trim()) {
+      if (e.key === "Enter" && !isImeEnter(e) && renameVal.trim()) {
         onRename(folder.id, renameVal.trim());
         onClose();
       }
@@ -3226,6 +3350,28 @@ const AI_INSTR = `次のメモ一覧を整理してください。各メモは i
 
 メモ一覧:
 `;
+/** AIの返事を使える形にそろえる。指示どおりの形で返ってくるとは限らない（タグが文字列、
+ *  名前がオブジェクトなど）。そのまま描くと React ごと落ちて画面が真っ白になっていた。
+ *  形の合わない所は捨て、全体がオブジェクトでなければ失敗として扱う。 */
+function aiResultShape(p) {
+  if (!p || typeof p !== "object" || Array.isArray(p)) throw new Error("AIの返事の形が不正です");
+  const strs = a => (Array.isArray(a) ? a : []).filter(x => typeof x === "string");
+  const tags = Object.create(null);   // "__proto__" などのキーが来ても形が崩れないように
+  if (p.tags && typeof p.tags === "object" && !Array.isArray(p.tags)) {
+    Object.keys(p.tags).forEach(id => {
+      const list = strs(p.tags[id]).map(t => t.replace(/^#/, "").trim().slice(0, 24)).filter(Boolean);
+      if (list.length) tags[id] = [...new Set(list)];
+    });
+  }
+  const groups = (Array.isArray(p.groups) ? p.groups : [])
+    .filter(g => g && typeof g === "object" && typeof g.name === "string" && g.name.trim())
+    .map(g => ({ name: g.name.trim().slice(0, 60), ids: strs(g.ids) }));
+  return {
+    summary: typeof p.summary === "string" ? p.summary : "",
+    tags,
+    groups
+  };
+}
 function AIPanel({
   memos,
   folders,
@@ -3287,11 +3433,7 @@ function AIPanel({
       const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("");
       const clean = text.replace(/```json/g, "").replace(/```/g, "").trim();
       const parsed = JSON.parse(clean.slice(clean.indexOf("{"), clean.lastIndexOf("}") + 1));
-      setResult({
-        summary: parsed.summary || "",
-        tags: parsed.tags || {},
-        groups: Array.isArray(parsed.groups) ? parsed.groups : []
-      });
+      setResult(aiResultShape(parsed));
     } catch (e) {
       setError("整理に失敗しました。通信状況やAPIキーをご確認のうえ、もう一度お試しください。");
     }
@@ -3479,7 +3621,8 @@ function DataModal({
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "kininari-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+      // 日付は端末の暦で付ける（toISOString は世界標準時なので、日本の朝9時前は前日の日付になる）
+      a.download = "kininari-backup-" + toDateInput(new Date()) + ".json";
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -3500,7 +3643,7 @@ function DataModal({
   const shareFile = async () => {
     if (!exportJson) return;
     try {
-      const file = new File([exportJson], "kininari-backup-" + new Date().toISOString().slice(0, 10) + ".json", {
+      const file = new File([exportJson], "kininari-backup-" + toDateInput(new Date()) + ".json", {
         type: "application/json"
       });
       if (navigator.canShare && navigator.canShare({
@@ -3813,7 +3956,7 @@ function ReviewFocus({ memo, index, total, onAnswer, onClose }) {
   const bodyRef = useRef(null);
   useEffect(() => {
     const onKey = e => {
-      if (e.isComposing || e.keyCode === 229) return;
+      if (isImeEnter(e)) return;
       if (e.repeat) return;                                   // 押しっぱなしで連打しない
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const el = e.target;
@@ -3875,7 +4018,7 @@ function ReviewFocus({ memo, index, total, onAnswer, onClose }) {
     ),
     React.createElement("div", { className: "rf-body", ref: bodyRef, tabIndex: -1 }, looksLikeHtmlKn(memo.body || "")
       ? React.createElement(RichBody, { html: memo.body || "" })
-      : React.createElement("div", { className: "body" }, memo.body || "")),
+      : React.createElement("div", { className: "body" }, unescapeKn(memo.body))),
     link && React.createElement("a", {
       className: "rf-link", href: link, target: "_blank", rel: "noopener"
     }, hostname(link) + " \u3092\u958B\u304F"),
@@ -4081,6 +4224,13 @@ function App() {
       }
     }).catch(() => gcAttachments(m));
   }, []);
+  // キャッシュの食い違いで sync.js が古いまま（NKSync.drive が無い）なら、同期はせずに再読み込みを頼む
+  useEffect(() => {
+    if (gdLinked && !gdDrive()) setToast({
+      title: "ページを再読み込みしてください",
+      body: GD_STALE_MSG
+    });
+  }, []);
   const persist = (nextMemos, nextFolders, opts) => {
     // 端末間マージのため、実際に中身が変わった項目にだけ updatedAt を打つ。
     // 取り込み（インポート/Drive受信）のときは stamp:false で抑止する。
@@ -4154,10 +4304,20 @@ function App() {
     try {
       window.history.replaceState(null, "", window.location.pathname + window.location.search);
     } catch (e) {}
-    const failed = () => setToast({
-      title: "クリップを取り込めませんでした",
-      body: "受け取った内容の形式が正しくありません。"
-    });
+    // 結果を Chrome拡張に知らせる（saved / dup / quota / parse）。拡張はこれを見て裏タブを閉じたり、
+    // 保存できなかった理由を出したりする。古い拡張向けの __kininariClipSaved は下の tellSaved で立てる。
+    const tellStatus = st => {
+      try {
+        window.__kininariClipStatus = st;
+      } catch (e) {}
+    };
+    const failed = () => {
+      tellStatus("parse");
+      setToast({
+        title: "クリップを取り込めませんでした",
+        body: "受け取った内容の形式が正しくありません。"
+      });
+    };
     try {
       let clip = null;
       try {
@@ -4187,43 +4347,43 @@ function App() {
       // 閉じるので、印を立てるのは「Driveへ送り終えてから」にする。3秒デバウンス
       // 任せにすると、タブが先に閉じてタイマーごとキャンセルされ、クリップが
       // この端末にしか残らない（しかも印だけ付いて次の同期で消えることがある）。
-      const tellSaved = () => {
+      // 重複のときも立てる（拡張が送り直しをやめられるように）。
+      const tellSaved = st => {
+        tellStatus(st || "saved");
         try {
           window.__kininariClipSaved = true;
         } catch (e) {}
       };
-      const url = str(clip.u).trim();
-      // 同じページを10分以内に続けて受け取ったら（拡張の送り直しなど）、2件目は作らない。
-      // 拡張が送り直しをやめられるよう、保存済みの合図は立てる。
-      const urlKey = clipUrlKey(url);
-      const nowMs = Date.now();
-      const dup = urlKey ? curMemos.find(x => nowMs - (Number(x.createdAt) || 0) < 10 * 60 * 1000 && (x.links || []).some(l => clipUrlKey(l) === urlKey)) : null;
-      if (dup) {
-        tellSaved();
-        setFreshId(dup.id);
-        setTimeout(() => setFreshId(f => f === dup.id ? null : f), 1600);
+      const showDup = dup => {
+        tellSaved("dup");
+        if (dup) {
+          setFreshId(dup.id);
+          setTimeout(() => setFreshId(f => f === dup.id ? null : f), 1600);
+        }
         setToast({
           title: "もう追加してあります",
-          body: dup.title
+          body: dup ? dup.title : ""
         });
-        return;
+      };
+      // クリップの番号。中身の k を優先し、無ければURLの ?kn_clip= を見る
+      // （結合アプリ index.html を通ると ?kn_clip= はここまで届かないので、k にも入っている）。
+      const okNonce = v => typeof v === "string" && /^[0-9a-f]{8,64}$/i.test(v) ? v.toLowerCase() : "";
+      let nonce = okNonce(clip.k);
+      if (!nonce) {
+        try {
+          nonce = okNonce(new URLSearchParams(window.location.search).get("kn_clip"));
+        } catch (e) {}
       }
+      if (nonce) {
+        const seen = clipNoncesGet().find(x => x.n === nonce);
+        if (seen) {
+          showDup(curMemos.find(x => x.id === seen.id) || null);
+          return;
+        }
+      }
+      const url = str(clip.u).trim();
       let nbId = null;
       const fname = str(clip.f).trim().slice(0, 100);
-      if (fname) {
-        let found = curFolders.find(x => (x.name || "").trim().toLowerCase() === fname.toLowerCase());
-        if (!found) {
-          found = normalizeFolder({
-            id: uid(),
-            name: fname,
-            parentId: null,
-            pinned: false,
-            createdAt: Date.now()
-          }, curFolders.length);
-          curFolders = [...curFolders, found];
-        }
-        nbId = found.id;
-      }
       const esc = s => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
       const escA = s => esc(s).replace(/"/g, "&quot;");
       const cats = ["メモ", "アイデア", "調べる", "やること", "行きたい"];
@@ -4252,9 +4412,37 @@ function App() {
       let body = "";
       if (/^(https?:|data:image\/)/i.test(img)) body += `<img src="${escA(img)}" alt="">`;
       if (note) body += `<div>${esc(note).replace(/\n/g, "<br>")}</div>`;
+      const title = (str(clip.t).trim() || url || "(無題)").slice(0, 300);
+      // 番号の無いクリップ（古い拡張・「Recall」など）は、同じページを10分以内に続けて受け取り、
+      // 題名も選んだ文章（メモ）も同じときだけ重複とみなす（拡張の送り直しなど）。
+      // 以前はページだけで判断していたため、同じページの別の箇所を続けて取り込むと捨てられていた。
+      if (!nonce) {
+        const urlKey = clipUrlKey(url);
+        const nowMs = Date.now();
+        const noteText = htmlToText(sanitizeMemoHtml(body));
+        const dup = urlKey ? curMemos.find(x => nowMs - (Number(x.createdAt) || 0) < 10 * 60 * 1000 && (x.links || []).some(l => clipUrlKey(l) === urlKey) && x.title === title && htmlToText(x.body || "") === noteText) : null;
+        if (dup) {
+          showDup(dup);
+          return;
+        }
+      }
+      if (fname) {
+        let found = curFolders.find(x => (x.name || "").trim().toLowerCase() === fname.toLowerCase());
+        if (!found) {
+          found = normalizeFolder({
+            id: uid(),
+            name: fname,
+            parentId: null,
+            pinned: false,
+            createdAt: Date.now()
+          }, curFolders.length);
+          curFolders = [...curFolders, found];
+        }
+        nbId = found.id;
+      }
       const memo = {
         id: uid(),
-        title: (str(clip.t).trim() || url || "(無題)").slice(0, 300),
+        title,
         body,
         category: typeof clip.c === "string" && cats.indexOf(clip.c) >= 0 ? clip.c : "調べる",
         tags: clipTags,
@@ -4281,15 +4469,18 @@ function App() {
       // atomic: 保存できなかったときは画面にも載せない（載せると、そのあとの操作まで保存に
       // 失敗し続け、再読み込みでまとめて消える）
       const saved = persist([normalizeMemo(memo), ...curMemos], curFolders, { atomic: true });
-      // 保存自体に失敗したときは、成功の表示も拡張への合図も出さない（取りこぼしが分かるように）。
+      // 保存自体に失敗したときは、成功の表示も保存済みの合図も出さない（取りこぼしが分かるように）。
       // 以前は直後の「追加しました」で失敗の知らせが上書きされ、消えたことに気づけなかった。
+      // 拡張には「容量不足」と伝える（番号も覚えないので、減らしてから送り直せば保存される）。
       if (!saved) {
+        tellStatus("quota");
         setToast({
           title: "クリップを保存できませんでした",
           body: "保存容量の上限に達した可能性があります。不要なメモや画像を減らしてから、もう一度送ってください。"
         });
         return;
       }
+      if (nonce) clipNonceAdd(nonce, memo.id);
       if (gdAuto && gdCid && gdLinked && gdPushRef.current) {
         skipPush.current = true;   // デバウンスは使わず、ここで直接送る
         seenRev.current = localRev.current;   // この変更は下で直接送るので、予約で二重に送らない
@@ -4366,6 +4557,12 @@ function App() {
       localStorage.setItem("kininari:gd:sync", t);
     } catch (e) {}
   };
+  // 最後に同期したファイル。これと違うファイルと混ぜるときは、初めての相手として扱う
+  const gdSetSyncFile = id => {
+    try {
+      localStorage.setItem("kininari:gd:syncfile", id);
+    } catch (e) {}
+  };
   const gdSetAuto = v => {
     setGdAuto(v);
     try {
@@ -4375,13 +4572,20 @@ function App() {
   const gdConnect = async cid => {
     const id = (cid || gdCid || SHARED_GD_CID).trim();
     if (!id) throw new Error("クライアントIDを入力してください");
-    await gdGetToken(id, true);
+    const D = gdNeed();
+    // クライアントIDは全アプリ共通の shared:gd:cid に置く（sync.js はそこを読んでログインを頼む）。
+    // IDを変えたときは、前のIDで取ったトークンや、前の場所の添付の控えを使わない
+    try {
+      if ((localStorage.getItem("shared:gd:cid") || "").trim() !== id) {
+        NKSync.setClientId(id);
+        localStorage.removeItem(GD_ATT_KEY);
+      }
+      localStorage.setItem("kininari:gd:cid", id);
+    } catch (e) {}
+    // ★ここまで await を挟まない。ログイン画面を出せるのはクリックの直後だけ
+    await D.getToken({ scope: D.STD_SCOPE, interactive: true });
     setGdCid(id);
     setGdLinked(true);
-    try {
-      localStorage.setItem("kininari:gd:cid", id);
-      localStorage.setItem("shared:gd:cid", id);   // 他アプリからも見えるように
-    } catch (e) {}
   };
   const gdDisconnect = () => {
     setGdCid(SHARED_GD_CID);
@@ -4389,9 +4593,10 @@ function App() {
     setGdSync("");
     setGdAuto(false);
     setGdLinked(false);
-    sharedTokenClear();
+    try { gdNeed().tokenClear(); } catch (e) {}
     try {
-      ["kininari:gd:cid", "shared:gd:cid", "kininari:gd:file", "kininari:gd:sync"].forEach(k => localStorage.removeItem(k));
+      // 添付の控えも捨てる（別のアカウントでつなぎ直したとき、載っていない画像を「載っている」と思わない）
+      ["kininari:gd:cid", "shared:gd:cid", "kininari:gd:file", "kininari:gd:sync", "kininari:gd:syncfile", GD_ATT_KEY, GD_ATT_GC_KEY].forEach(k => localStorage.removeItem(k));
       localStorage.setItem("kininari:gd:auto", "0");
     } catch (e) {}
   };
@@ -4402,7 +4607,7 @@ function App() {
       try {
         parent.postMessage({ nkSyncStatus: {
           app: "kininari", label: "📝 気になり帳",
-          phase: gdLinked ? syncState.phase : "off",
+          phase: gdLinked && gdSyncInfo().linked ? syncState.phase : "off",
           at: gdSync ? new Date(gdSync).getTime() : (syncState.at || 0),
           msg: syncState.msg || ""
         } }, window.location.origin);
@@ -4415,6 +4620,9 @@ function App() {
       if (!d || !d.nkSync) return;
       if (d.nkSync === "status") return report();
       if (d.nkSync === "now") {
+        // 連携していないときは同期しない（「未接続」と返す）。以前はシェルの「すべて同期」で、
+        // 他のアプリのログインに相乗りして勝手に送り、Driveのデータをこの端末の内容で置き換えていた。
+        if (!gdLinked || !gdSyncInfo().linked) return report();
         setSyncState({ phase: "syncing" });
         (gdPushRef.current || gdPush)().then(() => setSyncState({ phase: "ok", at: Date.now() }))
                 .catch(er => setSyncState({ phase: "error", at: Date.now(), msg: syncErrMsg(er) }))
@@ -4435,12 +4643,50 @@ function App() {
       return {
         file: localStorage.getItem("kininari:gd:file") || "",
         sync: localStorage.getItem("kininari:gd:sync") || "",
+        syncFile: localStorage.getItem("kininari:gd:syncfile") || "",
         linked: localStorage.getItem("kininari:gd:linked") === "1",
         auto: localStorage.getItem("kininari:gd:auto") === "1"
       };
     } catch (e) {
-      return { file: gdFileId, sync: gdSync, linked: gdLinked, auto: gdAuto };
+      return { file: gdFileId, sync: gdSync, syncFile: "", linked: gdLinked, auto: gdAuto };
     }
+  };
+  /** 同期先のファイルを決める（NKSync.drive.findFiles）。どの端末でも「いちばん古い同名ファイル」を
+   *  正とし、覚えているIDのファイルが消えた・ゴミ箱に入ったときは名前で探し直す。
+   *  sync は「このファイルといつ同期したか」。最後に同期したファイルと違う（乗り換えた・別の
+   *  アカウント・重複の整理で正が替わった）ときは空にする（＝初めての相手としてマージし、
+   *  synced 印を信用しない）。 */
+  const gdLocate = async (D, token) => {
+    const st = gdSyncInfo();
+    // 旧版は「最後に同期したファイル」を別に持たず、kininari:gd:file が兼ねていた
+    const lastFile = st.syncFile || (st.sync ? st.file : "");
+    const r = await D.findFiles(token, { name: GD_FILE_NAME, space: "drive", cacheKey: GD_FILE_KEY });
+    if (!r.id) return { id: "", meta: null, sync: "", dups: 0 };
+    const meta = await gdMeta(D, token, r.id);
+    if (!meta || meta.trashed) throw new Error("Driveの同期ファイルが見つからなくなりました。もう一度同期してください。");
+    return { id: r.id, meta, sync: !r.switched && r.id === lastFile ? st.sync : "", dups: (r.dups || []).length };
+  };
+  /** Driveの同期ファイルを読んでから書くまでを、ほかのタブ・iframe（クリップを受け取る裏タブなど）と
+   *  重ねない。NKSync.drive.withLock は navigator.locks で、タブをまたいで1本ずつにする。 */
+  const gdLocked = fn => {
+    let D;
+    try { D = gdNeed(); } catch (e) { return Promise.reject(e); }
+    return D.withLock("kininari-gd", () => fn(D));
+  };
+  /** メモが使っているのに端末に無い添付を、裏で取ってくる。同期の排他の外で走らせ、
+   *  送信（クリップの「保存しました」の合図など）を画像の取り込みで待たせない。 */
+  const attFetching = useRef(null);
+  const gdFetchAtts = () => {
+    if (attFetching.current) { attFetching.current.again = true; return; }
+    const D = gdDrive();
+    const token = D && D.tokenRead(D.STD_SCOPE);
+    if (!token) return;
+    const run = { again: false };
+    attFetching.current = run;
+    gdAttFetchMissing(D, token, readLive().memos).catch(() => {}).then(() => {
+      attFetching.current = null;
+      if (run.again) gdFetchAtts();
+    });
   };
   /** 同期の処理を順番待ちの列に並べる。前の処理が通信で固まっても、後ろが永久に
    *  止まらないよう90秒で見切る。 */
@@ -4468,65 +4714,113 @@ function App() {
       }));
     }, 3000);
   };
-  const gdPushOnce = async () => {
-    const st = gdSyncInfo();
-    const token = await gdGetToken(gdCid, false);
-    const found = st.file ? null : await gdFindFile(token);
-    let id = st.file || (found || {}).id;
-    if (found && found.duplicates) {
+  const gdPushOnce = () => gdLocked(async D => {
+    // 連携していないときは送らない。解除の直前に予約された送信などから呼ばれても、
+    // 勝手にDriveへ書いたり、連携済みに戻したりしない。
+    if (!gdSyncInfo().linked) return;
+    const token = await gdGetToken(false);
+    const loc = await gdLocate(D, token);
+    let id = loc.id;
+    if (loc.dups) {
       setToast({
         title: "Driveに同じ名前のファイルが複数あります",
         body: "いちばん古いものを使います。心当たりが無ければ、Driveで余分な kininari-data.json を削除してください。"
       });
     }
     // 書き込む前に、最終同期より後に他端末が更新していないか確認する。
-    // 更新されていれば、先にマージしてから書く（相手の変更を潰さない）
-    let remote = null;
-    if (id && st.sync) {
-      const cur = await gdGetMeta(token, id);
-      if (cur.modifiedTime && cur.modifiedTime > st.sync) {
-        const obj = JSON.parse(await gdDownload(token, id));
-        if (Array.isArray(obj.memos)) {
-          await restoreBackupFiles(obj.files);
+    // 更新されていれば、先にマージしてから書く（相手の変更を潰さない）。
+    // このファイルと同期したことが無い（初めての端末・連携の解除後・ファイルが替わった）ときは、
+    // 必ず取り込んでマージする。以前はここを飛ばして上書きしていたため、2台目の端末で送ると
+    // Driveが見本の4件だけに置き換わり、ほかの端末のメモ（と画像）まで消えていた。
+    const lastSync = loc.sync ? new Date(loc.sync).getTime() : 0;
+    let cur = loc.meta;
+    let known = loc.sync;   // Driveのこの時刻までの内容は取り込み済み
+    // 添付の控え（どれがDriveに載っているか）は、無いとき（更新して初めて・新しい端末）、
+    // 初めての相手のとき（別のアカウントかもしれない）、それと1日1回、Driveの一覧で作り直す。
+    // 1日1回の見直しでは、ほかの端末が片付けた分も分かるので、まだ使っている添付は送り直す。
+    const gcDue = Date.now() - (Number(localStorage.getItem(GD_ATT_GC_KEY)) || 0) > GD_ATT_GC_EVERY;
+    let attRemote = null;
+    if (!loc.sync || gcDue || !gdAttMapGet()) {
+      attRemote = await gdAttList(D, token);
+      gdAttMapUpdate(m => {
+        Object.keys(m).forEach(k => delete m[k]);
+        for (const kid in attRemote) m[kid] = attRemote[kid].id;
+      });
+    }
+    let remoteOk = true;   // 同期ファイルを読めたか（読めなかった回は、Drive上の添付を片付けない）
+    let meta, upMemos, upFolders, rev;
+    for (let tries = 1; ; tries++) {
+      let remote = null;
+      if (id && (!known || (cur.modifiedTime && cur.modifiedTime > known))) {
+        const obj = JSON.parse(await D.download(token, id, "text"));
+        if (obj && Array.isArray(obj.memos)) {
+          // まだ更新していない端末は、画像を同期ファイルに埋め込んで送ってくる。端末に無いものだけ入れる
+          await restoreBackupFiles(obj.files, true);
           remote = obj;
-        }
+        } else remoteOk = false;
       }
-    }
-    // 送る中身は必ず「いま保存されている内容」から取る（readLive のコメント参照）。
-    // ★通信を待ち終えてから読む。待つ前に読んだ内容でマージして書き戻していたため、
-    //   その間に付けた復習や追加したメモが巻き戻って消えていた。ここから applyMerged
-    //   までは await を挟まない（読んでから書くまでの間に変更が割り込まない）。
-    // 読めなかったときは、空のデータでDriveを上書きしてしまうより中止する。
-    const live = readLive();
-    if (!live.ok) throw new Error("保存データを読めなかったため中止しました");
-    let upMemos = live.memos,
+      // 送る中身は必ず「いま保存されている内容」から取る（readLive のコメント参照）。
+      // ★通信を待ち終えてから読む。待つ前に読んだ内容でマージして書き戻していたため、
+      //   その間に付けた復習や追加したメモが巻き戻って消えていた。ここから applyMerged
+      //   までは await を挟まない（読んでから書くまでの間に変更が割り込まない）。
+      // 読めなかったときは、空のデータでDriveを上書きしてしまうより中止する。
+      const live = readLive();
+      if (!live.ok) throw new Error("保存データを読めなかったため中止しました");
+      upMemos = live.memos;
       upFolders = live.folders;
-    if (remote) {
-      const tombs = tombstonesMerge(remote.deleted);
-      const lastSync = new Date(st.sync).getTime();
-      upMemos = mergeById(upMemos, (remote.memos || []).map(normalizeMemo), lastSync, tombs);
-      upFolders = mergeById(upFolders, (remote.notebooks || []).map(normalizeFolder), lastSync, tombs);
-      skipPush.current = true;
-      // ローカルへはまだ印を付けずに反映する。印を付けるのは送信できたあと。
-      applyMerged(upMemos, upFolders);
+      if (remote) {
+        const tombs = tombstonesMerge(remote.deleted);
+        const remoteMemos = (remote.memos || []).map(normalizeMemo);
+        // すでにメモのあるDriveへ初めてつなぐときは、触っていない見本のメモは持ち込まない
+        if (!lastSync && remoteMemos.length) upMemos = upMemos.filter(m => !isUntouchedSeed(m));
+        upMemos = mergeById(upMemos, remoteMemos, lastSync, tombs);
+        upFolders = mergeById(upFolders, (remote.notebooks || []).map(normalizeFolder), lastSync, tombs);
+        skipPush.current = true;
+        // ローカルへはまだ印を付けずに反映する。印を付けるのは送信できたあと。
+        applyMerged(upMemos, upFolders);
+      }
+      rev = localRev.current;   // ここまでの変更は、送る中身に入っている
+      // 添付は同期ファイルより先に送る（同期ファイルが指している画像が、まだDriveに無いことが無いように）
+      await gdAttUpload(D, token, upMemos);
+      const content = JSON.stringify(buildSyncObject(markSynced(upMemos), markSynced(upFolders)));
+      if (!id) {
+        meta = await D.upload(token, { name: GD_FILE_NAME, space: "drive", content, mime: "application/json" });
+        id = meta.id;
+        break;
+      }
+      // 中身を作っている間（添付を送っていると時間がかかる）に他端末が書いていたら、そのまま書くと
+      // 相手の変更を消してしまう。書く直前にもう一度確かめ、変わっていれば取り込み直す。
+      const now = await gdMeta(D, token, id);
+      if (!now || now.trashed) throw new Error("Driveの同期ファイルが見つからなくなりました。もう一度同期してください。");
+      if (now.modifiedTime === cur.modifiedTime) {
+        meta = await D.upload(token, { id, content, mime: "application/json" });
+        break;
+      }
+      if (tries >= 3) throw new Error("ほかの端末の保存と重なり続けたため、今回は送りませんでした。少し待ってからもう一度お試しください。");
+      known = cur.modifiedTime;
+      cur = now;
     }
-    const rev = localRev.current;   // ここまでの変更は、送る中身に入っている
-    const content = JSON.stringify(await buildBackupObject(markSynced(upMemos), markSynced(upFolders)));
-    let meta;
-    if (id) meta = await gdUpdate(token, id, content);else {
-      meta = await gdCreate(token, content);
-      id = meta.id;
-    }
+    // 通信の間に連携を解除されていたら、同期の印や連携の状態を戻さない
+    if (!gdSyncInfo().linked) return;
     // 送れたものに印を付けて保存しておく（次回、Driveに無ければ他端末での削除と判断できる）。
     // 送信中に増えたメモには印を付けないので、それが次の同期で消えることもない。
     commitSynced(upMemos, upFolders);
     gdSetFile(id);
+    gdSetSyncFile(id);
     gdSetSyncTime(meta.modifiedTime || new Date().toISOString());
     setGdLinked(true);
     // 送っている間に付けた変更は、まだDriveに無い。自動同期中で送信の予約も無ければ入れておく
     // （ここで取りこぼすと、次に何か編集するまでDriveに載らない）
     if (localRev.current !== rev && gdSyncInfo().auto && !pushTimer.current) schedulePush();
-  };
+    // ほかの端末のメモを取り込んだときは、その添付を裏で取ってくる
+    gdFetchAtts();
+    // 1日1回、どのメモからも使われていない古い添付を Drive から片付ける。送信が終わってから
+    // 待たずに走らせる（クリップの裏タブなどを待たせない）。同期ファイルを読めなかった回はしない。
+    if (gcDue && attRemote && remoteOk) {
+      try { localStorage.setItem(GD_ATT_GC_KEY, String(Date.now())); } catch (e) {}
+      gdAttCleanup(D, token, upMemos, attRemote).catch(() => {});
+    }
+  });
   gdPushOnceRef.current = gdPushOnce;
   /** Driveへ送る。同時に2本は走らせず、まだ始まっていない送信があればそれに相乗りする
    *  （始まった時点の最新の内容を送るので、頼まれた分の変更は取りこぼさない）。 */
@@ -4540,15 +4834,22 @@ function App() {
     return p;
   };
   gdPushRef.current = gdPush;
+  // 「Driveへ保存」「Driveから取得」は利用者の操作。ログインが切れていたら、クリックの中で
+  // （await を挟まずに）取り直す。同期の列に並んだあとで頼むと、ログイン画面を止められてしまう。
+  const gdByHand = fn => () => gdGetToken(true).then(() => fn());
   // 「Driveから取得」＝Driveの内容で置き換える（確認は DataModal で取る）。
   // 送信の途中に割り込むと、置き換えた直後に古い送信結果と食い違うので、同期の列に並べる。
-  const gdPull = () => runSync(async () => {
-    const token = await gdGetToken(gdCid, false);
-    let id = gdSyncInfo().file || ((await gdFindFile(token)) || {}).id;
+  const gdPull = () => runSync(() => gdLocked(async D => {
+    const token = await gdGetToken(false);
+    const loc = await gdLocate(D, token);
+    const id = loc.id;
     if (!id) throw new Error("Driveにデータが見つかりません。先に「アップロード」してください。");
-    const obj = JSON.parse(await gdDownload(token, id));
-    if (!Array.isArray(obj.memos)) throw new Error("データ形式が不正です");
-    await restoreBackupFiles(obj.files);
+    // 同期時刻は、中身を取りに行く前に読んだものを使う（gdPullMerge と同じ）。取り込んだあとに
+    // 読むと、その間に他端末が書いた分まで「取り込み済み」と記録され、次の同期で取りこぼす。
+    const meta = loc.meta;
+    const obj = JSON.parse(await D.download(token, id, "text"));
+    if (!obj || !Array.isArray(obj.memos)) throw new Error("データ形式が不正です");
+    await restoreBackupFiles(obj.files, true);
     tombstonesMerge(obj.deleted);
     skipPush.current = true;
     importData({
@@ -4556,23 +4857,24 @@ function App() {
       notebooks: obj.notebooks
     });
     gdSetFile(id);
+    gdSetSyncFile(id);
     setGdLinked(true);
-    const meta = await gdGetMeta(token, id);
     gdSetSyncTime(meta.modifiedTime || new Date().toISOString());
-  });
+  })).then(() => gdFetchAtts());
   /** Driveの方が新しければ取り込んでマージする（この端末の変更は消さない）。
    *  開いたとき・画面に戻ったとき・集中復習を始める前に使う。 */
-  const gdPullMerge = () => runSync(async () => {
+  const gdPullMerge = () => runSync(() => gdLocked(async D => {
     lastPullAt.current = Date.now();
-    const st = gdSyncInfo();
-    const token = await gdGetToken(gdCid, false);
-    const id = st.file || ((await gdFindFile(token)) || {}).id;
+    const token = await gdGetToken(false);
+    const loc = await gdLocate(D, token);
+    const id = loc.id;
     if (!id) return false;
-    const meta = await gdGetMeta(token, id);
-    if (!meta.modifiedTime || (st.sync && meta.modifiedTime <= st.sync)) return false;
-    const obj = JSON.parse(await gdDownload(token, id));
-    if (!Array.isArray(obj.memos)) return false;
-    await restoreBackupFiles(obj.files);
+    const meta = loc.meta;
+    if (!meta.modifiedTime || (loc.sync && meta.modifiedTime <= loc.sync)) return false;
+    const obj = JSON.parse(await D.download(token, id, "text"));
+    if (!obj || !Array.isArray(obj.memos)) return false;
+    // まだ更新していない端末が埋め込んだ画像は、端末に無いものだけ入れる
+    await restoreBackupFiles(obj.files, true);
     // 通信の間に連携を解除されていたら取り込まない（解除したのに同期の印が戻らないように）
     if (!gdSyncInfo().linked) return false;
     // 置き換えではなくマージ。id ごとに updatedAt の新しい方を採用し、
@@ -4587,11 +4889,14 @@ function App() {
       const v = localStorage.getItem(STORAGE_KEY);
       if (v) localData = JSON.parse(v) || localData;
     } catch (e) {}
-    const lastSync = st.sync ? new Date(st.sync).getTime() : 0;
+    const lastSync = loc.sync ? new Date(loc.sync).getTime() : 0;
     const tombs = tombstonesMerge(obj.deleted);
     const remoteMemos = (obj.memos || []).map(normalizeMemo);
     const remoteNbs = (obj.notebooks || []).map(normalizeFolder);
-    const mergedMemos = mergeById((localData.memos || []).map(normalizeMemo), remoteMemos, lastSync, tombs);
+    let localMemos = (localData.memos || []).map(normalizeMemo);
+    // すでにメモのあるDriveへ初めてつなぐときは、触っていない見本のメモは持ち込まない（gdPushOnce と同じ）
+    if (!lastSync && remoteMemos.length) localMemos = localMemos.filter(m => !isUntouchedSeed(m));
+    const mergedMemos = mergeById(localMemos, remoteMemos, lastSync, tombs);
     const mergedNbs = mergeById((localData.notebooks || []).map(normalizeFolder), remoteNbs, lastSync, tombs);
     // マージ結果がDrive側と一致するなら書き戻す必要はない
     const same = itemSig({ m: mergedMemos, f: mergedNbs }) === itemSig({ m: remoteMemos, f: remoteNbs });
@@ -4604,8 +4909,13 @@ function App() {
     // 送信前にタブを閉じた／通信に失敗したときに次の同期で消えてしまう。
     commitSynced(remoteMemos, remoteNbs, !same);
     gdSetFile(id);
+    gdSetSyncFile(id);
     gdSetSyncTime(meta.modifiedTime);
     return true;
+  })).then(r => {
+    // 取り込んだメモの添付（と、前回取りそびれた分）を裏で取ってくる
+    gdFetchAtts();
+    return r;
   });
   const pullAndReport = () => gdPullMerge().then(r => {
     setSyncState({ phase: "ok", at: Date.now() });
@@ -5233,7 +5543,8 @@ function App() {
     placeholder: activeFolder == null ? "気になったこと（ひとことで）" : "このフォルダに書く（ひとことで）",
     onChange: e => setNt(e.target.value),
     onKeyDown: e => {
-      if (e.key === "Enter") add();
+      // 変換を確定するEnterで、書きかけのまま追加されないように
+      if (e.key === "Enter" && !isImeEnter(e)) add();
     }
   }), React.createElement("button", {
     className: "add",
@@ -5472,8 +5783,8 @@ function App() {
     gdAuto: gdAuto,
     gdConnected: gdLinked,
     onGdConnect: gdConnect,
-    onGdPush: gdPush,
-    onGdPull: gdPull,
+    onGdPush: gdByHand(gdPush),
+    onGdPull: gdByHand(gdPull),
     onGdSetAuto: gdSetAuto,
     onGdDisconnect: gdDisconnect
   }), calOpen && React.createElement(CalendarPanel, {
@@ -6049,7 +6360,38 @@ button.gcal { cursor:pointer; font-family:inherit; }
   .folders-list, .list { grid-template-columns:repeat(3, minmax(0,1fr)); }
 }
 `;
-ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App, null));
+/** 描画中の思わぬ例外で画面が真っ白にならないようにする。落ちた画面は閉じたままにして
+ *  （そのあと保存や同期の書き込みが走らない）、理由と再読み込みの手段を出す。
+ *  例外は握りつぶさず console にも出す。メモは端末内に保存されたままなので消えない。 */
+class KnErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { err: null };
+  }
+  static getDerivedStateFromError(err) {
+    return { err };
+  }
+  componentDidCatch(err, info) {
+    try { console.error("気になり帳: 画面の表示中にエラーが起きました", err, info && info.componentStack); } catch (e) {}
+  }
+  render() {
+    if (!this.state.err) return this.props.children;
+    const msg = String(this.state.err && this.state.err.message || this.state.err).slice(0, 200);
+    return React.createElement("div", {
+      className: "kn-crash",
+      role: "alert",
+      style: { maxWidth: 520, margin: "48px auto", padding: "22px 20px", background: "#fff", border: "1px solid #e2d6bf", borderRadius: 14, color: "#2c2620", fontFamily: "sans-serif", lineHeight: 1.7 }
+    }, React.createElement("h2", { style: { fontSize: 18, margin: "0 0 8px" } }, "画面を表示できませんでした"),
+      React.createElement("p", { style: { margin: "0 0 8px", fontSize: 14 } }, "メモはこの端末に保存されたままです。再読み込みすると戻ることがあります。"),
+      React.createElement("p", { style: { margin: "0 0 14px", fontSize: 12, color: "#8a7d6b", wordBreak: "break-word" } }, "原因: ", msg),
+      React.createElement("button", {
+        type: "button",
+        onClick: () => { try { window.location.reload(); } catch (e) {} },
+        style: { border: "none", background: "#c0463c", color: "#fff", borderRadius: 9, padding: "9px 18px", fontSize: 14, fontWeight: 700, cursor: "pointer" }
+      }, "再読み込み"));
+  }
+}
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(KnErrorBoundary, null, React.createElement(App, null)));
 </script>
 </body>
 </html>
