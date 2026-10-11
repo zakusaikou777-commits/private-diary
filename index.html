@@ -8,6 +8,9 @@
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="apple-touch-icon" href="icon-192.png" />
 <script src="version.js"></script>
+<!-- 「今すぐ全部同期」のログインは入口でまとめて1回だけ行う（sync.js の NKSync.drive） -->
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="sync.js"></script>
 <script>if('serviceWorker' in navigator){ try{ navigator.serviceWorker.register('sw.js'); }catch(e){} }</script>
 <style>
 *{box-sizing:border-box}
@@ -960,6 +963,31 @@ body.nk-dark .knnew{opacity:.12}
   var hx=document.getElementById('knHelpX'); if(hx) hx.addEventListener('click', function(){ document.getElementById('knHelp').classList.remove('open'); });
   var hl=document.getElementById('knHelp'); if(hl) hl.addEventListener('click', function(e){ if(e.target.id==='knHelp') hl.classList.remove('open'); });
   document.getElementById('knSyncAll').addEventListener('click', function(){
+    /* ★Googleのログイン（トークン）は、入口がここで先に1回だけ取る。
+       1回のクリックで開けるログイン画面（ポップアップ）は1つだけなので、以前のように各タブに
+       それぞれ取らせると、ログインが切れていたとき最初の1つ以外は「ポップアップが止められた」で
+       失敗していた。取れたトークンは shared:gd:token に入り、各タブはそれを使う。
+       ポップアップを止められないよう、await を挟まずにこのクリックの中で頼む。 */
+    var D = window.NKSync && NKSync.drive;   // 古いキャッシュの sync.js だと無いことがある
+    if(D && knCid() && !D.tokenRead(D.STD_SCOPE)){
+      var tp;
+      try{ tp = D.getToken({ interactive: true }); }catch(e){ tp = Promise.reject(e); }
+      knApps.forEach(function(a){ knSt[a]={phase:'syncing',at:0,msg:''}; });
+      knPaint();
+      tp.then(knSyncAllStart, function(e){
+        var m = String((e && e.message) || e);
+        var msg = /キャンセル/.test(m) ? 'Googleへのログインがキャンセルされました'
+                : /ポップアップ/.test(m) ? 'ログイン画面を開けませんでした（ポップアップを許可してください）'
+                : /読み込みが未完了/.test(m) ? 'Googleの読み込みが終わっていません。少し待ってからもう一度押してください'
+                : 'Googleにつなげませんでした: ' + m.slice(0, 60);
+        knApps.forEach(function(a){ knSt[a]={phase:'error',at:Date.now(),msg:msg}; });
+        knPaint();
+      });
+      return;
+    }
+    knSyncAllStart();
+  });
+  function knSyncAllStart(){
     // 以前は knLoadAll() の 500ms 後に一斉送信していたが、気になり帳(326KB+React)や
     // 日記帳(131KB)は読み込みが間に合わず、命令が空のページに飛んで消えていた。
     // 取りこぼしたタブは6秒後の問い合わせに idle を返すので「タブを開くと確認します」と
@@ -987,7 +1015,7 @@ body.nk-dark .knnew{opacity:.12}
       knSend({nkSync:'status'});
       knPaint();
     }, 20000);
-  });
+  }
   document.getElementById('knSyncAuto').addEventListener('click', function(){ knSetAuto(!knAuto()); });
   // 日記帳から移設した操作。実体は日記帳側に残し、ここは入口だけ持つ。
   document.getElementById('knMd').addEventListener('click', function(){
