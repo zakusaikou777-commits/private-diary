@@ -10,7 +10,8 @@
    Googleログインは gis-stub.js に差し替える（.tools/lib/harness.mjs）。
    ============================================================ */
 import path from "node:path";
-import { ROOT, GIS_STUB, startServer, launch, newDevice, collectErrors, makeChecker, sleep, waitFor } from "./lib/harness.mjs";
+import fs from "node:fs";
+import { ROOT, startServer, launch, newDevice, collectErrors, makeChecker, sleep, waitFor } from "./lib/harness.mjs";
 import { createFakeDrive } from "./lib/fake-drive.mjs";
 
 const SERVE_ROOT = process.env.KN_ROOT ? path.resolve(process.env.KN_ROOT) : ROOT;
@@ -40,28 +41,16 @@ function backup(memos, extra = {}) {
   return { app: "kininari", memos, notebooks: [], files: [], deleted: [], ...extra };
 }
 const tokenLS = () => ({ "shared:gd:token": JSON.stringify({ token: TOKEN, exp: Date.now() + 3600 * 1000 }) });
+/** 入口（index.html）が NKSync.drive で取って置いたトークン（許可された権限つき） */
+const scopedTokenLS = (scope = GD_SCOPE) => ({ "shared:gd:token": JSON.stringify({ token: "fake." + Buffer.from(scope).toString("base64"), exp: Date.now() + 3600 * 1000, scope }) });
 const linkedLS = ({ file = "", sync = "", auto = false } = {}) => ({
   ...tokenLS(), "kininari:gd:linked": "1", "kininari:gd:auto": auto ? "1" : "0", "kininari:gd:file": file, "kininari:gd:sync": sync
 });
-
-// gis-stub.js は initTokenClient に渡した callback しか呼ばないが、気になり帳は本物のGISの
-// 書き方どおり、あとから client.callback / client.error_callback を差し替えて使う。そのままだと
-// 「Googleで接続する」が終わらないので、差し替えた方を呼ぶ形にしてから配る。
-const GIS_PATCHED = (() => {
-  const pairs = [
-    ["requestAccessToken: function (o) {", "requestAccessToken: function (o) { var self = this;"],
-    ["if (cfg.error_callback) cfg.error_callback(", "var ec = self.error_callback || cfg.error_callback; if (ec) ec("],
-    ["cfg.callback({", "(self.callback || cfg.callback)({"]
-  ];
-  if (!pairs.every(([a]) => GIS_STUB.includes(a))) return GIS_STUB;
-  return pairs.reduce((s, [a, b]) => s.replace(a, b), GIS_STUB);
-})();
 
 /** 端末1台。__blank.html（中身の無いページ）と __host.html（iframe でアプリを開くシェルの代わり）を用意する */
 async function device({ drive = null, contextOptions = {}, wrapDrive = null } = {}) {
   const d = wrapDrive ? { handle: wrapDrive } : drive;
   const ctx = await newDevice(browser, { drive: d, contextOptions });
-  await ctx.route(/accounts\.google\.com\/gsi\/client/, (r) => r.fulfill({ status: 200, contentType: "text/javascript", body: GIS_PATCHED }));
   await ctx.route(/\/__blank\.html$/, (r) => r.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>blank</title>" }));
   await ctx.route(/\/__host\.html$/, (r) => r.fulfill({ status: 200, contentType: "text/html", body:
     `<!doctype html><title>host</title><iframe id="f" src="kininari.html" style="width:1000px;height:700px"></iframe>
@@ -154,6 +143,8 @@ await section("1 sync: 初回の送信はマージする（シェルの now / �
 
   // 端末C: 単体で開き、自分のメモを1件書いてから「Googleで接続する」→「Driveへ保存」
   const ctxC = await device({ drive });
+  // 本物と同じく、ログイン画面はクリックの直後にしか開けない（await の後で頼むと止められる）
+  await ctxC.addInitScript(() => { window.__fakeGis = { mode: "popupBlocked" }; });
   const { page: c } = await openApp(ctxC);
   await c.fill(".capture-input", "Cのメモ");
   await c.press(".capture-input", "Enter");
@@ -510,12 +501,16 @@ await section("7 ai: 形の崩れたAIの返事と、エラー時の画面", asy
   ok(!errors.some((e) => /pageerror/.test(e)), "未処理の例外が無い", errors);
   await ctx.close();
 
-  // 描画中に例外（壊れたメモ）→ 真っ白ではなく、案内と再読み込みのボタンを出す
+  // 描画中に例外 → 真っ白ではなく、案内と再読み込みのボタンを出す
+  // （壊れた保存データは normalizeMemo が直すので、ここでは描画の部品をわざと壊して起こす）
   const ctx2 = await device();
-  await preset(ctx2, { [DATA_KEY]: { memos: [memo("b1", "壊れたメモ", { category: { broken: true } })], notebooks: [] } });
+  await preset(ctx2, { [DATA_KEY]: { memos: [memo("b1", "ふつうのメモ")], notebooks: [] } });
   const page2 = await ctx2.newPage();
   const errs2 = collectErrors(page2);
   await page2.goto(BASE + "kininari.html");
+  await page2.waitForSelector(".capture-input");
+  await page2.evaluate(() => { window.memoMarks = () => { throw new Error("描画の検証用の例外"); }; });
+  await page2.fill(".search input", "ふ");
   await page2.waitForSelector(".kn-crash", { timeout: 8000 }).catch(() => {});
   ok(!!(await page2.$(".kn-crash")) && !!(await page2.$('.kn-crash button:has-text("再読み込み")')), "描画中の例外では案内と再読み込みボタンを出す", await page2.evaluate(() => document.getElementById("root").innerHTML.slice(0, 200)));
   ok(errs2.some((e) => /気になり帳/.test(e)), "例外は console にも出す（握りつぶさない）", errs2);
@@ -746,6 +741,275 @@ await section("12 blob: 本文が変わったら前の blob: URL を返す", asy
   const u2 = await page.getAttribute(".kn-full .memo-rich img", "src");
   const revoked = await page.evaluate(() => window.__revoked);
   ok(u1 !== u2 && revoked.includes(u1) && !revoked.includes(u2), "本文が変わったら前の blob: URL を返し、新しいものは使い続ける", { u1, u2, revoked });
+  await ctx.close();
+});
+
+
+/* ══ pass 2: NKSync.drive・添付の別ファイル化・壊れた保存データ ══════════════ */
+const POSTS = (drive, from = 0) => drive.log.slice(from).filter((r) => r.method === "POST" && r.path === "/upload/drive/v3/files").length;
+const attFiles = (drive) => [...drive.files.values()].filter((f) => f.name.startsWith("kn-att-") && !f.trashed);
+const syncJson = (drive) => { const f = drive.byName(FILE_NAME)[0]; return f ? { f, text: drive.text(f.id), obj: drive.json(f.id) } : null; };
+const gisCalls = (page) => page.evaluate(() => (window.__fakeGisCalls || []).length);
+const idbHas = (page, id) => page.evaluate((k) => idbGet(k).then((r) => r && r.blob ? r.blob.size : 0), id);
+
+await section("P2 att: 添付は Drive の別ファイルで同期する（2台）", async () => {
+  const drive = createFakeDrive();
+  const ctxA = await device({ drive });
+  await preset(ctxA, { ...scopedTokenLS(), "kininari:gd:linked": "1" });
+  const { page: a, errors } = await openApp(ctxA);
+  await a.fill(".capture-input", "画像つきメモ");
+  await a.waitForSelector(".capture-body .rich-area");
+  await a.setInputFiles('.capture-body input[type=file][accept="image/*"]', IMG);
+  await a.waitForSelector(".capture-body .rich-area img[data-kid]");
+  await a.click(".detail-toggle");
+  await a.setInputFiles(".capture-detail .att-add input[type=file]", IMG);
+  await a.waitForSelector(".capture-detail .att-thumb img", { timeout: 5000 });
+  await a.click("button.add");
+  await a.waitForSelector('.card .title:text-is("画像つきメモ")');
+  const m0 = (await lsData(a)).memos.find((m) => m.title === "画像つきメモ");
+  const attId = m0.attachments[0].id;
+  const kid = (/data-kid="([^"]+)"/.exec(m0.body) || [])[1];
+  const sizeA = { att: await idbHas(a, attId), kid: await idbHas(a, kid) };
+
+  await openDataModal(a);
+  const msg1 = await clickAndWaitMsg(a, "Driveへ保存（アップロード）");
+  const af = attFiles(drive);
+  const fA = af.find((f) => f.name === "kn-att-" + attId), fK = af.find((f) => f.name === "kn-att-" + kid);
+  ok(/保存しました/.test(msg1) && fA && fK, "添付と本文の画像が、それぞれ別ファイル kn-att-<id> になる", { msg1, names: af.map((f) => f.name) });
+  ok(fA && fA.parents.includes("appDataFolder") && fA.appProperties && fA.appProperties.kid === attId && fA.content.length === sizeA.att, "別ファイルは appDataFolder に、中身そのまま・appProperties.kid つきで置く", fA && { parents: fA.parents, ap: fA.appProperties, len: fA.content.length, want: sizeA.att });
+  const sj = syncJson(drive);
+  ok(sj && Array.isArray(sj.obj.files) && sj.obj.files.length === 0 && sj.obj.attExternal === 1 && !/base64|data:image/.test(sj.text), "同期ファイル（JSON）には画像の中身を入れない", sj && { files: sj.obj.files.length, attExternal: sj.obj.attExternal, len: sj.text.length });
+
+  // 2回目の送信では、載せた添付を送り直さない
+  await a.click(".modal-close");
+  await a.fill(".capture-input", "2件目（文字だけ）");
+  await a.press(".capture-input", "Enter");
+  const n0 = drive.log.length;
+  await openDataModal(a);
+  const msg2 = await clickAndWaitMsg(a, "Driveへ保存（アップロード）");
+  ok(/保存しました/.test(msg2) && POSTS(drive, n0) === 0 && attFiles(drive).length === 2, "2回目の送信では添付を送り直さない（作成の POST が無い）", { msg2, posts: POSTS(drive, n0), files: attFiles(drive).length });
+  ok(titlesOf(syncJson(drive).obj.memos).includes("2件目（文字だけ）"), "2回目の送信の中身も Drive に載る");
+
+  // 書き出し（バックアップ）は今までどおり画像を中に含める
+  await a.click('.data-tab:has-text("書き出す")');
+  await a.waitForFunction(() => { const t = document.getElementById("exp-json"); return t && /^\{/.test(t.value); }, null, { timeout: 10000 });
+  const exp = JSON.parse(await a.inputValue("#exp-json"));
+  const ef = (exp.files || []).filter((x) => x.id === attId || x.id === kid);
+  ok(ef.length === 2 && ef.every((x) => /^data:image\//.test(x.dataUrl)), "書き出しのファイルには画像の中身が入ったまま", ef.map((x) => x.id + ":" + String(x.dataUrl).slice(0, 15)));
+  ok((await gisCalls(a)) === 0, "入口が置いた（権限つきの）トークンを使い、ログイン画面を出さない");
+  ok(errors.length === 0, "端末Aにエラーが無い", errors);
+
+  // 端末B: 開いたときの自動同期で、メモと添付を受け取る
+  const ctxB = await device({ drive });
+  await preset(ctxB, { ...scopedTokenLS(), "kininari:gd:linked": "1", "kininari:gd:auto": "1" });
+  const { page: b } = await openApp(ctxB);
+  await waitFor(async () => (await idbHas(b, attId)) && (await idbHas(b, kid)), { timeout: 15000, label: "添付の受け取り" }).catch(() => {});
+  ok((await idbHas(b, attId)) === sizeA.att && (await idbHas(b, kid)) === sizeA.kid, "端末Bは別ファイルから添付と本文の画像を受け取る", { att: await idbHas(b, attId), kid: await idbHas(b, kid), want: sizeA });
+  const cardB = b.locator(".card", { has: b.locator('.title:text-is("画像つきメモ")') });
+  await cardB.locator('.att-thumb img[src^="blob:"]').waitFor({ timeout: 5000 }).catch(() => {});
+  ok((await cardB.locator('.att-thumb img[src^="blob:"]').count()) === 1, "端末Bのカードに添付の画像が出る");
+  await cardB.locator(".title").click();
+  await b.waitForSelector('.kn-full .memo-rich img[src^="blob:"]', { timeout: 5000, state: "attached" }).catch(() => {});
+  ok(!!(await b.$('.kn-full .memo-rich img[src^="blob:"]')), "端末Bの全画面で本文の画像が出る");
+  ok((await gisCalls(b)) === 0, "端末Bもログイン画面を出さない");
+
+  // 権限の足りないトークン（記録された権限に drive.appdata が無い）は使わず、取り直す
+  // （「Driveへ保存」のクリックの中で頼むので、ログイン画面を1つしか開けない本物の制限でも通る）
+  const ctxC = await device({ drive });
+  await ctxC.addInitScript(() => { window.__fakeGis = { mode: "popupBlocked" }; });
+  await preset(ctxC, { ...scopedTokenLS("https://www.googleapis.com/auth/drive.file"), "kininari:gd:linked": "1" });
+  const { page: c } = await openApp(ctxC);
+  await openDataModal(c);
+  const msgC = await clickAndWaitMsg(c, "Driveへ保存（アップロード）");
+  const tokC = await c.evaluate(() => JSON.parse(localStorage.getItem("shared:gd:token") || "null"));
+  ok((await gisCalls(c)) >= 1 && tokC && /drive\.appdata/.test(tokC.scope || ""), "権限の足りないトークンは使わずに取り直す", { calls: await gisCalls(c), scope: tokC && tokC.scope });
+  ok(/保存しました/.test(msgC), "取り直しはクリックの中で頼むので、そのまま保存まで進む", msgC);
+  await Promise.all([ctxA, ctxB, ctxC].map((x) => x.close()));
+});
+
+await section("P2 legacy: まだ更新していない端末の埋め込み画像も受け取る", async () => {
+  const drive = createFakeDrive();
+  const png = fs.readFileSync(IMG);
+  const dataUrl = "data:image/png;base64," + png.toString("base64");
+  const f = drive.put(FILE_NAME, backup([memo("lg1", "旧版の画像メモ", { synced: 1, body: '<p>本文</p><img data-kid="leg2" alt="">',
+    attachments: [{ id: "leg1", name: "a.png", type: "image/png", size: png.length }] })], {
+    files: [{ id: "leg1", name: "a.png", type: "image/png", dataUrl }, { id: "leg2", name: "画像", type: "image/png", dataUrl }] }));
+  const ctx = await device({ drive });
+  await preset(ctx, { ...scopedTokenLS(), "kininari:gd:linked": "1" });
+  const { page } = await openApp(ctx);
+  // この端末には leg2 がすでにある（中身は別）。受け取るたびに書き直さないこと
+  await page.evaluate(() => idbPut({ id: "leg2", blob: new Blob(["LOCAL"], { type: "image/png" }), name: "画像", type: "image/png", size: 5, at: Date.now() }));
+  await openDataModal(page);
+  const msg = await clickAndWaitMsg(page, "Driveへ保存（アップロード）");
+  ok(/保存しました/.test(msg), "埋め込み画像つきの同期ファイルとマージして送れる", msg);
+  ok((await idbHas(page, "leg1")) === png.length, "端末に無い埋め込み画像（leg1）は取り込む");
+  ok((await idbHas(page, "leg2")) === 5, "端末にある画像（leg2）は書き直さない");
+  const names = attFiles(drive).map((x) => x.name).sort();
+  const sj = syncJson(drive);
+  ok(names.includes("kn-att-leg1") && names.includes("kn-att-leg2") && sj.obj.files.length === 0 && sj.obj.attExternal === 1, "送ったあとは別ファイルの形に移る", { names, files: sj.obj.files.length });
+  await ctx.close();
+});
+
+await section("P2 switch: 同期ファイルが替わってもメモを失わない", async () => {
+  const drive = createFakeDrive();
+  const Y = drive.put(FILE_NAME, backup([memo("y1", "古い方のファイルのメモ", { synced: 1 })]));   // 先に作った＝いちばん古い
+  const X = drive.put(FILE_NAME, backup([memo("x1", "この端末が同期していたメモ", { synced: 1 })]));
+  const xBefore = drive.text(X.id);
+  const ctx = await device({ drive });
+  await preset(ctx, { ...scopedTokenLS(), ...linkedLS({ file: X.id, sync: X.modifiedTime }), "kininari:gd:syncfile": X.id,
+    [DATA_KEY]: { memos: [memo("x1", "この端末が同期していたメモ", { synced: 1 }), memo("x2", "この端末で送ったメモ2", { synced: 1 })], notebooks: [] } });
+  const { page } = await openApp(ctx);
+  await openDataModal(page);
+  const msg = await clickAndWaitMsg(page, "Driveへ保存（アップロード）");
+  const ym = titlesOf(driveMemos(drive, Y.id));
+  ok(/保存しました/.test(msg) && ["古い方のファイルのメモ", "この端末が同期していたメモ", "この端末で送ったメモ2"].every((t) => ym.includes(t)), "いちばん古いファイルに乗り換えても、同期済みの印の付いたメモが消えない", { msg, ym });
+  const d = await lsData(page);
+  ok(titlesOf(d.memos).length === 3 && (await ls(page, "kininari:gd:syncfile")) === Y.id && (await ls(page, "kininari:gd:file")) === Y.id, "端末にも3件残り、同期先の記録が新しいファイルに替わる", titlesOf(d.memos));
+  ok(drive.text(X.id) === xBefore, "使わなくなったファイルは書き換えない");
+  await ctx.close();
+});
+
+await section("P2 lock: 同じ端末の2つのタブが同時に送っても重ならない", async () => {
+  const drive = createFakeDrive();
+  const f = drive.put(FILE_NAME, backup([memo("t0", "最初のメモ", { synced: 1 })]));
+  const pages = [];
+  const spans = [];
+  const wrap = async (route) => {
+    let idx = -1;
+    try { idx = pages.indexOf(route.request().frame().page()); } catch (e) {}
+    const t0 = Date.now();
+    if (route.request().method() === "PATCH") await sleep(700);   // 書き込みを遅くして、重なりやすくする
+    await drive.handle(route);
+    spans.push({ idx, t0, t1: Date.now(), m: route.request().method() });
+  };
+  const ctx = await device({ wrapDrive: wrap });
+  await preset(ctx, { ...scopedTokenLS(), ...linkedLS({ file: f.id, sync: f.modifiedTime }), "kininari:gd:syncfile": f.id,
+    [DATA_KEY]: { memos: [memo("t0", "最初のメモ", { synced: 1 })], notebooks: [] } });
+  const p1 = (await openApp(ctx)).page;
+  const p2 = (await openApp(ctx)).page;
+  pages.push(p1, p2);
+  await p1.fill(".capture-input", "タブ1のメモ");
+  await p1.press(".capture-input", "Enter");
+  await waitFor(async () => (await p2.locator('.card .title:text-is("タブ1のメモ")').count()) === 1, { label: "タブ2への反映" });
+  await p2.fill(".capture-input", "タブ2のメモ");
+  await p2.press(".capture-input", "Enter");
+  await openDataModal(p1);
+  await openDataModal(p2);
+  for (const pg of [p1, p2]) await pg.evaluate(() => document.querySelectorAll(".data-msg").forEach((e) => e.setAttribute("data-old", "1")));
+  spans.length = 0;
+  await Promise.all([p1, p2].map((pg) => pg.click('.data-actions button:has-text("Driveへ保存（アップロード）")')));
+  await Promise.all([p1, p2].map((pg) => pg.waitForSelector(".data-msg:not([data-old])", { timeout: 30000 })));
+  const m1 = await p1.textContent(".data-msg:not([data-old])"), m2 = await p2.textContent(".data-msg:not([data-old])");
+  const span = (i) => { const xs = spans.filter((x) => x.idx === i); return xs.length ? [Math.min(...xs.map((x) => x.t0)), Math.max(...xs.map((x) => x.t1))] : null; };
+  const s1 = span(0), s2 = span(1);
+  const apart = s1 && s2 && (s1[1] <= s2[0] || s2[1] <= s1[0]);
+  ok(/保存しました/.test(m1) && /保存しました/.test(m2), "どちらのタブも送れる", { m1, m2 });
+  ok(apart, "2つのタブの同期（読んでから書くまで）が重ならない", { s1, s2, spans: spans.map((x) => x.idx + x.m) });
+  const dm = titlesOf(driveMemos(drive, f.id));
+  ok(["最初のメモ", "タブ1のメモ", "タブ2のメモ"].every((t) => dm.includes(t)), "Drive に両方のタブのメモが載る", dm);
+  await ctx.close();
+});
+
+await section("P2 gc: Drive 上の使われていない添付の片付け（30日・1日1回）", async () => {
+  const drive = createFakeDrive();
+  const f = drive.put(FILE_NAME, backup([memo("c1", "画像を使うメモ", { synced: 1, attachments: [{ id: "ref1", name: "r.png", type: "image/png", size: 1 }] })]));
+  const mk = (kid, iso) => {
+    const x = drive.put("kn-att-" + kid, "x", { parents: ["appDataFolder"], mimeType: "image/png" });
+    x.appProperties = { kid };
+    if (iso) x.modifiedTime = iso;
+    return x;
+  };
+  const OLD = "2026-08-01T00:00:00.000Z";
+  const old1 = mk("old1", OLD), new1 = mk("new1"), ref1 = mk("ref1", OLD);   // new1 は偽Driveの時計で10日ほど前
+  const other = drive.put("diary-something.json", "{}", { parents: ["appDataFolder"] });   // ほかのアプリのファイル
+  other.modifiedTime = OLD;
+  const ctx = await device({ drive });
+  await preset(ctx, { ...scopedTokenLS(), ...linkedLS({ file: f.id, sync: f.modifiedTime }), "kininari:gd:syncfile": f.id,
+    [DATA_KEY]: { memos: [memo("c1", "画像を使うメモ", { synced: 1, attachments: [{ id: "ref1", name: "r.png", type: "image/png", size: 1 }] })], notebooks: [] } });
+  const { page } = await openApp(ctx);
+  await openDataModal(page);
+  const msg = await clickAndWaitMsg(page, "Driveへ保存（アップロード）");
+  await waitFor(async () => !drive.files.has(old1.id), { timeout: 5000, label: "片付け" }).catch(() => {});
+  ok(/保存しました/.test(msg) && !drive.files.has(old1.id), "使われていない30日より前の添付は消す");
+  ok(drive.files.has(new1.id) && drive.files.has(ref1.id), "新しいもの・使われているものは消さない");
+  ok(drive.files.has(other.id), "kn-att- 以外（ほかのアプリのファイル）には触れない");
+  const old2 = mk("old2", OLD);
+  await clickAndWaitMsg(page, "Driveへ保存（アップロード）");
+  await sleep(800);
+  ok(drive.files.has(old2.id), "片付けは1日1回まで");
+  // 同期ファイルが読めないときは片付けない（送信も止まる）
+  await page.evaluate(() => localStorage.setItem("kininari:gd:attgc", "0"));
+  drive.write(f.id, "{broken json");
+  const msg3 = await clickAndWaitMsg(page, "Driveへ保存（アップロード）");
+  await sleep(800);
+  ok(!/保存しました/.test(msg3) && drive.files.has(old2.id) && drive.text(f.id) === "{broken json", "同期ファイルが読めないときは書かず、添付も片付けない", { msg3 });
+  await ctx.close();
+});
+
+await section("P2 data: 壊れた保存データでも開ける", async () => {
+  const ctx = await device();
+  await preset(ctx, { [DATA_KEY]: {
+    memos: [
+      { id: "bad1", title: { x: 1 }, body: { y: 2 }, category: { broken: true }, tags: [{}, 3, "ok"], links: [{}, "https://ex.com/"],
+        date: {}, time: 5, notebookId: {}, attachments: [null, { id: 7, name: {} }], done: "yes", createdAt: "x", srs: "bad", gcalEventId: {} },
+      { id: "bad2", title: "日付が変", body: "本文", category: "メモ", date: "あした", time: "朝", remind: 30, createdAt: Date.now() },
+      null
+    ],
+    notebooks: [{ id: "nb1", name: { x: 1 }, parentId: {}, color: 5, createdAt: "y" }, null]
+  } });
+  const { page, errors } = await openApp(ctx);
+  await sleep(400);
+  ok(!(await page.$(".kn-crash")) && (await page.locator(".card").count()) >= 2, "壊れた値の入ったメモ・フォルダがあっても一覧が出る", errors);
+  const d = await lsData(page);
+  const b1 = d.memos.find((m) => m.id === "bad1") || {};
+  ok(b1.category === "メモ" && JSON.stringify(b1.tags) === JSON.stringify(["3", "ok"]) && JSON.stringify(b1.links) === JSON.stringify(["https://ex.com/"]) &&
+    b1.date === null && b1.time === null && b1.notebookId === null && b1.attachments.length === 1 && b1.attachments[0].id === "7" && b1.done === true && !("gcalEventId" in b1),
+  "値は使える形にそろえて保存し直す", b1);
+  await page.reload();
+  await page.waitForSelector(".capture-input");
+  await sleep(300);
+  ok(!(await page.$(".kn-crash")) && !errors.some((e) => /pageerror/.test(e)), "再読み込みしても落ちない", errors);
+  await ctx.close();
+});
+
+await section("P2 stale: sync.js が古い（NKSync.drive が無い）ときは同期しない", async () => {
+  const drive = createFakeDrive();
+  drive.put(FILE_NAME, backup([memo("s1", "Driveのメモ", { synced: 1 })]));
+  const ctx = await device({ drive });
+  await ctx.route(/\/sync\.js$/, (r) => r.fulfill({ status: 200, contentType: "text/javascript", body: "window.NKSync = { create: function () {} };" }));
+  await preset(ctx, { ...scopedTokenLS(), "kininari:gd:linked": "1", "kininari:gd:auto": "1" });
+  const n0 = drive.log.length;
+  const { page } = await openApp(ctx);
+  await sleep(800);
+  const toast = await page.textContent(".toast").catch(() => "");
+  ok(/再読み込み/.test(toast), "再読み込みを頼む知らせを出す", toast);
+  await openDataModal(page);
+  const msg = await clickAndWaitMsg(page, "Driveへ保存（アップロード）");
+  ok(/sync\.js/.test(msg) && drive.log.length === n0, "同期はしない（Drive に触れない）", { msg, calls: drive.log.length - n0 });
+  await ctx.close();
+});
+
+await section("P2 shell: 入口の「今すぐ全部同期」が取ったトークンで、ログイン画面を出さずに同期する", async () => {
+  const drive = createFakeDrive();
+  const ctx = await device({ drive });
+  await ctx.addInitScript(() => {
+    if (window.top === window) {
+      window.__fakeGis = { mode: "popupBlocked", delay: 50 };   // 1回のクリックで開けるログイン画面は1つだけ
+      try { localStorage.setItem("shared:gd:cid", "test-client"); localStorage.setItem("kininari:gd:linked", "1"); } catch (e) {}
+    }
+  });
+  const page = await ctx.newPage();
+  await page.goto(BASE + "index.html");
+  await page.waitForFunction(() => window.google && google.accounts && google.accounts.oauth2, null, { timeout: 10000 });
+  await page.click("#knBackupBtn");
+  await page.click("#knSyncAll");
+  await waitFor(async () => drive.byName(FILE_NAME).length > 0, { timeout: 30000, label: "気になり帳の同期ファイル" }).catch(() => {});
+  await waitFor(async () => !/同期中/.test(await page.textContent("#knStatus")), { timeout: 40000, label: "全タブの同期の終わり" }).catch(() => {});
+  const calls = await page.evaluate(() => (window.__fakeGisCalls || []).map((x) => x.frame));
+  const status = await page.textContent("#knStatus");
+  ok(drive.byName(FILE_NAME).length === 1, "気になり帳も同期ファイルを作る", status);
+  ok(calls.length >= 1 && calls.every((f) => f.endsWith("index.html")), "ログイン画面を頼むのは入口だけ（気になり帳は出さない）", calls);
+  ok(!/ポップアップ|キャンセル|つなげません|自動サインインできません/.test(status), "気になり帳がログインの失敗にならない", status);
   await ctx.close();
 });
 
