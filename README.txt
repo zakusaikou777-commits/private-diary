@@ -27,6 +27,13 @@
     node .tools/test-kn-sync.mjs         … 気になり帳のDrive同期（送信中の編集・画面に戻ったときの取り込み）
     node .tools/test-sync.mjs            … 共通の同期（sync.js：複数アプリの同時同期・重複ファイル）
     node .tools/test-tasks.mjs / test-bgm.mjs / test-diary.mjs … 各アプリの修正の確認
+    ── v41 で足したもの（リポジトリに入っています）──
+    node .tools/test-all.mjs             … 構文チェック＋下の test-fix-*.mjs をまとめて（要 playwright）
+    node .tools/check-all.mjs            … 全HTML/JSの構文チェック
+    node .tools/test-fix-<名前>.mjs      … v41 の修正の確認。名前は sync / signin / shell / tasks /
+                                           bgm / autogenic / clipper / kininari / diary
+    python3 .tools/build-clipper.py      … 拡張のZIPを作り直して clipper.html に埋め込む（--check で確認だけ）
+    .tools/lib/ ………………………… 検証の共通部品（偽のGoogleドライブ・偽のGoogleログイン）
 
 ━━━━━━━━━━━━━━━━━━
 【1. サイトに置く（ホスティング）】
@@ -187,6 +194,8 @@ ZIPの中身を「まるごと同じフォルダ」に置き、https で公開�
 同期ボタンは、シェル経由で開いたときは表示されません。
 
 - クライアントIDは4アプリ共通（shared:gd:cid）。設定は一度だけです。
+- Googleへのログインは、☁ の「今すぐ全部同期」を押したときに入口でまとめて1回だけ
+  行います（v41）。各アプリはそのログインを使うので、ログイン画面は1つしか出ません。
 - ☁ を開くと、日記帳・気になり帳・暗室・音の同期状態が一覧で見られます。
   「今すぐ全部同期」で4つまとめて実行します。
 - Googleを使わない「まとめて書き出す／取り込む」も同じ画面にあります。
