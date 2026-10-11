@@ -664,23 +664,26 @@ function voiceName(v){ return String((v&&(v.name||v.voiceURI))||""); }
    （画面には「額」、声は「ひたい」）。 */
 var KJ="㐀-鿿豈-﫿々〆ヶ";
 var RUBY_BAR=/｜([^｜《》]+)《([^《》]*)》/g;
-var RUBY_KJ=new RegExp("(["+KJ+"]+)《([^《》]*)》","g");
+/* 読みの指定がかかるのは直前の漢字だけ。ただし前の「お」「ご」は、読みがその字で始まるとき
+   （「お腹《おなか》」）だけ一緒に置き換える。でないと「おおなか」と読んでしまう */
+var RUBY_KJ=new RegExp("([おご]?)(["+KJ+"]+)《([^《》]*)》","g");
 var YOMI=[
   [/右腕/g,"みぎうで"],[/左腕/g,"ひだりうで"],[/両腕/g,"りょううで"],
   [/右脚/g,"みぎあし"],[/左脚/g,"ひだりあし"],[/両脚/g,"りょうあし"],
-  [/お腹/g,"おなか"],[/体中/g,"からだじゅう"],[/下腹/g,"したはら"],
+  // 「下腹部」は端末がそのまま正しく読む（かなにすると「したはら部」になる）
+  [/お腹/g,"おなか"],[/体中/g,"からだじゅう"],[/下腹(?!部)/g,"したはら"],
   // 「金額」「差額」などはそのまま。前が漢字でない「額」だけを「ひたい」と読ませる
   [new RegExp("(^|[^"+KJ+"])額","g"),"$1ひたい"]
 ];
 /* 画面に出す字（読みの指定を取り除く） */
 function dispText(t){
-  return String(t==null?"":t).replace(RUBY_BAR,"$1").replace(RUBY_KJ,"$1").replace(/｜/g,"");
+  return String(t==null?"":t).replace(RUBY_BAR,"$1").replace(RUBY_KJ,"$1$2").replace(/｜/g,"");
 }
 /* 読み上げに渡す字（読みの指定と、読み違えやすい言葉を、かなにする） */
 function yomiText(t){
   var s=String(t==null?"":t)
     .replace(RUBY_BAR,function(m,b,y){return y||b;})
-    .replace(RUBY_KJ,function(m,b,y){return y||b;})
+    .replace(RUBY_KJ,function(m,p,b,y){ return y?((p&&y.charAt(0)!==p)?p+y:y):p+b; })
     .replace(/｜/g,"");
   for(var i=0;i<YOMI.length;i++)s=s.replace(YOMI[i][0],YOMI[i][1]);
   return s;
@@ -711,14 +714,25 @@ function speak(text,rateAdj,onDone,retry){
   if(!ttsOK)return false;
   var parts=splitJa(yomiText(String(text==null?"":text))).filter(Boolean);
   if(!parts.length)return false;
-  var fired=false;
+  var fired=false, alive=false;
   var fire=function(){
     if(fired)return; fired=true;
     if(gen!==speakGen)return;              // すでに次へ進んでいる／やめた
     if(onDone)onDone();
   };
+  /* ネットワークの声が失敗したら、端末の中の声で同じ文を頭から読み直す（1回だけ）。
+     読み直したら true。端末の中の声が無いときは false */
+  var toLocal=function(){
+    if(retry||gen!==speakGen)return false;
+    netVoiceFailed=true; pickVoice();
+    if(!voice||isNetVoice(voice))return false;
+    try{ renderVoices(); }catch(e2){}
+    speak(text,rateAdj,onDone,true);      // 世代が進むので、黙った方の合図はもう効かない（二重に進まない）
+    return true;
+  };
   var go=function(){
     if(gen!==speakGen)return;              // cancel 待ちの間に やめる が押された
+    var gv=voice;
     try{
       var ss=window.speechSynthesis;
       parts.forEach(function(t,i){
@@ -728,21 +742,13 @@ function speak(text,rateAdj,onDone,retry){
           if(voice){u.voice=voice;u.lang=voice.lang;}else u.lang="ja-JP";
           u.rate=vRateNow(rateAdj);
           u.pitch=vPitchNow(); u.volume=1;
-          var tick=function(){ speakTick++; };
+          var tick=function(){ speakTick++; alive=true; };
           var uv=voice;
-          /* ネットワークの声が失敗したら、端末の中の声で同じ文を頭から読み直す（1回だけ） */
           var onErr=function(ev){
             tick();
             var code=String((ev&&ev.error)||"");
             // 止めた・操作が要る・文が長すぎる、などは声のせいではないので切り替えない
-            if(!retry&&gen===speakGen&&isNetVoice(uv)&&/^(network|synthesis-failed|synthesis-unavailable|voice-unavailable|language-unavailable|)$/.test(code)){
-              netVoiceFailed=true; pickVoice();
-              if(voice&&!isNetVoice(voice)){
-                try{ renderVoices(); }catch(e2){}
-                speak(text,rateAdj,onDone,true);
-                return;
-              }
-            }
+            if(isNetVoice(uv)&&/^(network|synthesis-failed|synthesis-unavailable|voice-unavailable|language-unavailable|)$/.test(code)&&toLocal())return;
             if(last)fire();
           };
           u.onstart=tick;
@@ -754,6 +760,11 @@ function speak(text,rateAdj,onDone,retry){
           ss.speak(u);
         }catch(e){ if(last)fire(); }
       });
+      /* ネットワークの声は、通信が細いと、エラーも出さずに黙ったままになることがある。
+         4秒たっても読み始めなければ失敗とみなし、上と同じく端末の中の声で読み直す */
+      if(!retry&&isNetVoice(gv)){
+        setTimeout(function(){ if(!alive&&gen===speakGen)toLocal(); },4000);
+      }
     }catch(e){ fire(); }
   };
   try{
@@ -856,6 +867,10 @@ function paintWake(){
   else if(wakeWant&&wakeFailed){ e.textContent="⚠ この端末では画面が自動で消えません。消えると読み上げが止まります"; e.style.color="var(--warn)"; e.style.display="block"; }
   else { e.style.display="none"; }
 }
+/* いま画面が見えていないか（裏に回った・画面が消えた） */
+function pageHidden(){
+  try{ return document.visibilityState?document.visibilityState!=="visible":!!document.hidden; }catch(e){ return false; }
+}
 function wakeFail(){
   wakeFailed=true; paintWake();
   if(wakeWarned)return; wakeWarned=true;
@@ -873,11 +888,20 @@ function wakeAcquire(){
     // これを忘れると誰も release せず、画面が消えないままになる。
     if(!wakeWant){ try{l.release();}catch(e){} paintWake(); return; }
     wakeLock=l; wakeFailed=false;
-    try{ l.addEventListener("release",function(){ if(wakeLock===l)wakeLock=null; paintWake(); }); }catch(e){}
+    try{ l.addEventListener("release",function(){
+      if(wakeLock!==l){ paintWake(); return; }   // 自分で外したもの（終わった・離れた）
+      wakeLock=null; paintWake();
+      // 見えているのに端末の都合（省電力など）で外されたときは、取り直す。
+      // 少し間をおくのは、外されてはすぐ取り直す、を休みなく繰り返さないため。
+      // 見えていないときは、見えたとき（visibilitychange）に任せる
+      if(wakeWant&&!pageHidden())setTimeout(function(){ if(wakeWant&&!wakeLock&&!pageHidden())wakeAcquire(); },1000);
+    }); }catch(e){}
     paintWake();
   }).catch(function(){
     wakeBusy=false;
-    if(wakeWant)wakeFail(); else paintWake();
+    // 見えていないあいだの要求は、端末が対応していても断られる。「できない端末」とは知らせず、
+    // 見えたとき（visibilitychange）に取り直す
+    if(wakeWant&&!pageHidden())wakeFail(); else paintWake();
   });
 }
 function wakeOn(){
@@ -897,14 +921,17 @@ function wakeOff(){
    見えていないあいだに頼むと断られ、「できない端末」と誤って知らせてしまうので、
    そのときは見えたとき（visibilitychange）に任せる。 */
 function wakeEnsure(){
-  var hidden=false;
-  try{ hidden=!!document.visibilityState&&document.visibilityState!=="visible"; }catch(e){}
+  var hidden=pageHidden();
   if(!wakeWant){ if(hidden){ wakeWant=!!C.wake; return; } wakeOn(); return; }
   if(!wakeLock&&!hidden)wakeAcquire();
 }
 
 /* ══════ 進行 ══════ */
 var R=null;   // {seq, i, t, startedAt, phase}
+/* 合図の番号（R.tok）の出どころ。練習をまたいで増やしつづける。
+   練習ごとに 0 から数え直すと、前の練習の古い合図（読み終わり・予備のタイマー）と番号が重なり、
+   消去動作の行を勝手に進めてしまうことがある。 */
+var tokSeq=0;
 function activeSteps(){
   return STEPS.filter(function(s){ return s.always || C.steps[s.id]; });
 }
@@ -945,7 +972,8 @@ function buildSeq(){
   });
   seq.push({mark:"消去動作",cancel:true});
   // 消去動作は必ず入れる。編集途中や壊れた台本でも既定に落として空にはしない。
-  safeCancel(CANCEL).forEach(function(l){ seq.push({say:l.say,hold:l.hold,g:l.g,step:"消去動作",cancel:true}); });
+  // %A%・%B% は消去動作の行でも置き換える（編集画面で「どこでも使える」と案内している）
+  safeCancel(CANCEL).forEach(function(l){ seq.push({say:expand(l),hold:l.hold,g:l.g,step:"消去動作",cancel:true}); });
   return seq;
 }
 /* 待ち時間は必ず有限の数にする。hold が数値でないと NaN になり、
@@ -1086,7 +1114,7 @@ function paintRunCtl(){
 }
 function pauseRun(){
   if(!ctlOn()||R.paused)return;
-  R.paused=true; R.pausedAt=Date.now(); R.tok++;      // 進行中の合図を無効にする
+  R.paused=true; R.pausedAt=Date.now(); R.tok=++tokSeq;      // 進行中の合図を無効にする
   try{clearTimeout(R.t);}catch(e){}
   stopSpeech();
   try{ if(!R.preview)bgStop(); }catch(e){}
@@ -1124,7 +1152,7 @@ function restartRun(){
   clearPause();
   try{clearTimeout(R.t);}catch(e){}
   stopSpeech();
-  R.tok++;
+  R.tok=++tokSeq;
   R.seq=R.preview?previewSeq():buildSeq();
   R.i=-1; R.elapsed=0; R.total=totalSec(R.seq);
   R.startedAt=Date.now(); R.pausedMs=0; R.fails=0; R.phase="run";
@@ -1144,7 +1172,7 @@ function begin(preview){
   ensureAudio(); loadVoice(); pickVoice();
   var seq = preview ? previewSeq() : buildSeq();
   var names=activeSteps().map(function(s){return s.name;});
-  R={seq:seq,i:-1,total:totalSec(seq),elapsed:0,preview:!!preview,startedAt:Date.now(),steps:names,tok:0,phase:"run"};
+  R={seq:seq,i:-1,total:totalSec(seq),elapsed:0,preview:!!preview,startedAt:Date.now(),steps:names,tok:++tokSeq,phase:"run"};
   $("resume").style.display="none"; resumeP=null;
   $("home").style.display="none"; $("run").style.display="block";
   $("glyph").textContent=""; $("barIn").style.width="0";
@@ -1162,6 +1190,8 @@ function previewSeq(){
   var a=(C.hand==="L")?"左":"右";
   s.push({say:a+"腕が、重たい。",hold:5,rate:0,step:"試聴"});
   s.push({say:a+"腕が、重たい。",hold:3,rate:-0.02,step:"試聴"});
+  // 短くても重さの暗示を聞いたあとなので、消去動作の1行で締める（ゆるんだまま終わらないように）
+  s.push({say:"両手を、ぎゅっと握って、ひらきます。",hold:3,g:"✊🖐",rate:0,step:"消去動作"});
   return s;
 }
 /* 進行が例外で止まると、消去動作の途中で無音のまま固まってしまう。
@@ -1195,20 +1225,29 @@ function bareCancel(){
   try{stopSpeech();}catch(e){}
   var list=[]; try{ list=shortCancel(); }catch(e){ list=cloneLines(BASE_CANCEL); }
   R={seq:[],i:0,total:0,elapsed:0,preview:false,startedAt:Date.now()-(isFinite(dur)?dur:0)*1000,
-     steps:steps,tok:0,phase:"cancel",bare:true,pend:pend};
+     steps:steps,tok:++tokSeq,phase:"cancel",bare:true,pend:pend};
   skipArm=0;
   try{ wakeEnsure(); }catch(e){}   // 消去動作の途中で画面が消えると、読み上げが止まる
   var i=0;
   var go=function(){
     if(!R||!R.bare)return;
+    // 見えていないあいだは次の行へ進めない・終えない（続きは見えたときに R.reread で）
+    if(pageHidden()){ R.held=true; return; }
     if(i>=list.length){ try{finish();}catch(e){ R=null; } return; }
-    var it=list[i++]||{}, say=String(it.say==null?"":it.say);
+    var it=list[i++]||{}, say=expand(it);
     var wait=holdMs(it)+speechMs(say);
     if(!isFinite(wait)||wait<1500)wait=4000;
     try{ speak(say,0,null); }catch(e){}
     try{ R.t=setTimeout(go,Math.min(60000,wait)); }catch(e){ try{finish();}catch(e2){ R=null; } }
   };
   R.skipEnd=function(){ i=Math.max(i,list.length-1); go(); };
+  // 長く見えていなかったときは、読んでいた行をもう一度（back）。待っていただけなら続きから
+  R.reread=function(back){
+    try{clearTimeout(R.t);}catch(e){}
+    try{stopSpeech();}catch(e){}
+    if(back)i=Math.max(0,i-1);
+    go();
+  };
   paintStop(); paintRunCtl();
   try{ toast("画面がうまく描けていません。消去動作は読み上げでお伝えします。",9000); }catch(e){}
   go();
@@ -1230,7 +1269,7 @@ function nextStage(){
   var sq=R.seq||[], i=R.i+1;
   while(i<sq.length&&!(sq[i]&&sq[i].mark))i++;
   try{clearTimeout(R.t);}catch(e){}
-  R.tok++; stopSpeech();
+  R.tok=++tokSeq; stopSpeech();
   if(i>=sq.length){ toCancel(null); return true; }   // 先が無いときも、必ず消去動作へ
   R.i=i-1;
   R.elapsed=totalSec(sq.slice(0,i));
@@ -1241,6 +1280,11 @@ function nextStage(){
 }
 function runStep(){
   if(!R)return;
+  // 消去動作は、画面が見えていないあいだは次の行へ進めない（終えもしない）。
+  // 声は止まっているのに進行のタイマーだけ動く端末があり、そのままだと手足を動かす行が
+  // 聞こえないまま流れて、黙って「終わった」ことになる。続きは見えたときに（backFromHidden）
+  if(R.phase==="cancel"&&!R.preview&&pageHidden()){ R.held=true; return; }
+  R.held=false;
   R.i++;
   if(R.i>=R.seq.length){ finish(); return; }
   var it=R.seq[R.i]||{};
@@ -1265,7 +1309,7 @@ function runStep(){
     // 合図の番号を進める。予備のタイマーが先に進めたあとで前の行の読み終わり（onend）や
     // 失敗（onerror）が遅れて届くと、待ちを打ち切って次の段階へ進めたり、前の行を読み直したりする。
     // 読み上げそのものは止めない（言いかけの文は最後まで言わせる）。
-    R.tok++; speakGen++;
+    R.tok=++tokSeq; speakGen++;
     clearTimeout(R.t);
     R.t=setTimeout(step,wms);
     return;
@@ -1278,7 +1322,7 @@ function runStep(){
   R.elapsed+=wait/1000;
   paintProgress();
   R.stepAt=Date.now(); R.stepWait=wait;
-  var tok=++R.tok, moved=false;
+  var tok=R.tok=++tokSeq, moved=false;
   var next=function(ms){
     if(!R||tok!==R.tok)return;
     moved=true;
@@ -1298,21 +1342,36 @@ function runStep(){
     // ただし読み進んでいる間（speakTick が増える間）は、遅いだけなので待ち直す。
     // 消去動作だけは長引いても読み切る方を選ぶ（4行しかないので、伸びても知れている）。
     var isC=(R.phase==="cancel"), mul=isC?4:1.6, add=isC?10000:4000, ext=isC?9000:3000;
-    var cap=Date.now()+hold+sp*mul+add, seen=speakTick;
+    var cap=Date.now()+hold+sp*mul+add, seen=speakTick, due=0;
     var fb=function(){
       if(!R||tok!==R.tok)return;
+      // 予定より大きく遅れて動いた＝端末ごと止まっていた（画面が消えていた・スリープ）。
+      // 読み上げも止まっていたかもしれないので、この行は聞けていないものとして次へは進めない。
+      // 見えていなければ見えたときに、見えていればいま、はじめから読み直す
+      var late=Date.now()-due;
+      if(late>HIDE_MS){
+        if(pageHidden()){ R.held=true; return; }
+        // 練習の段階で長く止まっていたときは、見えたときの見張りと同じく消去動作へ
+        if(!isC&&!R.preview&&late>STALL_MS){ toCancel(STALL_MSG); return; }
+        rereadLine(); return;
+      }
       if(spoken&&speechBusy()){
         if(speakTick!==seen){ seen=speakTick; cap=Date.now()+sp*mul*0.75+ext; }
-        if(Date.now()<cap){ R.t=setTimeout(fb,1200); return; }
+        if(Date.now()<cap){ due=Date.now()+1200; R.t=setTimeout(fb,1200); return; }
       }
       step();
     };
+    var fbMs=spoken?Math.min(300000,hold+sp*1.3+1200):wait;
     clearTimeout(R.t);
-    R.t=setTimeout(fb, spoken?Math.min(300000,hold+sp*1.3+1200):wait);
+    due=Date.now()+fbMs;
+    R.t=setTimeout(fb,fbMs);
   }
   R.fails=0;   // 1行進めたら失敗の数を戻す（4回「連続」で消去動作へ、という意味にする）
 }
 function finish(){
+  // 画面が見えていないあいだは終えない（記録の問いかけも、練習中の目印の片付けも、見えてから）。
+  // 続きは見えたときに backFromHidden が運ぶ（長く見えていなければ、最後の行を読み直してから）
+  if(R&&!R.preview&&pageHidden()){ R.held=true; try{clearTimeout(R.t);}catch(e){} return; }
   var wasPreview=R&&R.preview, dur=runSec(), steps=(R&&R.steps)||[], pid=R&&R.pend&&R.pend.id;
   clearTimeout(pauseWarnT); pauseWarnT=0;
   try{clearTimeout(R&&R.t);}catch(e){}
@@ -1335,9 +1394,9 @@ function finish(){
    目印はここでも張り直す。消去動作の最中にもう一度落ちても拾い直せるように。 */
 function runCancelOnly(steps,dur,pend){
   var seq=[{mark:"消去動作",cancel:true}];
-  shortCancel().forEach(function(l){ seq.push({say:l.say,hold:l.hold,g:l.g,step:"消去動作",cancel:true}); });
+  shortCancel().forEach(function(l){ seq.push({say:expand(l),hold:l.hold,g:l.g,step:"消去動作",cancel:true}); });
   R={seq:seq,i:-1,total:totalSec(seq),elapsed:0,preview:false,
-     startedAt:Date.now()-(isFinite(dur)?dur:0)*1000,steps:steps||[],tok:0,phase:"cancel",
+     startedAt:Date.now()-(isFinite(dur)?dur:0)*1000,steps:steps||[],tok:++tokSeq,phase:"cancel",
      pend:pend||{at:Date.now(),tries:0,id:newPendId()}};
   if(!R.pend.id)R.pend.id=newPendId();
   skipArm=0;
@@ -1372,7 +1431,7 @@ function skipCancelEnd(){
   var last=-1, sq=R.seq||[];
   for(var i=sq.length-1;i>=0;i--){ if(sq[i]&&sq[i].say){ last=i; break; } }
   if(last<0||R.i>=last){ try{finish();}catch(e){} return; }
-  R.i=last-1; R.tok++;
+  R.i=last-1; R.tok=++tokSeq;
   step();
 }
 /* 中断でも、必ず消去動作を通す */
@@ -1412,11 +1471,28 @@ function tapOnControl(e){
   try{ return !!(t&&t.closest&&t.closest("button,a,input,select,textarea,label,#editor,#gate,#home,#resume")); }
   catch(x){ return true; }
 }
-document.addEventListener("click",function(e){
-  if(!tapMode()||!R)return;
-  if(tapOnControl(e))return;
-  nextStage();
+function tapAdvance(e){
+  if(!tapMode()||!R)return false;
+  if(tapOnControl(e))return false;
+  return nextStage();
+}
+/* iPhone の Safari は、ボタンでもリンクでもない所を触っても click を document まで届けないことがある。
+   そのため pointerup でも受ける。pointerup で進めたときは、同じタッチから続いて来る click を
+   先回りして捨てる（1回触って2段進まないように。また、進んで並びが変わったあとの click が、
+   その位置に来たボタン（「やめる」など）を押してしまわないように） */
+var tapUpAt=0;
+document.addEventListener("pointerup",function(e){
+  if(e&&e.button>0)return;           // 右・中ボタンは合図にしない（click も来ない）
+  if(tapAdvance(e))tapUpAt=Date.now();
 });
+document.addEventListener("click",function(e){
+  if(tapUpAt&&(Date.now()-tapUpAt)<700){
+    tapUpAt=0;
+    try{ e.stopPropagation(); e.preventDefault(); }catch(x){}
+    return;
+  }
+  tapAdvance(e);
+},true);
 document.addEventListener("keydown",function(e){
   if(!R)return;
   if(e.code!=="Space"&&e.code!=="Enter"&&e.key!==" "&&e.key!=="Enter")return;
@@ -1450,17 +1526,48 @@ $("restartBtn").addEventListener("click",function(e){
   restartArm=0; restartGuard=0; restartRun();
 });
 
+/* ══════ 画面が見えていなかったあと ══════
+   iPhone は画面が消えると、読み上げもタイマーも止まる。そのとき読んでいた行は聞けていない。
+   HIDE_MS より長く見えていなかったら、いまの行を聞けていないものとして、はじめから読み直す。 */
+var HIDE_MS=10000, hiddenAt=0;
+// ただしPCのChromeは、裏に回っただけでタイマーを1分近く間引くことがある。
+// 短く見ると健康な練習まで打ち切ってしまうので、余裕をもって90秒にする。
+var STALL_MS=90000, STALL_MSG="画面が消えていたあいだ、練習が止まっていました。このまま消去動作をして終わります。";
+/* いまの行（R.i）を、はじめから読み直す。進み具合も、その行の手前まで数え直す */
+function rereadLine(){
+  if(!R)return;
+  try{clearTimeout(R.t);}catch(e){}
+  R.tok=++tokSeq; R.held=false;
+  stopSpeech();
+  R.i=Math.max(-1,R.i-1);
+  R.elapsed=totalSec(R.seq.slice(0,R.i+1));
+  R.fails=0;
+  step();
+}
+/* 見えるようになったときの続き。long=長く見えていなかった。
+   見えるのを待っていたぶん（R.held：消去動作の次の行・終わり、遅れて動いた予備のタイマー）も、
+   ここで先へ進める。中断中は何もしない（「再開する」で、その行から読み直すので） */
+function backFromHidden(long){
+  if(!R||R.paused)return;
+  var held=!!R.held; R.held=false;
+  if(R.bare){ if((long||held)&&R.reread)R.reread(long); return; }
+  var sq=R.seq||[], i=Math.min(R.i,sq.length-1), it=sq[i];
+  // 読んでいた行（終える手前で待っていたなら、最後の行）を読み直す。タッチ待ちは読み直さない
+  if(long&&it&&it.say){ R.i=i; rereadLine(); return; }
+  if(held)step();
+}
 document.addEventListener("visibilitychange",function(){
-  if(document.visibilityState!=="visible")return;
+  if(document.visibilityState!=="visible"){ if(!hiddenAt)hiddenAt=Date.now(); return; }
+  var gap=hiddenAt?Date.now()-hiddenAt:0;
+  hiddenAt=0;
   // 画面が消えている間は読み上げもタイマーも止まる。予定より大きく遅れていたら、
   // 何事もなかったように続けず、消去動作に移って必ず終わらせる。
-  // ただしPCのChromeは、裏に回っただけでタイマーを1分近く間引くことがある。
-  // 短く見ると健康な練習まで打ち切ってしまうので、余裕をもって90秒にする。
   if(R&&!R.preview&&!R.paused&&R.phase!=="cancel"&&R.stepAt&&
-     (Date.now()-R.stepAt-(R.stepWait||0))>90000){
-    toCancel("画面が消えていたあいだ、練習が止まっていました。このまま消去動作をして終わります。");
+     (Date.now()-R.stepAt-(R.stepWait||0))>STALL_MS){
+    toCancel(STALL_MSG);
     return;
   }
+  try{ backFromHidden(gap>HIDE_MS); }catch(e){ step(); }
   if(wakeWant&&!wakeLock)wakeAcquire();
 });
 /* 離れるときは読み上げと音だけ確実に止める。
@@ -1868,10 +1975,12 @@ $("edReset").addEventListener("click",function(){
 $("edExport").addEventListener("click",function(){
   edCommit();
   try{
-    var blob=new Blob([JSON.stringify({app:"autogenic-script",v:1,steps:SCRIPT.steps,cancel:SCRIPT.cancel},null,2)],{type:"application/json"});
+    // 既定のままの段階は SCRIPT では null なので、実際に使っている中身を書き出す
+    // （null のまま書くと、読み込みで「形式が違います」になり、ファイルを見ても中身が分からない）
+    var blob=new Blob([JSON.stringify({app:"autogenic-script",v:1,steps:SCRIPT.steps||baseStepsCopy(),cancel:SCRIPT.cancel||cloneLines(BASE_CANCEL)},null,2)],{type:"application/json"});
     var a=document.createElement("a");
     a.href=URL.createObjectURL(blob);
-    a.download="autogenic-script-"+new Date().toISOString().slice(0,10)+".json";
+    a.download="autogenic-script-"+localDate(Date.now())+".json";   // 端末の暦の日付（朝9時前でも前の日にしない）
     a.click();
     setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
     toast("書き出しました。",3000);
@@ -1882,15 +1991,17 @@ $("edFile").addEventListener("change",function(e){
   var f=e.target.files&&e.target.files[0]; if(!f)return;
   f.text().then(function(t){
     var o=JSON.parse(t);
-    if(!o||o.app!=="autogenic-script"||!Array.isArray(o.steps)) throw new Error("形式が違います");
+    // 以前の版は、既定のままの段階・消去動作を null で書き出していた。null は「既定」として読む
+    if(!o||o.app!=="autogenic-script"||(o.steps!==null&&!Array.isArray(o.steps))) throw new Error("形式が違います");
+    var src=(o.steps===null)?baseStepsCopy():o.steps;
     // 保存する前に中身まで確かめる。壊れた行を保存してしまうと、
     // 描き直しで例外になった時にはもう書き込み済みで、次の起動から開けなくなる。
-    var steps=normSteps(o.steps);
+    var steps=normSteps(src);
     if(!steps.some(function(st){ return st.lines.length; })) throw new Error("読み上げる行がありません");
     var inN=0,outN=0;
-    o.steps.forEach(function(s){ if(s&&Array.isArray(s.lines))inN+=s.lines.length; });
+    src.forEach(function(s){ if(s&&Array.isArray(s.lines))inN+=s.lines.length; });
     steps.forEach(function(s){ outN+=s.lines.length; });
-    var dropped=(outN<inN)||(steps.length<o.steps.length);
+    var dropped=(outN<inN)||(steps.length<src.length);
     var next={steps:steps,cancel:safeCancel(o.cancel)};
     if(!sameScript(next,SCRIPT)){
       SCRIPT.steps=packSteps(next.steps);
@@ -2020,6 +2131,8 @@ if(!wakeSupported){
    起動直後は操作の外なので、iOS では読み上げも AudioContext も動かない。
    黙って無音で終わるより、1回タップしてもらう方がずっとよい。 */
 var resumeP=null, pendRecheckT=0;
+// 消去動作を通れないときに、自分で行ってもらう最低限の動き
+var LIMB_MSG="手足をぎゅっと握ってひらく、腕を曲げて伸ばす、大きく伸びをする。これだけでも行ってください。";
 function showResume(p){
   resumeP=p;
   $("home").style.display="none";
@@ -2039,7 +2152,12 @@ function checkPending(){
     pendRecheckT=setTimeout(checkPending,Math.max(2000,DEAD_MS-(Date.now()-pendSeen(p))+1000));
     return;
   }
-  if(((+p.tries)||0)>=PEND_TRIES){ clearPending(p.id); return; }   // 繰り返しにならないよう上限を置く
+  if(((+p.tries)||0)>=PEND_TRIES){                 // 繰り返しにならないよう上限を置く
+    clearPending(p.id);
+    // 黙って捨てると、消去動作が済んでいないことに気づけない。自分で手足を動かすよう伝える
+    toast("前回の練習の消去動作が、最後まで終わっていませんでした。"+LIMB_MSG,12000);
+    return;
+  }
   showResume(p);
 }
 /* 落ちる前に練習していた長さ（中断していた時間は除く）。「今 − 始めた時刻」にすると、
@@ -2063,7 +2181,7 @@ $("resumeSkip").addEventListener("click",function(){
   var p=resumeP; resumeP=null;
   clearPending(p&&p.id);
   $("resume").style.display="none"; $("home").style.display="block";
-  toast("手足をぎゅっと握ってひらく、腕を曲げて伸ばす、大きく伸びをする。これだけでも行ってください。",9000);
+  toast(LIMB_MSG,9000);
 });
 try{ checkPending(); }catch(e){}
 })();
