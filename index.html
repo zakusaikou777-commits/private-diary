@@ -384,7 +384,9 @@ body.nk-dark .knnew{opacity:.12}
      向こうから状態が届いた時点（＝リスナー登録済み）でまとめて流す。 */
   var knTaskQueue = [];
   function knFlushTasks(){
-    if(!knTaskQueue.length) return;
+    // タスクタブ自身が名乗り出るまでは流さない。ほかのタブの状態報告を合図にすると、
+    // まだ読み込み中のタスクタブへ送って捨てられ、待ち行列からも消えていた。
+    if(!knTaskQueue.length || !knReady['tasks']) return;
     var fr = document.getElementById('frame-tasks');
     if(!fr || !fr.contentWindow) return;
     var rest = [];
@@ -393,6 +395,22 @@ body.nk-dark .knnew{opacity:.12}
       catch(err){ rest.push(p); }
     });
     knTaskQueue = rest;
+  }
+  /* 日記帳への命令（Markdownで書き出す・バックアップを共有・暗号化の設定）の待ち行列。
+     以前は load('diary') の 0.4秒後に送っていたが、日記帳の読み込みが間に合わないと
+     命令は空のページに飛んで消え、押しても何も起きなかった（「今すぐ全部同期」と同じ問題）。
+     日記帳が状態を送ってきた時点（knOnStatus）で流す。 */
+  var knDiaryQueue = [];
+  function knToDiary(cmd){
+    if(knDiaryQueue.indexOf(cmd) < 0) knDiaryQueue.push(cmd);   // 待つあいだに何度押されても1回だけ
+    load('diary');
+    knFlushDiary();
+  }
+  function knFlushDiary(){
+    if(!knDiaryQueue.length || !knReady['diary']) return;
+    var rest = [];
+    knDiaryQueue.forEach(function(c){ if(!knSendTo('diary', {nkSync:c})) rest.push(c); });
+    knDiaryQueue = rest;
   }
 
   /* ── 統合された同期パネル ────────────────────────────
@@ -443,7 +461,7 @@ body.nk-dark .knnew{opacity:.12}
     knReady[s.app]=true;
     // 状態が届いた＝そのタブは読み込みが終わってリスナーを持っている、という合図。
     // 待たせていた命令はここで流す（時間で決め打ちすると重いタブに届かない）。
-    knFlushTasks();
+    knFlushTasks(); knFlushDiary();
     if(knSyncWait[s.app]){ delete knSyncWait[s.app]; knSendTo(s.app, {nkSync:'now'}); }
     knPaint();
   }
@@ -756,6 +774,29 @@ body.nk-dark .knnew{opacity:.12}
       knMsg('書き出しました。', true);
     }catch(e){ knMsg('書き出しに失敗しました。', false); }
   }
+  /* 各アプリを止める（フレームを空にする）。取り込みの前に、このウィンドウでも、
+     知らせを受けたほかのウィンドウ（下の knBc）でも使う。 */
+  function knStopFrames(){
+    try{
+      var frs=document.querySelectorAll('.appframe');
+      for(var fi=0; fi<frs.length; fi++){ frs[fi].src='about:blank'; }
+      loaded={}; knReady={};
+    }catch(e){}
+    nkDarkReset();   // 暗室のフレームを閉じたので、タブ帯の暗転も解く
+  }
+  /* ほかのウィンドウへの知らせ。取り込みで止められるのはこのウィンドウのフレームだけで、
+     同じアプリを別のタブ・別のPWAウィンドウでも開いていると、そちらの日記帳の自動保存や
+     音タブの保存が、手元に残った古い内容で取り込んだデータを上書きしてしまう。
+     書き込む前に止めてもらい、終わったら読み込み直してもらう。
+     ウィンドウが1つだけなら、受け取る相手がいないだけで何も起きない。 */
+  var knBc=null;
+  try{ knBc=new BroadcastChannel('nk-shell'); }catch(e){}
+  function knBcPost(msg){ try{ if(knBc) knBc.postMessage(msg); }catch(e){} }
+  if(knBc) knBc.onmessage=function(e){
+    var d=e.data; if(!d) return;
+    if(d.nkImport==='start'){ knStopFrames(); return; }
+    if(d.nkImport==='done'){ location.reload(); return; }
+  };
   async function knDoImport(file){
     knMsg('取り込み中…');
     var obj=null;
@@ -770,14 +811,10 @@ body.nk-dark .knnew{opacity:.12}
     try{
       // 先に各アプリを止める。動いたままだと、日記帳の自動保存(0.8秒)や
       // 気になり帳の自動同期が、取り込んだ直後のデータを古い内容で
-      // 上書きしてしまうことがある。
-      try{
-        var frs=document.querySelectorAll('.appframe');
-        for(var fi=0; fi<frs.length; fi++){ frs[fi].src='about:blank'; }
-        loaded={}; knReady={};
-      }catch(e){}
+      // 上書きしてしまうことがある。ほかのウィンドウにも止めてもらう。
+      knBcPost({nkImport:'start'});
+      knStopFrames();
       await new Promise(function(r){ setTimeout(r, 150); });
-      nkDarkReset();   // 暗室のフレームを閉じたので、タブ帯の暗転も解く
       // 同期の記録（最終同期時刻・Drive上のファイルID）を捨てる。
       // 残したままだと、リロード直後の自動同期が「Driveのほうが新しい」と判断して
       // 取り込んだ内容を数秒で上書きし返してしまう。
@@ -853,8 +890,13 @@ body.nk-dark .knnew{opacity:.12}
          同期をONにすると効く（それを打ち消すと、別の端末で消したものまで戻ってしまうため）。
          そのことは取り込んだときに伝える。 */
       knMsg('取り込みました。安全のため自動同期はOFFにしています。内容を確かめてから☁でONに戻してください（ONにすると、ほかの端末でこのバックアップより後に削除・全消去したものは、こちらでも消えます）。再読み込みします…', true);
+      knBcPost({nkImport:'done'});   // ほかのウィンドウは、取り込んだ内容で開き直す
       setTimeout(function(){ location.reload(); }, 2200);
-    }catch(e){ knMsg('取り込みの途中で失敗しました。ファイルを確認してください（途中まで入った可能性があるため、自動同期はOFFのままにしています）。', false); }
+    }catch(e){
+      // 失敗しても、止めたままにはしない（ほかのウィンドウは、いま入っている内容で開き直す）
+      knBcPost({nkImport:'done'});
+      knMsg('取り込みの途中で失敗しました。ファイルを確認してください（途中まで入った可能性があるため、自動同期はOFFのままにしています）。', false);
+    }
   }
 
   document.getElementById('knBackupBtn').addEventListener('click', function(){ knModalOpen(true); });
@@ -949,17 +991,17 @@ body.nk-dark .knnew{opacity:.12}
   document.getElementById('knSyncAuto').addEventListener('click', function(){ knSetAuto(!knAuto()); });
   // 日記帳から移設した操作。実体は日記帳側に残し、ここは入口だけ持つ。
   document.getElementById('knMd').addEventListener('click', function(){
-    load('diary'); setTimeout(function(){ knSend({nkSync:'markdown'}); }, 400);
+    knToDiary('markdown');
     knMsg('日記帳からMarkdownを書き出します…');
   });
   document.getElementById('knShare').addEventListener('click', function(){
-    load('diary'); setTimeout(function(){ knSend({nkSync:'share'}); }, 400);
+    knToDiary('share');
     knMsg('バックアップの共有を開きます…');
   });
   document.getElementById('knSecurity').addEventListener('click', function(){
     // 設定画面は日記帳が持っている（パスフレーズやロック解除と一体のため）
     knModalOpen(false); show('diary');
-    setTimeout(function(){ knSend({nkSync:'security'}); }, 500);
+    knToDiary('security');
   });
   document.getElementById('knCidSave').addEventListener('click', function(){
     var v=(document.getElementById('knCid').value||'').trim();
