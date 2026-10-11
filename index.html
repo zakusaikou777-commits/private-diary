@@ -687,7 +687,8 @@ body.nk-dark .knnew{opacity:.12}
     var kdata = localStorage.getItem('kininari:data:v2');
     var anshitsu = localStorage.getItem('image-streaming:v1');
     var bgm = localStorage.getItem('bgm:v1');
-    // 暗室の「全消去した時刻」。これが無いと、復元後の同期で消したはずの記録が戻る
+    // 暗室の「全消去の記録」（消した記録の目印。旧版は全消去した時刻だけ）。
+    // これが無いと、復元後の同期で消したはずの記録が戻る。中身の形は暗室に任せ、文字列のまま運ぶ
     var anshitsuCleared = localStorage.getItem('image-streaming:clearedAt');
     var gdCid = localStorage.getItem('shared:gd:cid');
     var autogenic = localStorage.getItem('autogenic:v1');

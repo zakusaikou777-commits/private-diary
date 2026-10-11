@@ -504,7 +504,8 @@
     rating: null,
     pending: { sec:0, scene:"" },
     history: [],
-    clearedAt: 0,
+    clearedAt: 0,        // 旧版の全消去（消した時刻）。読むだけで、新しくは作らない（loadCleared の説明）
+    clearedKeys: [],     // 全消去で消した記録の鍵（recKey）
     confirmClear: false,
     journalOpen: false
   };
@@ -855,7 +856,9 @@
     scheduleDark(DARK_AFTER);
   }
   function pause(){ S.phase = "paused"; undark(); renderPhase(); stopTimer(); renderClock(); stopCues(); stopSpeech(); relWake(); }
-  function resume(){ S.phase = "running"; renderPhase(); startTimer(); startCues(); reqWake(); scheduleDark(DARK_AFTER); }
+  /* 一時停止のあいだに着信などで音が止められると（iOS）、再開しても合図の音が鳴らない。
+     再開はタップ（またはキー）から来るので、ここで起こし直す */
+  function resume(){ ensureAudio(); S.phase = "running"; renderPhase(); startTimer(); startCues(); reqWake(); scheduleDark(DARK_AFTER); }
   function endNow(){
     stopTimer(); stopCues(); stopSpeech(); relWake(); undark();
     // stopTimer() が残り時間を実時間で締めるので、そのあとで経過を出す
@@ -887,7 +890,7 @@
   }
   /* ── 端末間の同期（sync.js の共通エンジン）───────────────
      練習の記録は追記型なので、時刻で重ねてつなぐだけでよい。
-     ただし「全消去」は消した時刻を持ち回らないと同期で復活する。 */
+     ただし「全消去」は、消した記録を持ち回らないと同期で復活する（clearedKeys）。 */
   var sync = null;
   window.__isTouch = function(urgent){ if(sync) sync.touch(!!urgent); };
   function recKey(h){ return (h && (h.ts || (h.date + "|" + (h.sec||0)))) + ""; }
@@ -915,26 +918,57 @@
     for(var i=0;i<a.length;i++){ var c = cleanRec(a[i]); if(c) out.push(c); }
     return out;
   }
-  function syncGetLocal(){ return { history: S.history, clearedAt: S.clearedAt || 0 }; }
+  /* 全消去の記録。旧版は「消した時刻」だけを持ち、それより前の記録をすべて消していたが、
+     時計のずれた端末で消すと、ほかの端末で消去のあとに付けた記録まで消えた。
+     いまは消した記録の鍵（recKey）を持ち回る。旧版の時刻（clearedAt）は読むだけにして新しくは作らない
+     （まだ旧版の端末が消したぶんを、こちらで復活させないため。受け取った値は旧版の端末のために持ち回る）。
+     この端末では CLR_KEY に {at, keys} の形で置く（旧版は時刻の数字だけ。バックアップにもこのまま入る）。 */
+  function cleanKeys(a){
+    var out = [], seen = Object.create(null);
+    if(!Array.isArray(a)) return out;
+    for(var i=0;i<a.length;i++){ var k = a[i]; if(typeof k === "string" && k && !seen[k]){ seen[k] = 1; out.push(k); } }
+    return out;
+  }
+  function loadCleared(){
+    var o = null;
+    try { o = JSON.parse(store.get(CLR_KEY) || "0"); } catch(e){ o = null; }
+    if(typeof o === "number"){ S.clearedAt = isFinite(o) ? o : 0; S.clearedKeys = []; return; }   // 旧版の形（時刻だけ）
+    S.clearedAt = (o && typeof o.at === "number" && isFinite(o.at)) ? o.at : 0;
+    S.clearedKeys = cleanKeys(o && o.keys);
+  }
+  function saveCleared(){
+    try { store.set(CLR_KEY, JSON.stringify({ at: S.clearedAt || 0, keys: S.clearedKeys })); } catch(e){}
+  }
+  function syncGetLocal(){
+    var o = { history: S.history, clearedKeys: S.clearedKeys };
+    if(S.clearedAt) o.clearedAt = S.clearedAt;   // 旧版の端末が消した時刻。受け取ったものを持ち回るだけ
+    return o;
+  }
   function syncSetLocal(d){
     S.history = cleanHistory(d && d.history);   // 形の壊れた受信で以後の描画が止まらないように
     S.clearedAt = (d && typeof d.clearedAt === "number" && isFinite(d.clearedAt)) ? d.clearedAt : 0;
+    S.clearedKeys = cleanKeys(d && d.clearedKeys);
     try { store.set(KEY, JSON.stringify(S.history)); } catch(e){}
-    try { store.set(CLR_KEY, String(S.clearedAt)); } catch(e){}
+    saveCleared();
     renderTenten(); renderJournal();
   }
   function syncMerge(local, remote){
     if(!remote) return local;
     var cleared = Math.max(+local.clearedAt || 0, +remote.clearedAt || 0);
+    var keys = cleanKeys(cleanKeys(local.clearedKeys).concat(cleanKeys(remote.clearedKeys)));
+    var gone = Object.create(null); keys.forEach(function(k){ gone[k] = 1; });
     var seen = {}, out = [];
     [].concat(cleanHistory(local.history), cleanHistory(remote.history)).forEach(function(h){
-      if(cleared && (h.ts || 0) <= cleared) return;   // 消去より前の記録は復活させない
       var k = recKey(h);
+      if(gone[k]) return;                              // 全消去で消した記録は復活させない
+      if(cleared && (h.ts || 0) <= cleared) return;   // 旧版の端末の全消去（時刻）より前の記録も
       if(seen[k]) return;
       seen[k] = 1; out.push(h);
     });
     out.sort(function(a,b){ return (a.ts||0) - (b.ts||0); });
-    return { history: out, clearedAt: cleared };
+    var res = { history: out, clearedKeys: keys };
+    if(cleared) res.clearedAt = cleared;
+    return res;
   }
   function paintSync(st, auto){
     var b = document.getElementById("bSync"); if(!b) return;
@@ -1005,11 +1039,12 @@
   }
 
   function clearAll(){
+    // 単純に消すだけだと、他端末との同期で復活してしまう。消した記録の鍵を残す。
+    // ★消した時刻で区切らない。時計のずれた端末では、ほかの端末が消去のあとに付けた記録まで消える
+    S.clearedKeys = cleanKeys(S.clearedKeys.concat(S.history.map(recKey)));
     S.history = []; S.confirmClear = false;
-    // 単純に消すだけだと、他端末との同期で復活してしまう。消した時刻を残す。
-    S.clearedAt = Date.now();
     try { store.remove(KEY); } catch(e){}
-    try { store.set(CLR_KEY, String(S.clearedAt)); } catch(e){}
+    saveCleared();
     if (window.__isTouch) window.__isTouch(true);
     renderTenten(); renderJournal();
   }
@@ -1235,7 +1270,7 @@
        あとの .filter() で init() ごと止まり、ボタンが全部死ぬ。形まで確かめる。 */
     try { var raw = store.get(KEY), h0 = raw ? JSON.parse(raw) : null; S.history = cleanHistory(h0); }   // 1件ずつの形も確かめる
     catch(e){ S.history = []; }
-    try { S.clearedAt = parseInt(store.get(CLR_KEY) || "0", 10) || 0; } catch(e){ S.clearedAt = 0; }
+    loadCleared();
     setupSync();
 
     renderScene();
