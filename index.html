@@ -713,7 +713,8 @@ body.nk-dark .knnew{opacity:.12}
       for(var di=0; di<drecs.length; di++){
         var dr=drecs[di]; if(!dr||!dr.data) continue;
         try{
-          if(dr.enc){ diaryImages.push({id:dr.id, enc:1, type:dr.type, iv:dr.iv, b64:await knBufToB64(dr.data)}); }
+          // ks: どの鍵（salt）で暗号化したか。日記帳が鍵を変える途中で止まったとき、続きの判断に使う
+          if(dr.enc){ diaryImages.push({id:dr.id, enc:1, type:dr.type, iv:dr.iv, ks:dr.ks, b64:await knBufToB64(dr.data)}); }
           else { var bl = (dr.data instanceof Blob) ? dr.data : new Blob([dr.data],{type:dr.type||'image/jpeg'});
                  diaryImages.push({id:dr.id, enc:0, type:dr.type, dataUrl:await blobToDataURL(bl)}); }
         }catch(e){}
@@ -865,8 +866,9 @@ body.nk-dark .knnew{opacity:.12}
           for(var k=0;k<obj.diaryImages.length;k++){
             var im=obj.diaryImages[k]; if(!im||!im.id) continue;
             try{
-              if(im.enc){ await knDiaryImgPut(ddb2,{id:im.id, enc:1, type:im.type, iv:im.iv, data:knB64ToBuf(im.b64)}); }
-              else if(im.dataUrl){ var b2=await (await fetch(im.dataUrl)).blob(); await knDiaryImgPut(ddb2,{id:im.id, enc:0, type:im.type||b2.type, data:b2, size:b2.size}); }
+              if(im.enc){ var er={id:im.id, enc:1, type:im.type, iv:im.iv, data:knB64ToBuf(im.b64)}; if(typeof im.ks==='string') er.ks=im.ks; await knDiaryImgPut(ddb2,er); }
+              // 画像の data: URL だけを読む（ほかのURLを fetch すると、取り込むファイル次第で外へ通信してしまう）
+              else if(typeof im.dataUrl==='string' && /^data:image\//i.test(im.dataUrl)){ var b2=await (await fetch(im.dataUrl)).blob(); await knDiaryImgPut(ddb2,{id:im.id, enc:0, type:im.type||b2.type, data:b2, size:b2.size}); }
             }catch(e){}
           }
         }catch(e){}
@@ -875,7 +877,8 @@ body.nk-dark .knnew{opacity:.12}
         try{
           var bdb2=await knOpenBgmDB();
           for(var bk=0;bk<obj.bgmTracks.length;bk++){
-            var bt=obj.bgmTracks[bk]; if(!bt||!bt.id||!bt.dataUrl) continue;
+            // data: URL だけを読む（ほかのURLだと、取り込むファイル次第で外へ通信してしまう）
+            var bt=obj.bgmTracks[bk]; if(!bt||!bt.id||typeof bt.dataUrl!=='string'||!/^data:/i.test(bt.dataUrl)) continue;
             try{ var bb=await (await fetch(bt.dataUrl)).blob();
                  await knBgmPut(bdb2,{id:bt.id, blob:bb, type:bt.type||bb.type, name:bt.name||'音源', size:bb.size}); }catch(e){}
           }
@@ -884,7 +887,8 @@ body.nk-dark .knnew{opacity:.12}
       if(obj.kininari){
         if(kdataStr!==null) localStorage.setItem('kininari:data:v2', knUnsync(kdataStr));
         var files=(obj.kininari.files||[]);
-        if(files.length){ var db=await knOpenDB(); for(var i=0;i<files.length;i++){ var f=files[i]; try{ var bl=await (await fetch(f.dataUrl)).blob(); await knIdbPut(db,{id:f.id,blob:bl,name:f.name,type:f.type,size:bl.size}); }catch(e){} } }
+        // 添付も data: URL だけを読む。at は気になり帳の片付け（使われない添付は7日後）の目安
+        if(files.length){ var db=await knOpenDB(); for(var i=0;i<files.length;i++){ var f=files[i]; if(!f||typeof f.dataUrl!=='string'||!/^data:/i.test(f.dataUrl)) continue; try{ var bl=await (await fetch(f.dataUrl)).blob(); await knIdbPut(db,{id:f.id,blob:bl,name:f.name,type:f.type,size:bl.size,at:Date.now()}); }catch(e){} } }
       }
       /* 「次のDrive同期で復元が元に戻る」問題への対処（ここでできる範囲）:
          ・同期の記録を捨て、自動同期をOFFにして、すぐには混ぜない（上）

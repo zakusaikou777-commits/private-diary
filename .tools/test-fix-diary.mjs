@@ -1,5 +1,5 @@
 /* ============================================================
-   日記帳（diary.html）の修正の確認（パス1）
+   日記帳（diary.html）の修正の確認（パス1・パス2）
      node .tools/test-fix-diary.mjs                    … 全部
      ONLY=1,2 node .tools/test-fix-diary.mjs           … 項目を選ぶ（下の番号）
      DIARY_ROOT=/別の場所 node .tools/test-fix-diary.mjs … その場所の diary.html で試す（修正前との比べ用）
@@ -16,6 +16,7 @@
    10 同期データの画像は data:image だけを読む
    11 復号した中身が配列でなければ、ロックしたままにする
    12 本文の書き出しで <img> を読み込まない
+   p2 パス2: NKSync.drive への移行（findFiles・排他・入口のトークン）と、写真を1枚ずつ別のファイルにする
    ============================================================ */
 import { startServer, launch, newDevice, collectErrors, makeChecker, sleep, waitFor, ROOT } from "./lib/harness.mjs";
 import { createFakeDrive } from "./lib/fake-drive.mjs";
@@ -137,7 +138,7 @@ function driveDiary(drive) {
   return f ? { id: f.id, text: drive.text(f.id), json: drive.json(f.id) } : null;
 }
 const isEnc = (o) => !!(o && o.__enc__ === 1 && o.ct && o.salt);
-async function token(page) { await page.evaluate(() => driveRequestToken("")); }
+async function token(page) { await page.evaluate(() => NKSync.drive.getToken({})); }
 
 /* ── 1. 暗号化していない端末が、暗号化された Drive を平文で上書きしない ── */
 if (want(1)) {
@@ -611,6 +612,288 @@ if (want(12)) {
   ok(out === '<p>a</p><img data-did="iabcd1234" alt="x">', "12: 保存する形は変わらない", out);
   ok(!reqs.some((u) => /probe-ser/.test(u)), "12: 書き出しのときに画像を読みに行かない", reqs.filter((u) => /probe/.test(u)));
   await ctx.close();
+}
+
+/* ── パス2: NKSync.drive への移行と、写真ごとのファイル ── */
+if (want("p2")) {
+  console.log("p2) Drive の写真を1枚ずつ別のファイルに・NKSync.drive");
+  const STD = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/calendar.events";
+  const dyFiles = (drive) => [...drive.files.values()].filter((f) => f.name.startsWith("dy-img-") && !f.trashed);
+  const posts = (drive) => drive.log.filter((x) => x.method === "POST" && x.path === "/upload/drive/v3/files").length;
+  const hasMagic = (buf) => buf.includes(Buffer.from([0xff, 0xd8, 0xff])) || buf.includes(Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+    || buf.includes(Buffer.from("/9j/")) || buf.includes(Buffer.from("iVBORw0KGgo"));
+  const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString();
+  const imgIdsOf = (page) => page.evaluate(() => [...new Set(entries.flatMap((e) => contentImageIds(e.content)))]);
+  const PNG1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+  const legacyEntry = (id, date, title, html) => ({ id, date, title, content: html, contentFormat: "html", tags: [], createdAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-01T00:00:00.000Z" });
+
+  // a) A が写真つきの日記を書く → 写真は別ファイル、diary.json には入らない → B が受け取れる
+  {
+    const drive = createFakeDrive();
+    const ctxA = await newDevice(browser, { drive });
+    const ctxB = await newDevice(browser, { drive });
+    const A = await open(ctxA);
+    await addEntry(A, "2026-09-10", "写真の日", "<p>photo</p>");
+    await pasteImages(A, 1);
+    await A.evaluate(() => saveEntry(true));
+    const [pid] = await imgIdsOf(A);
+    await A.evaluate(() => drivePushAll(false));
+    let dy = dyFiles(drive);
+    ok(dy.length === 1 && dy[0].name === "dy-img-" + pid && dy[0].parents.includes("appDataFolder"), "a: 写真は appDataFolder の dy-img-<画像id> に1枚ずつ置く", dy.map((f) => f.name));
+    ok(dy[0] && dy[0].appProperties && dy[0].appProperties.ks === "plain", "a: Drive が平文なら写真も平文（ks=plain）", dy[0] && dy[0].appProperties);
+    ok(dy[0] && hasMagic(dy[0].content), "a: （確かめ方の確認）平文の写真には画像の印がある");
+    let d = driveDiary(drive);
+    ok(d && d.json.imgExternal === 1 && Array.isArray(d.json.images) && d.json.images.length === 0 && !/data:image/.test(d.text), "a: diary.json に写真の中身は入らない（imgExternal: 1）", d && d.text.slice(0, 200));
+    const B = await open(ctxB);
+    await B.evaluate(() => drivePullAndMerge(false));
+    const stB = await imgState(B);
+    ok(await B.evaluate(() => entries.some((e) => e.title === "写真の日")) && stB.some((r) => r.id === pid && r.readable), "a: B は写真をファイルから受け取って読める", stB);
+    // 2回目の保存では写真を送り直さない
+    const n0 = posts(drive);
+    await addEntry(A, "2026-09-11", "文字だけ", "<p>text</p>");
+    await A.evaluate(() => drivePushAll(false));
+    ok(posts(drive) === n0, "a: 2回目の保存で写真を送り直さない（新しく作るファイルが無い）", drive.log.slice(-6));
+    // B の再取り込みも写真を書き直さない
+    await countImgPut(B);
+    await B.evaluate(() => drivePullAndMerge(false));
+    ok(await B.evaluate(() => window.__imgPuts) === 0, "a: B の2回目の取り込みでも写真を書き直さない");
+
+    // b) A で暗号化 → 写真も diary.json も作り直し（古いファイルは消える）、中身に画像の印が無い
+    const oldPhoto = dy[0].id, oldJson = d.id;
+    await setPass(A, "p2-pass-1");
+    await A.evaluate(() => drivePushAll(false));
+    const salt = await A.evaluate(() => encMeta.salt);
+    dy = dyFiles(drive);
+    ok(!drive.files.has(oldPhoto) && dy.length === 1 && dy[0].id !== oldPhoto, "b: 平文→暗号化で写真ファイルを作り直し、古いファイルは消す", dy.map((f) => f.id));
+    ok(dy[0] && dy[0].appProperties && dy[0].appProperties.ks === salt, "b: 写真ファイルの ks は鍵の salt", dy[0] && dy[0].appProperties);
+    ok(dy[0] && !hasMagic(dy[0].content), "b: 暗号化した写真ファイルに画像の印（JPEG/PNG）が無い");
+    d = driveDiary(drive);
+    ok(d && isEnc(d.json) && d.id !== oldJson && !drive.files.has(oldJson), "b: diary.json も作り直し、平文の古いファイルは消す", d && d.id);
+    // B（暗号化なし）は、作り直された diary.json に乗り換えて読める（覚えていたidが消えていても）
+    B.answers.push("p2-pass-1");
+    await B.evaluate(() => drivePullAndMerge(false));
+    ok(await B.evaluate(() => entries.some((e) => e.title === "文字だけ")), "b: B は作り直された diary.json を見つけて読める");
+    // 新しい端末 C は暗号化された写真ファイルを受け取って読める
+    const ctxC = await newDevice(browser, { drive });
+    const C = await open(ctxC);
+    C.answers.push("p2-pass-1");
+    await C.evaluate(() => drivePullAndMerge(false));
+    const stC = await imgState(C);
+    ok(stC.some((r) => r.id === pid && r.readable), "b: 新しい端末は暗号化された写真を受け取って読める", stC);
+    // B が書き足しても、写真ファイルは平文に戻らない（Drive の鍵で暗号化する）
+    await addEntry(B, "2026-09-12", "Bの写真", "");
+    await pasteImages(B, 1);
+    await B.evaluate(() => saveEntry(true));
+    B.answers.push("p2-pass-1");
+    await B.evaluate(() => drivePushAll(false));
+    dy = dyFiles(drive);
+    ok(dy.length === 2 && dy.every((f) => f.appProperties.ks === salt && !hasMagic(f.content)), "b: 暗号化していない端末の写真も Drive の鍵で暗号化して送る", dy.map((f) => f.appProperties));
+
+    // c) パスフレーズ変更の途中で写真の送り直しが失敗しても、写真は Drive から消えない
+    await A.evaluate(() => drivePullAndMerge(true));
+    await setPass(A, "p2-pass-2");
+    const orig = drive.handle;
+    let nth = 0;
+    drive.handle = async (route) => {
+      const req = route.request();
+      if (req.method() === "POST" && /upload\/drive\/v3\/files$/.test(new URL(req.url()).pathname) && String(req.postDataBuffer() || "").includes("dy-img-") && nth++ >= 1) {
+        return route.fulfill({ status: 500, contentType: "application/json", body: '{"error":{"code":500}}' });
+      }
+      return orig(route);
+    };
+    await A.evaluate(() => drivePushAll(false));
+    drive.handle = orig;
+    const ids = await imgIdsOf(A);
+    const byId = (id) => dyFiles(drive).filter((f) => f.name === "dy-img-" + id);
+    ok(ids.length === 2 && ids.every((id) => byId(id).length >= 1), "c: 送り直しが途中で失敗しても、どの写真も Drive に残っている", ids.map((id) => byId(id).length));
+    d = driveDiary(drive);
+    ok(d && d.json.salt === salt, "c: 写真を送り終えるまで diary.json は古い鍵のまま（先に進めない）");
+    await A.evaluate(() => drivePushAll(false));
+    const salt2 = await A.evaluate(() => encMeta.salt);
+    d = driveDiary(drive);
+    dy = dyFiles(drive);
+    ok(d && d.json.salt === salt2 && dy.length === 2 && dy.every((f) => f.appProperties.ks === salt2), "c: 次の保存で、写真も diary.json も新しい鍵にそろう", dy.map((f) => f.appProperties.ks === salt2));
+    const ctxE = await newDevice(browser, { drive });
+    const E = await open(ctxE);
+    E.answers.push("p2-pass-2");
+    await E.evaluate(() => drivePullAndMerge(false));
+    const stE = await imgState(E);
+    ok(stE.length === 2 && allReadable(stE), "c: 新しいパスフレーズの端末は写真を全部読める", stE);
+
+    // d) 利用者の JSON 書き出しは、写真を中に入れたまま（それだけで戻せる）
+    const exp = await A.evaluate(async () => JSON.parse((await buildExportPayload("json")).text));
+    ok(exp.images.length === 2 && exp.images.every((x) => /^data:image\//.test(x.dataUrl)), "d: JSON の書き出しには写真が入っている", exp.images.map((x) => String(x.dataUrl).slice(0, 20)));
+    const share = await A.evaluate(async () => { const o = await buildSyncObject(); return JSON.parse(await ENC.decryptToString(o, cryptoKey)); });
+    ok(share.images.length === 2 && !share.imgExternal, "d: 共有のバックアップにも写真が入っている");
+    await ctxA.close(); await ctxB.close(); await ctxC.close(); await ctxE.close();
+  }
+
+  // e) 写真を中に入れていた旧版の diary.json も読める → 次の保存で写真ファイルへ移る
+  {
+    const drive = createFakeDrive();
+    drive.put("diary.json", { exportDate: "2026-09-01T00:00:00.000Z", entries: [legacyEntry("legacy-1", "2026-08-20", "旧版", '<p>old</p><img data-did="ilegacy1234">')], deleted: [], images: [{ id: "ilegacy1234", type: "image/png", dataUrl: PNG1 }] }, { parents: ["appDataFolder"] });
+    const ctx = await newDevice(browser, { drive });
+    const p = await open(ctx);
+    await p.evaluate(() => drivePullAndMerge(false));
+    const st = await imgState(p);
+    ok(st.some((r) => r.id === "ilegacy1234" && r.readable), "e: 旧版の diary.json の中の写真を受け取れる", st);
+    await p.evaluate(() => drivePushAll(false));
+    const d = driveDiary(drive);
+    ok(dyFiles(drive).some((f) => f.name === "dy-img-ilegacy1234") && d.json.imgExternal === 1 && d.json.images.length === 0, "e: 次の保存で写真ファイルへ移る（diary.json からは外す）");
+    await ctx.close();
+  }
+
+  // f) 重複した diary.json は中身を寄せ、しばらく書かれていないものだけゴミ箱へ。開けないものは残す
+  {
+    const drive = createFakeDrive();
+    const ctx = await newDevice(browser, { drive });
+    const p = await open(ctx);
+    await addEntry(p, "2026-09-01", "本体", "<p>main</p>");
+    await p.evaluate(() => drivePushAll(false));
+    const main = driveDiary(drive);
+    const stale = drive.put("diary.json", { entries: [legacyEntry("dup-old", "2026-08-01", "古い重複にだけある", "<p>x</p>")], deleted: [], images: [] }, { parents: ["appDataFolder"] });
+    stale.modifiedTime = daysAgo(10);
+    const fresh = drive.put("diary.json", { entries: [legacyEntry("dup-new", "2026-08-02", "新しい重複にだけある", "<p>y</p>")], deleted: [], images: [] }, { parents: ["appDataFolder"] });
+    fresh.modifiedTime = daysAgo(1);
+    const locked = drive.put("diary.json", { __enc__: 1, v: 1, kdf: "PBKDF2-SHA256", iter: 250000, salt: "c2FsdHNhbHRzYWx0c2FsdA==", iv: "aXZpdml2aXZpdml2", ct: "AAAAAAAAAAAAAAAAAAAAAAAA" }, { parents: ["appDataFolder"] });
+    locked.modifiedTime = daysAgo(30);
+    await p.evaluate(() => drivePushAll(false));
+    const titles = await p.evaluate(() => entries.map((e) => e.title));
+    ok(titles.includes("古い重複にだけある") && titles.includes("新しい重複にだけある") && titles.includes("本体"), "f: 重複ファイルの日記も取り込む", titles);
+    const m = drive.json(main.id);
+    ok(m.entries.length === 3, "f: 寄せた結果を正（いちばん古いもの）に書く", m.entries.map((e) => e.title));
+    ok(!!stale.trashed || !drive.files.has(stale.id), "f: 7日以上書かれていない重複はゴミ箱へ");
+    ok(!fresh.trashed && drive.files.has(fresh.id), "f: 最近書かれた重複は残す（更新前の端末がまだ書いているかもしれない）");
+    ok(!locked.trashed && drive.files.has(locked.id), "f: 開けない重複は捨てない");
+    await ctx.close();
+  }
+
+  // g) 覚えていたファイルが無くなり別の diary.json に乗り換えても、この端末の日記は消えない
+  {
+    const drive = createFakeDrive();
+    const ctx = await newDevice(browser, { drive });
+    const p = await open(ctx);
+    await addEntry(p, "2026-09-01", "S1", "<p>1</p>");
+    await addEntry(p, "2026-09-02", "S2", "<p>2</p>");
+    await p.evaluate(() => drivePushAll(false));
+    const f1 = driveDiary(drive);
+    drive.files.delete(f1.id);
+    drive.put("diary.json", { entries: [legacyEntry("t-1", "2026-08-05", "T1", "<p>t</p>")], deleted: [], images: [] }, { parents: ["appDataFolder"] });
+    await p.evaluate(() => drivePushAll(false));
+    const d = driveDiary(drive);
+    const titles = await p.evaluate(() => entries.map((e) => e.title).sort());
+    ok(JSON.stringify(titles) === JSON.stringify(["S1", "S2", "T1"]), "g: 乗り換えても手元の日記は残り、相手の日記も入る", titles);
+    ok(d && d.json.entries.length === 3, "g: 乗り換え先にも全部書く", d && d.json.entries.map((e) => e.title));
+    ok(await p.evaluate((id) => localStorage.getItem("diary:gd:syncfile") === id, d.id), "g: 最後に同期したファイルを覚える");
+    await ctx.close();
+  }
+
+  // h) 同じ端末の2つのタブが同時に保存しても、diary.json も写真も1つずつ・日記は両方残る
+  {
+    const drive = createFakeDrive();
+    const ctx = await newDevice(browser, { drive });
+    const t1 = await open(ctx);
+    await addEntry(t1, "2026-09-01", "タブ1", "");
+    await pasteImages(t1, 1);
+    await t1.evaluate(() => saveEntry(true));
+    await token(t1);
+    const t2 = await open(ctx);
+    await addEntry(t2, "2026-09-02", "タブ2", "<p>2</p>");
+    await Promise.all([t1.evaluate(() => drivePushAll(false)), t2.evaluate(() => drivePushAll(false))]);
+    const files = drive.byName("diary.json");
+    const d = driveDiary(drive);
+    ok(files.length === 1, "h: diary.json は1つだけ（同時に作らない）", files.length);
+    ok(d && ["タブ1", "タブ2"].every((t) => d.json.entries.some((e) => e.title === t)), "h: 両方のタブの日記が Drive に載る", d && d.json.entries.map((e) => e.title));
+    ok(dyFiles(drive).length === 1, "h: 写真も1つだけ", dyFiles(drive).length);
+    await ctx.close();
+  }
+
+  // i) Drive の写真の掃除: 使われていない＆30日以上書かれていないものだけ。1日1回
+  {
+    const drive = createFakeDrive();
+    const ctx = await newDevice(browser, { drive });
+    const p = await open(ctx);
+    await addEntry(p, "2026-09-01", "写真", "");
+    await pasteImages(p, 1);
+    await p.evaluate(() => saveEntry(true));
+    await p.evaluate(() => drivePushAll(false));
+    const used = dyFiles(drive)[0];
+    used.modifiedTime = daysAgo(40);
+    const old1 = drive.put("dy-img-iold000001", "x", { parents: ["appDataFolder"], mimeType: "image/jpeg" }); old1.modifiedTime = daysAgo(40);
+    const new1 = drive.put("dy-img-inew000001", "x", { parents: ["appDataFolder"], mimeType: "image/jpeg" }); new1.modifiedTime = daysAgo(5);
+    await p.evaluate(() => localStorage.removeItem("diary:gd:imggc"));
+    await p.evaluate(() => drivePushAll(false));
+    ok(!drive.files.has(old1.id), "i: 使われていない30日以上前の写真は消す");
+    ok(drive.files.has(new1.id), "i: 使われていなくても新しい写真は残す（まだ diary.json に載せていない端末があるかもしれない）");
+    ok(drive.files.has(used.id), "i: 使っている写真は古くても残す");
+    const old2 = drive.put("dy-img-iold000002", "x", { parents: ["appDataFolder"], mimeType: "image/jpeg" }); old2.modifiedTime = daysAgo(40);
+    await addEntry(p, "2026-09-02", "次", "<p>n</p>");
+    await p.evaluate(() => drivePushAll(false));
+    ok(drive.files.has(old2.id), "i: 掃除は1日1回まで");
+    // 日記を読めないときは掃除しない
+    await p.evaluate(() => localStorage.removeItem("diary:gd:imggc"));
+    const d = driveDiary(drive);
+    drive.write(d.id, "{ broken");
+    await p.evaluate(() => drivePushAll(false));
+    ok(drive.files.has(old2.id), "i: diary.json を読めなかったときは掃除しない");
+    await ctx.close();
+  }
+
+  // j) 入口が取った（権限の記録つきの）トークンを、ログイン画面を出さずに使う
+  {
+    const drive = createFakeDrive();
+    const ctx = await newDevice(browser, { drive });
+    const p = await open(ctx);
+    await addEntry(p, "2026-09-01", "入口から", "<p>s</p>");
+    await p.evaluate((STD) => localStorage.setItem("shared:gd:token", JSON.stringify({ token: "fake." + btoa(STD), exp: Date.now() + 3600000, scope: STD })), STD);
+    await p.evaluate(() => drivePushRun(true));   // 入口の「今すぐ全部同期」と同じ呼び方
+    ok(!!driveDiary(drive), "j: 入口のトークンで同期できた");
+    ok((await p.evaluate(() => window.__fakeGisCalls || [])).length === 0, "j: ログイン画面（トークンの要求）を出していない");
+    // 権限の足りないトークン（drive.file だけ）は使わない
+    await p.evaluate(() => localStorage.setItem("shared:gd:token", JSON.stringify({ token: "fake." + btoa("https://www.googleapis.com/auth/drive.file"), exp: Date.now() + 3600000, scope: "https://www.googleapis.com/auth/drive.file" })));
+    const n0 = drive.log.length;
+    await p.evaluate(() => drivePushRun(true));
+    ok(drive.log.length === n0, "j: 権限の足りないトークンでは自動同期しない（403 を起こさない）");
+    await ctx.close();
+  }
+
+  // l) 正のファイルが平文でも、開ける重複が暗号文なら、暗号文の中身を平文で書き写さない
+  {
+    const drive = createFakeDrive();
+    const ctx = await newDevice(browser, { drive });
+    const p = await open(ctx);
+    drive.put("diary.json", { entries: [legacyEntry("plain-1", "2026-08-01", "平文の正", "<p>p</p>")], deleted: [], images: [] }, { parents: ["appDataFolder"] });
+    const encDup = await p.evaluate(async () => {
+      const salt = crypto.getRandomValues(new Uint8Array(16));
+      const key = await ENC.deriveKey("dup-pass-1", salt, 250000);
+      const body = { entries: [{ id: "enc-1", date: "2026-08-02", title: "暗号の重複", content: "<p>secret</p>", contentFormat: "html", tags: [], createdAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-01T00:00:00.000Z" }], deleted: [], images: [] };
+      return await ENC.encryptString(JSON.stringify(body), key, salt, 250000);
+    });
+    const dupF = drive.put("diary.json", encDup, { parents: ["appDataFolder"] });
+    dupF.modifiedTime = daysAgo(1);
+    // この端末（暗号化なし）は重複の鍵を知っている（手動の取り込みでパスフレーズを入れた）
+    p.answers.push("dup-pass-1");
+    await p.evaluate((b) => decryptIncomingBlob(b), encDup);
+    await p.evaluate(() => drivePushAll(false));
+    const all = drive.byName("diary.json");
+    ok(all.length >= 1 && all.every((f) => isEnc(JSON.parse(f.content.toString("utf8")))), "l: 暗号文の重複の中身を、平文の diary.json に書き写さない", all.map((f) => f.content.toString("utf8").slice(0, 40)));
+    ok(!JSON.stringify(all.map((f) => f.content.toString("utf8"))).includes("secret"), "l: Drive のどこにも平文の本文が無い");
+    ok(await p.evaluate(() => ["平文の正", "暗号の重複"].every((t) => entries.some((e) => e.title === t))), "l: 両方の日記は手元に入る");
+    await ctx.close();
+  }
+
+  // k) sync.js が古いまま（NKSync.drive が無い）なら、同期せずに再読み込みを頼む
+  {
+    const drive = createFakeDrive();
+    const ctx = await newDevice(browser, { drive });
+    await ctx.route(/\/sync\.js$/, (route) => route.fulfill({ status: 200, contentType: "text/javascript", body: "window.NKSync = { create: function(){} };" }));
+    const p = await open(ctx);
+    await addEntry(p, "2026-09-01", "古い部品", "<p>s</p>");
+    await p.evaluate(() => drivePushAll(false));
+    ok(drive.log.length === 0, "k: Drive に触らない");
+    ok(await toastSeen(p, /再読み込み/), "k: 再読み込みを頼む");
+    await ctx.close();
+  }
 }
 
 ok(pageErrors.length === 0, "ページの未処理の例外が無い", pageErrors);

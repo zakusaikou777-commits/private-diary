@@ -261,6 +261,8 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
 .kn-cal-item:hover{ border-color:#c0463c; }
 .kn-cal-item b{ color:#c0463c; font-weight:700; margin-right:6px; }
 </style>
+<!-- Googleの認証とDriveの通信は全アプリ共通の sync.js（NKSync.drive）を使う。読み込んだだけでは何もしない -->
+<script src="sync.js"></script>
 </head>
 <body>
     <div class="container">
@@ -626,7 +628,10 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
         // 入力のたびの自動保存で毎回作り直すと、写真が増えるほど画面が固まる。
         // 中身が変わったときだけ捨てて、あとは使い回す。
         const imgDataUrlCache = new Map();   // id -> { type, dataUrl }
-        function imgCacheDrop(id) { imgDataUrlCache.delete(id); }
+        // この起動中に「いまの設定のまま読める」と確かめた画像のid（imgUsableCached）。
+        // 同期のたびに全部の写真を読み出して確かめると、写真が増えるほど重くなる
+        const imgUsableSeen = { tag: null, ids: new Set() };
+        function imgCacheDrop(id) { imgDataUrlCache.delete(id); imgUsableSeen.ids.delete(id); }
         function imgTx(mode) {
             return imgDbPromise.then(db => db.transaction(IMG_STORE, mode).objectStore(IMG_STORE));
         }
@@ -853,6 +858,16 @@ async function imgUsable(rec) {
   if (!rec.enc) return !encEnabled;                 // 暗号化がONなのに平文なら、包んで入れ直す
   if (cryptoKey && encMeta && rec.ks === encMeta.salt) return true;
   try { await imgDecode(rec); return true; } catch (e) { return false; }
+}
+/** imgUsable の結果を覚えておく版（id で引く）。書き直し・削除（imgCacheDrop）と、
+ *  暗号化の設定が変わったときに忘れる */
+async function imgUsableCached(id) {
+  const tag = (encEnabled && encMeta) ? encMeta.salt : 'plain';
+  if (imgUsableSeen.tag !== tag) { imgUsableSeen.tag = tag; imgUsableSeen.ids = new Set(); }
+  if (imgUsableSeen.ids.has(id)) return true;
+  const ok = await imgUsable(await imgGet(id));
+  if (ok && imgUsableSeen.tag === tag) imgUsableSeen.ids.add(id);
+  return ok;
 }
 /** いまの鍵で開けない画像の枚数（鍵を変える前の確認用） */
 async function imgCountUnreadable() {
@@ -3251,7 +3266,7 @@ function insertTablePrompt() {
                 // バックアップで外へ通信させられる（どの写真を持っているかが漏れる）
                 if (!/^data:image\//i.test(f.dataUrl)) { console.warn('[diary] 画像ではないデータを読み飛ばしました', f.id); continue; }
                 try {
-                    if (await imgUsable(await imgGet(f.id))) continue;
+                    if (await imgUsableCached(f.id)) continue;
                     const blob = await (await fetch(f.dataUrl)).blob();
                     const rec = await imgEncode(blob);
                     await imgPut({ id: f.id, ...rec, size: blob.size });
@@ -3263,14 +3278,17 @@ function insertTablePrompt() {
         /** 同期/バックアップ用のオブジェクト。暗号化が有効なら暗号化ブロブを返す。
          *  fallbackImages: 相手が持っていた画像（こちらで出せないぶんの持ち越し用）
          *  encTo: Drive へ書くときの鍵（driveUploadEnc の結果。null なら平文）。省略時はこの端末の設定どおり
+         *  external: Drive 用。写真は1枚ずつ別のファイルにしてあるので中に入れない（imgExternal: 1 を付ける）。
+         *    利用者の書き出し・共有・同期フォルダは、そのファイルだけで戻せるよう写真を入れたまま
          *  戻せなかった枚数は buildSyncObject.lastMissing に入れる（呼び出し側の判断用） */
-        async function buildSyncObject(tombs, fallbackImages, encTo) {
+        async function buildSyncObject(tombs, fallbackImages, encTo, external) {
             const entriesData = JSON.parse(JSON.stringify(entries));
             // 本文の画像も一緒に持っていく。暗号化がONなら、この平文オブジェクトごと
             // 暗号化されるので、画像もまとめて包まれる。
-            const got = await collectImagesFor(entriesData, fallbackImages);
+            const got = external ? { images: [], missing: 0 } : await collectImagesFor(entriesData, fallbackImages);
             buildSyncObject.lastMissing = got.missing;
             const plainObj = { exportDate: new Date().toISOString(), entries: entriesData, deleted: tombs || loadTombstones(), images: got.images };
+            if (external) plainObj.imgExternal = 1;
             const k = (encTo !== undefined) ? encTo
                 : ((encEnabled && cryptoKey && encMeta) ? { key: cryptoKey, salt: encMeta.salt, iter: encMeta.iter } : null);
             if (k) {
@@ -3910,140 +3928,88 @@ function insertTablePrompt() {
 
 
 // ---- Google Drive API Sync (Method B) ----
-const DRIVESCOPE = 'https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/calendar.events';
+// Google の認証と Drive の通信は、全アプリ共通の sync.js（NKSync.drive）に任せる。
+// トークンは shared:gd:token に「許可された権限」と一緒に入るので、入口（index.html）の
+// 「今すぐ全部同期」が取ったトークンも、ログイン画面を出さずにそのまま使える。
+// 以前はここに自前の取り方があり、権限の違うトークンでほかのアプリと上書きし合っていた。
 const DRIVEDIARYFILENAME = 'diary.json';
-
-// TODO: OAuth Client ID (Web)
-const DRIVECLIENTID_DEFAULT = '312868081144-nsjo9gfkm94ol1pha2nhq913g9p1m4e0.apps.googleusercontent.com';
-// クライアントIDは4アプリ共通（shared:gd:cid）。旧版はここだけ定数を直接
-// 使っていたため、☁パネルでIDを変えても日記帳だけ古いままになっていた。
-function driveClientId(){
-  try{
-    var v=(localStorage.getItem('shared:gd:cid')||'').trim();
-    if(v) return v;
-    v=(localStorage.getItem('kininari:gd:cid')||'').trim()||DRIVECLIENTID_DEFAULT;
-    if(v) localStorage.setItem('shared:gd:cid', v);
-    return v;
-  }catch(e){ return DRIVECLIENTID_DEFAULT; }
-}
-function sharedTokenRead(){ try{ var o=JSON.parse(localStorage.getItem('shared:gd:token')||'null'); if(o&&o.token&&Date.now()<o.exp-60000) return o; }catch(e){} return null; }
-function sharedTokenGet(){ var o=sharedTokenRead(); return o?o.token:null; }
-function sharedTokenSet(t,exp){ try{ localStorage.setItem('shared:gd:token', JSON.stringify({token:t, exp:Date.now()+((exp||3600)*1000)})); }catch(e){} }
-function sharedTokenClear(){ try{ localStorage.removeItem('shared:gd:token'); }catch(e){} }
-
-let driveTokenClient = null;
-let driveAccessToken = null;
-// 手元のトークンの期限（ms）。トークンは1時間で切れる。期限を見ずに使い続けると、
-// 自動同期（利用者の操作の外）で 401 → 取り直しのログイン画面がブロックされる、になる
-let driveAccessTokenExp = 0;
+const DRIVE_FILE_KEY = 'diary:gd:file';           // いまの diary.json のid（NKSync.drive.findFiles が覚える）
+const DRIVE_SYNCFILE_KEY = 'diary:gd:syncfile';   // 最後に同期できた diary.json のid
+const DRIVE_STALE_MSG = '同期の部品（sync.js）が古いままです。ページを再読み込みしてください。';
 let autoSyncDriveEnabled = false;
-// 返事待ちのトークン要求 { resolve, reject, timer }。GIS は失敗（ポップアップを閉じた・
-// 出せなかった）を error_callback にしか知らせず、callback は呼ばない。ここで必ず決着させないと、
-// 待っている同期が「実行中」のまま残り、以後の保存がすべて Drive へ送られなくなる
-let driveTokenWait = null;
-const DRIVE_TOKEN_TIMEOUT_MS = 90000;
-function settleDriveToken(err, token) {
-  const w = driveTokenWait; driveTokenWait = null;
-  if (!w) return;
-  clearTimeout(w.timer);
-  if (err) w.reject(err); else w.resolve(token);
+function driveLib() { return (window.NKSync && NKSync.drive) || null; }
+/** NKSync.drive を返す。古いキャッシュで sync.js が食い違っているときは同期しない
+ *  （旧来の取り方を残すと、権限の違うトークンで上書きし合う問題が戻るため） */
+function driveNeed() {
+  const D = driveLib();
+  if (!D) throw new Error('DRIVE_STALE');
+  return D;
 }
-// 使えるトークンが手元にあるか（期限も見る）
+// 使えるトークンが手元にあるか（期限と権限も見る）
 function driveHasToken() {
-  return (!!driveAccessToken && Date.now() < driveAccessTokenExp - 60000) || !!sharedTokenGet();
+  const D = driveLib();
+  return !!(D && D.tokenRead(D.STD_SCOPE));
+}
+/** トークンを得る。interactive（利用者の操作から）のときは、クリックの処理の中で
+ *  await を挟まずに呼ぶこと。ログイン画面を出せるのはクリックの直後だけ。
+ *  自動のときは保存されたものだけを使う（ログイン画面は出せない） */
+function driveToken(interactive) {
+  try {
+    const D = driveNeed();
+    if (interactive) return D.getToken({ scope: D.STD_SCOPE, interactive: true });
+    const t = D.tokenRead(D.STD_SCOPE);
+    return t ? Promise.resolve(t) : Promise.reject(new Error('NOTOKEN'));
+  } catch (e) { return Promise.reject(e); }
+}
+/** 利用者に見せる失敗の理由（無ければ null） */
+function driveErrMsg(e) {
+  const m = String((e && e.message) || e);
+  if (/DRIVE_STALE/.test(m)) return DRIVE_STALE_MSG;
+  if (/ポップアップ/.test(m)) return 'ログイン画面を開けませんでした（ポップアップを許可してください）';
+  if (/キャンセル/.test(m)) return 'Googleへのログインがキャンセルされました';
+  if (/読み込みが未完了/.test(m)) return 'Googleの読み込みが終わっていません。少し待ってからもう一度お試しください';
+  if ((e && e.status === 401) || /期限切れ/.test(m)) return 'Googleログインの期限が切れました。もう一度お試しください';
+  if (e && e.status === 403) return 'Driveの権限が不足しています。「Google認証（Drive）」からつなぎ直してください';
+  if (/タイムアウト/.test(m)) return '通信がタイムアウトしました。電波の良いところでもう一度お試しください';
+  if (/認証/.test(m)) return 'Googleにつなげませんでした。もう一度お試しください';
+  return null;
 }
 
-function initDriveTokenClient() {
-  if (driveTokenClient) return;
-  if (!window.google || !google.accounts || !google.accounts.oauth2) {
-    showToast('Google認証ライブラリ未読込', 'warning');
-    return;
-  }
-  driveTokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: driveClientId(),
-    scope: DRIVESCOPE,
-    callback: () => {},
-    error_callback: (err) => {
-      showToast('Drive認証エラー', 'error');
-      settleDriveToken(new Error('AUTH_' + ((err && err.type) || 'ERROR')));
-    }
-  });
+function driveConnect() {
+  // ★クリックの中で await を挟まずに頼む（ログイン画面を出せるのはクリックの直後だけ）
+  driveToken(true).then(
+    () => showToast('Drive 認証OK', 'success'),
+    (e) => showToast(driveErrMsg(e) || 'Googleにつなげませんでした', 'error'));
 }
 
-function driveRequestToken(promptMode) {
-  return new Promise((resolve, reject) => {
-    initDriveTokenClient();
-    if (!driveTokenClient) return reject(new Error('tokenClient not ready'));
-    // 前の要求がまだ返事待ちなら打ち切る。返事が来ないときのための時間切れも置く
-    settleDriveToken(new Error('AUTH_SUPERSEDED'));
-    driveTokenWait = { resolve, reject, timer: setTimeout(() => settleDriveToken(new Error('AUTH_TIMEOUT')), DRIVE_TOKEN_TIMEOUT_MS) };
-    driveTokenClient.callback = (resp) => {
-      if (resp && resp.access_token) {
-        driveAccessToken = resp.access_token;
-        driveAccessTokenExp = Date.now() + (resp.expires_in || 3600) * 1000;
-        sharedTokenSet(resp.access_token, resp.expires_in);
-        settleDriveToken(null, driveAccessToken);
-      } else {
-        settleDriveToken(resp || new Error('AUTH_FAILED'));
-      }
-    };
-    try { driveTokenClient.requestAccessToken({ prompt: promptMode }); }
-    catch (e) { settleDriveToken(e); }
-  });
+/** Drive の diary.json を読んでから書くまでを、ほかのタブ・iframe と重ねない（navigator.locks）。
+ *  重なると、どちらも「まだ無い」と見て diary.json を2つ作ったり、後から書いた方が
+ *  先に書いた方の写真の控えを古いもので戻したりする */
+function driveLocked(fn) {
+  let D;
+  try { D = driveNeed(); } catch (e) { return Promise.reject(e); }
+  return D.withLock('diary-gd', () => fn(D));
 }
 
-async function driveEnsureToken(interactive = false) {
-  if (driveAccessToken && Date.now() < driveAccessTokenExp - 60000) return driveAccessToken;
-  // 期限切れ（か、まだ無い）→ 共有の置き場（他のタブ・アプリが取り直したもの）を見て、無ければ取り直す
-  driveAccessToken = null;
-  const o = sharedTokenRead();
-  if (o) { driveAccessToken = o.token; driveAccessTokenExp = o.exp; return o.token; }
-  return await driveRequestToken(interactive ? 'consent' : '');
+/** 同期先の diary.json を決める（NKSync.drive.findFiles）。どの端末でも「いちばん古い同名ファイル」を正とする。
+ *  旧版は検索結果の先頭（順不同）を使い、覚えもしなかったため、2台が同時に初回同期すると
+ *  2つ目ができ、端末ごとに別のファイルとやり取りしていた。
+ *  foreign: 最後に同期したファイルと違う（消えた・別のアカウント・重複の整理で正が替わった）。
+ *  日記のマージは和集合（消えるのは墓標があるときだけ）なので、相手に無い日記が消えることはないが、
+ *  写真ファイルの控え（diary:gd:img）は別の置き場のものなので作り直す */
+async function driveLocate(D, tok) {
+  const ff = await D.findFiles(tok, { name: DRIVEDIARYFILENAME, space: 'appDataFolder', cacheKey: DRIVE_FILE_KEY });
+  let last = null;
+  try { last = localStorage.getItem(DRIVE_SYNCFILE_KEY); } catch (e) {}
+  ff.foreign = !!ff.switched || (!!ff.id && !!last && last !== ff.id);
+  return ff;
+}
+function driveSetSyncFile(id) {
+  try { localStorage.setItem(DRIVE_SYNCFILE_KEY, id); localStorage.setItem(DRIVE_FILE_KEY, id); } catch (e) {}
 }
 
-async function driveFetch(url, options = {}, _retried = false) {
-  const token = await driveEnsureToken(false);
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(options.headers || {})
-    }
-  });
-  if (res.status === 401 && !_retried) {
-    // トークン期限切れ等。再取得して一度だけ再試行（#9）
-    driveAccessToken = null;
-    sharedTokenClear();
-    await driveRequestToken('');
-    return driveFetch(url, options, true);
-  }
-  if (!res.ok) throw new Error(await res.text());
-  return res;
-}
-
-async function driveConnect() {
-  try { await driveRequestToken('consent'); }
-  catch (e) {
-    // 閉じた・出せなかったときは error_callback が知らせ済み。返事が来なかったときだけここで言う
-    if (/AUTH_TIMEOUT/.test(String((e && e.message) || ''))) showToast('Googleの認証が完了しませんでした。もう一度お試しください', 'error');
-    return;
-  }
-  showToast('Drive 認証OK', 'success');
-}
-
-async function driveFindDiaryFileId() {
-  const q = encodeURIComponent(`name="${DRIVEDIARYFILENAME}" and trashed=false`);
-  const fields = encodeURIComponent('files(id,name,modifiedTime)');
-  const res = await driveFetch(
-    `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=${q}&fields=${fields}`
-  );
-  const data = await res.json();
-  return (data.files && data.files[0]) ? data.files[0].id : null;
-}
-
-async function driveDownloadDiaryById(fileId) {
-  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
-  const txt = await res.text();
+async function driveDownloadDiaryById(D, tok, fileId) {
+  const txt = await D.download(tok, fileId, 'text');
   try {
     return JSON.parse(txt);
   } catch (e) {
@@ -4055,10 +4021,261 @@ async function driveDownloadDiaryById(fileId) {
   }
 }
 
-async function driveDownloadDiary() {
-  const fileId = await driveFindDiaryFileId();
-  if (!fileId) return null;
-  return await driveDownloadDiaryById(fileId);
+/* ── 重複した diary.json ──────────────────────────────────────
+   旧版で2台が同時に初回同期すると、diary.json が2つできていた。正（いちばん古いもの）にだけ
+   書くと、もう片方にしか無い日記・削除の記録がずっと置き去りになる。中身を読んで正に寄せ、
+   書けたあと、しばらく書かれていないもの（7日。sync.js と同じ）はゴミ箱へ移す。
+   手元の鍵で開けないものは混ぜず、捨てもしない（中身を確かめないまま消さない）。 */
+const DRIVE_DUP_STALE_MS = 7 * 24 * 3600 * 1000;
+async function driveReadDups(D, tok, dups) {
+  const out = [];
+  for (const f of (dups || [])) {
+    let raw = null, data = null;
+    try { raw = await driveDownloadDiaryById(D, tok, f.id); data = await decodeRemoteSyncPayload(raw); }
+    catch (e) { console.warn('[diary] 重複した diary.json を読めません', f.id, e); data = null; }
+    out.push({ f, raw, data: (data && Array.isArray(data.entries)) ? data : null });
+  }
+  return out;
+}
+/** Drive が暗号化されているかを見る相手。正のファイルが平文でも、開けて中身を寄せる重複が暗号文なら
+ *  Drive は暗号化されているとみなす（平文の重複が正になっていても、暗号文の中身を平文で書き写さない）。
+ *  開けない重複は中身を寄せないので数えない（数えると、平文の端末が二度と書けなくなる） */
+function driveEncRef(raw, dups) {
+  if (isEncBlob(raw)) return raw;
+  const enc = (dups || []).find(d => d.data && isEncBlob(d.raw));
+  return enc ? enc.raw : raw;
+}
+/** 重複ファイルの中身を、正のファイルの中身（data）に寄せた写しを返す（和集合） */
+function driveMergeDups(data, dups) {
+  const ok = (dups || []).filter(d => d.data);
+  if (!ok.length) return data;
+  const valid = l => (Array.isArray(l) ? l : []).filter(e => e && typeof e === 'object' && e.id);
+  let list = valid(data && data.entries), tombs = Array.isArray(data && data.deleted) ? data.deleted : [];
+  let images = Array.isArray(data && data.images) ? data.images : [];
+  ok.forEach(d => {
+    list = mergeEntriesByUpdatedAt(list, valid(d.data.entries), []).merged;
+    tombs = mergeTombs(tombs, Array.isArray(d.data.deleted) ? d.data.deleted : []);
+    if (Array.isArray(d.data.images)) images = images.concat(d.data.images);
+  });
+  return Object.assign({}, data || {}, { entries: list, deleted: tombs, images });
+}
+/** 寄せ終えた重複ファイルのうち、しばらく書かれていないものをゴミ箱へ。
+ *  appDataFolder ではゴミ箱へ移せないことがあるので、そのときは消す（中身は正に寄せ済み）。
+ *  Drive を暗号化しているのに平文の重複は、ゴミ箱に30日残さず消す */
+async function driveRetireDups(D, tok, dups, encrypted) {
+  for (const d of (dups || [])) {
+    if (!d.data) continue;
+    const t = Date.parse((d.f && d.f.modifiedTime) || '');
+    if (!(isFinite(t) && Date.now() - t > DRIVE_DUP_STALE_MS)) continue;
+    if (encrypted && !isEncBlob(d.raw)) { await driveRemoveQuiet(D, tok, d.f.id); continue; }
+    try { await D.trash(tok, d.f.id); }
+    catch (e) { if (e && e.status >= 400 && e.status < 500 && e.status !== 404) await driveRemoveQuiet(D, tok, d.f.id); }
+  }
+}
+async function driveRemoveQuiet(D, tok, id) {
+  try { await D.remove(tok, id); }
+  catch (e) { if (!(e && e.status === 404)) console.warn('[diary] Drive のファイルを消せません', id, e); }
+}
+
+/* ── 写真は1枚ずつ別のファイル（appDataFolder の dy-img-<画像id>）──────────────
+   以前は diary.json の中に全部の写真を data URL で入れていたため、1文字直すたびの同期で
+   全部の写真を作り直して送り、受け取る側も全部を処理していた。いまは写真ごとに別のファイルにし、
+   Drive に無いもの・守り方（鍵）が変わったものだけを送り、端末に無い・読めないものだけを受け取る。
+   - 名前は画像のidだけ（日付やタイトルは入れない）。appProperties.ks に鍵の salt（平文は "plain"）
+   - 中身は diary.json と同じ鍵（driveUploadEnc）で暗号化する。平文にするのは diary.json も平文で
+     よいときだけ
+   - 守り方が変わったら書き換え（PATCH）ではなく作り直し、古いファイルは消す。Drive は書き換える前の
+     版を30日ほど残すので、書き換えると平文や古い鍵の版が残ってしまう
+   - 必ず新しいファイルを作ってから古い方を消す。途中で止まっても、どちらかは Drive に残る
+   - どの写真がどのファイルかは diary:gd:img に覚える（無い・別の置き場のときは一覧から作る）
+   - diary.json には写真を入れず imgExternal: 1 を付ける。写真を中に入れていた旧版の diary.json も読める */
+const DRIVE_IMG_PREFIX = 'dy-img-';
+const DRIVE_IMG_MAP_KEY = 'diary:gd:img';      // { 画像id: { fid, ks } }
+const DRIVE_IMG_GC_KEY = 'diary:gd:imggc';     // Drive の写真を最後に掃除した時刻
+const DRIVE_IMG_GC_AGE_MS = 30 * 24 * 3600 * 1000;
+const DRIVE_IMG_GC_EVERY_MS = 24 * 3600 * 1000;
+// 一覧しても Drive に無かった写真（この起動中は探し直さない。どこにも無い写真のために毎回一覧しない）
+const driveImgNotFound = new Set();
+function loadDriveImgMap() {
+  try {
+    const o = JSON.parse(localStorage.getItem(DRIVE_IMG_MAP_KEY) || 'null');
+    return (o && typeof o === 'object' && !Array.isArray(o)) ? Object.assign(Object.create(null), o) : null;
+  } catch (e) { return null; }
+}
+function saveDriveImgMap(m) {
+  try { localStorage.setItem(DRIVE_IMG_MAP_KEY, JSON.stringify(m)); } catch (e) { console.warn('[diary] 写真の控えを書けません', e); }
+}
+/** 本文で使っている写真のid */
+function usedImageIds() {
+  const ids = new Set();
+  entries.forEach(e => contentImageIds(e && e.content).forEach(id => ids.add(id)));
+  return ids;
+}
+/** Drive の写真ファイルを全部一覧する。返り値 { byId: {画像id: [{fid, ks, at}]} } */
+async function driveListImgs(D, tok) {
+  const files = await D.list(tok, { q: "name contains '" + DRIVE_IMG_PREFIX + "' and trashed=false", space: 'appDataFolder', fields: 'id,name,modifiedTime,appProperties' });
+  const byId = Object.create(null);
+  files.forEach(f => {
+    const id = String(f.name || '').indexOf(DRIVE_IMG_PREFIX) === 0 ? f.name.slice(DRIVE_IMG_PREFIX.length) : '';
+    if (!DID_RE.test(id)) return;
+    (byId[id] = byId[id] || []).push({ fid: f.id, ks: (f.appProperties && f.appProperties.ks) || '', at: Date.parse(f.modifiedTime || '') || 0 });
+  });
+  return { byId };
+}
+/** 1枚の写真に複数のファイルがあるときに使うもの: いまの鍵（want）のものを優先し、次に新しいもの */
+function drivePickImg(list, want) {
+  return list.slice().sort((a, b) => ((b.ks === want) - (a.ks === want)) || (b.at - a.at))[0] || null;
+}
+/** 写真ファイルの控えを用意する。無い・別の置き場と同期する（force）・本文の写真が控えにも
+ *  端末にも無い（他の端末があとから送った写真）ときは、一覧から作り直す
+ *  （一覧に無いものは控えのまま残す。作った直後のファイルは一覧にすぐ出ないことがあるため） */
+async function driveImgMap(D, tok, want, force) {
+  let map = loadDriveImgMap();
+  let need = force || !map;
+  if (!need) {
+    for (const id of usedImageIds()) {
+      if (!map[id] && !driveImgNotFound.has(id) && !(await imgUsableCached(id))) { need = true; break; }
+    }
+  }
+  if (!need) return map;
+  const { byId } = await driveListImgs(D, tok);
+  map = (force || !map) ? Object.create(null) : map;
+  Object.keys(byId).forEach(id => { const p = drivePickImg(byId[id], want); map[id] = { fid: p.fid, ks: p.ks }; });
+  driveImgNotFound.clear();
+  usedImageIds().forEach(id => { if (!map[id]) driveImgNotFound.add(id); });
+  saveDriveImgMap(map);
+  return map;
+}
+// 暗号化した写真ファイルの中身: 1行目に {"dyimg":1,…}（salt・iter・iv・type）、改行のあとに暗号文そのもの。
+// base64 にはしない（写真は大きいので、3割増しで送らない）
+async function driveImgPack(blob, encTo) {
+  const type = blob.type || 'image/jpeg';
+  if (!encTo) return { content: blob, mime: /^image\//i.test(type) ? type : 'image/jpeg', ks: 'plain' };
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, encTo.key, await blob.arrayBuffer());
+  const head = JSON.stringify({ dyimg: 1, v: 1, salt: encTo.salt, iter: encTo.iter, iv: ENC.b64(iv), type });
+  return { content: new Blob([head + '\n', ct], { type: 'application/octet-stream' }), mime: 'application/octet-stream', ks: encTo.salt };
+}
+/** 写真ファイルの中身を平文の Blob に戻す。鍵は salt で選ぶ（この端末の鍵・Drive の鍵・包み直し中の元の鍵） */
+async function driveImgUnpack(blob) {
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  let head = null;
+  if (buf[0] === 0x7b) {   // '{' で始まるのは暗号化したもの（画像は '{' では始まらない）
+    const nl = buf.indexOf(0x0a);
+    if (nl > 0 && nl < 4096) { try { head = JSON.parse(ENC.dec.decode(buf.subarray(0, nl))); } catch (e) { head = null; } }
+    if (!head || head.dyimg !== 1) throw new Error('IMG_CORRUPT');
+    const keys = [];
+    if (cryptoKey && encMeta && encMeta.salt === head.salt) keys.push(cryptoKey);
+    driveRemoteKeys.forEach(k => { if (k.salt === head.salt) keys.push(k.key); });
+    if (imgRekeyFromKey && imgRekeyFromSalt === head.salt) keys.push(imgRekeyFromKey);
+    for (const k of keys) {
+      try {
+        const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ENC.unb64(head.iv) }, k, buf.subarray(nl + 1));
+        return new Blob([pt], { type: /^image\//i.test(head.type || '') ? head.type : 'image/jpeg' });
+      } catch (e) {}
+    }
+    throw new Error('IMG_LOCKED');
+  }
+  return new Blob([buf], { type: /^image\//i.test(blob.type || '') ? blob.type : 'image/jpeg' });
+}
+/** 同時に n 件まで並べて走らせる。失敗があれば、全部終わってから最初の失敗を投げる */
+async function runLimited(items, n, fn) {
+  let i = 0, err = null;
+  const worker = async () => {
+    while (i < items.length) {
+      const x = items[i++];
+      try { await fn(x); } catch (e) { if (!err) err = e; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
+  if (err) throw err;
+}
+/** 本文で使っている写真のうち、Drive に無いもの・守り方が違うものを送る（diary.json より先に）。
+ *  失敗したら投げる（写真が載っていないまま diary.json だけ先に進めない）。
+ *  返り値: どこにも無い（この端末にも Drive にも無い）写真の枚数 */
+async function drivePushImgs(D, tok, encTo, map) {
+  const want = encTo ? encTo.salt : 'plain';
+  let missing = 0;
+  await runLimited([...usedImageIds()], 3, async (id) => {
+    const cur = map[id];
+    if (cur && cur.ks === want) return;
+    let blob = null;
+    try { const rec = await imgGet(id); blob = rec ? await imgDecode(rec) : null; } catch (e) { blob = null; }
+    // 端末に無ければ、Drive にある古い守り方のものを開けるなら、それを包み直す
+    if (!blob && cur) { try { blob = await driveImgUnpack(await D.download(tok, cur.fid, 'blob')); } catch (e) { blob = null; } }
+    if (!blob) { if (!cur) missing++; return; }   // 古い守り方のものしか無いなら、それを残す（消すより良い）
+    const p = await driveImgPack(blob, encTo);
+    const made = await D.upload(tok, { name: DRIVE_IMG_PREFIX + id, space: 'appDataFolder', content: p.content, mime: p.mime, appProperties: { ks: p.ks } });
+    map[id] = { fid: made.id, ks: p.ks };
+    saveDriveImgMap(map);
+    // 作り直せてから古いファイルを消す（平文や古い鍵の版を Drive に残さない）
+    if (cur && cur.fid && cur.fid !== made.id) await driveRemoveQuiet(D, tok, cur.fid);
+  });
+  return missing;
+}
+/** 本文で使っている写真のうち、端末に無い・読めないものを Drive から受け取る（同時に3枚まで）。
+ *  返り値: 受け取れなかった枚数 */
+async function driveFetchImgs(D, tok, map) {
+  const need = [];
+  for (const id of usedImageIds()) {
+    if (map[id] && !(await imgUsableCached(id))) need.push(id);
+  }
+  let got = 0, failed = 0, gone = false;
+  await runLimited(need, 3, async (id) => {
+    try {
+      const plain = await driveImgUnpack(await D.download(tok, map[id].fid, 'blob'));
+      const rec = await imgEncode(plain);
+      await imgPut({ id, ...rec, size: plain.size });
+      got++;
+    } catch (e) {
+      // 消えていた（作り直された・掃除された）ものは控えから外し、次の一覧で探し直す
+      if (e && e.status === 404) { delete map[id]; gone = true; }
+      console.warn('[diary] Drive の写真を受け取れません', id, e);
+      failed++;
+    }
+  });
+  if (gone) saveDriveImgMap(map);
+  if (got) {
+    const ed = document.getElementById('contentEditor');
+    if (ed) hydrateImages(ed).catch(() => {});
+  }
+  return failed;
+}
+/** Drive の写真の掃除（1日1回・Driveへ書けたあとだけ）。
+ *  - どの日記からも使われておらず、30日以上書かれていないものを消す（使い始めたばかりの写真を
+ *    まだ diary.json に載せていない端末があるかもしれないので、すぐには消さない）
+ *  - 使っている写真の、古い守り方の写し（作り直しで消し損ねたもの）を消す。ただし、いまの鍵の写しが
+ *    一覧で確かめられたときだけ（確かめずに消すと、その写真が Drive から無くなりうる）
+ *  ついでに控え（diary:gd:img）を一覧に合わせて直す。 */
+async function driveImgCleanup(D, tok, encTo, map) {
+  let last = 0;
+  try { last = Number(localStorage.getItem(DRIVE_IMG_GC_KEY) || 0); } catch (e) {}
+  if (Date.now() - last < DRIVE_IMG_GC_EVERY_MS) return;
+  const want = encTo ? encTo.salt : 'plain';
+  const used = usedImageIds();
+  pendingImageIds.forEach(id => used.add(id));
+  const cut = Date.now() - DRIVE_IMG_GC_AGE_MS;
+  const { byId } = await driveListImgs(D, tok);
+  for (const id of Object.keys(byId)) {
+    const list = byId[id];
+    if (!used.has(id)) {
+      for (const f of list) if (f.at && f.at < cut) await driveRemoveQuiet(D, tok, f.fid);
+      if (map[id] && list.some(f => f.fid === map[id].fid && f.at && f.at < cut)) delete map[id];
+      continue;
+    }
+    driveImgNotFound.delete(id);
+    const keep = list.find(f => f.ks === want) ? drivePickImg(list, want) : null;
+    if (!keep) {
+      if (!map[id]) { const p = drivePickImg(list, want); map[id] = { fid: p.fid, ks: p.ks }; }
+      continue;
+    }
+    for (const f of list) if (f.fid !== keep.fid && f.ks !== want) await driveRemoveQuiet(D, tok, f.fid);
+    map[id] = { fid: keep.fid, ks: keep.ks };
+  }
+  // 使っているのに Drive に1つも無い写真は、控えから外す（次の同期で送り直す）
+  used.forEach(id => { if (map[id] && !byId[id]) delete map[id]; });
+  saveDriveImgMap(map);
+  try { localStorage.setItem(DRIVE_IMG_GC_KEY, String(Date.now())); } catch (e) {}
 }
 
 /* ── 墓標（tombstone）───────────────────────────────────────
@@ -4297,60 +4514,89 @@ function setDriveSyncProblem(msg) {
   try { updateBackupReminder(); } catch (e) {}
 }
 
+/** 同期を始められるか。sync.js が古いままなら、同期せずに再読み込みを頼む（自動のときも30分に1回は知らせる） */
+function driveReady(quiet) {
+  if (driveLib()) return true;
+  driveWarn('driveStale', DRIVE_STALE_MSG, quiet);
+  setDriveSyncProblem(DRIVE_STALE_MSG);
+  return false;
+}
+
 async function drivePullAndMerge(quiet = false) {
   syncInFlight++;   // 取り込み中は掃除を止める（受け取った画像を先に消してしまうため）
   try {
+    if (!driveReady(quiet)) return;
     if (quiet && !driveHasToken()) return; // 静かな取り込みは認証を求めない（期限切れも含む）
     const blocked = syncBlockedReason();
     if (blocked) { if (!quiet) showToast(blocked, 'error'); return; }
-    await driveEnsureToken(!quiet);
-    // 取り込みは currentEntry ごと差し替えるので、先に編集中の内容を確定させる（#3）
-    if (!(await flushPendingEditsForSync())) {
-      if (quiet) return;
-      if (!confirm('未保存の変更を保存できませんでした。このまま読み込むと変更が失われます。続行しますか？')) return;
-    }
-    const raw = await driveDownloadDiary();
-    if (!raw) {
-      if (!quiet) showToast('Driveに diary.json がありません', 'warning');
-      return;
-    }
-    // 暗号化されているかを控える（開けなくても。次にこの端末から書くとき平文で潰さないため）
-    noteDriveEnc(raw);
-    let data;
-    if (!quiet && isEncBlob(raw)) {
-      data = JSON.parse(await decryptIncomingBlob(raw)); // 手動時のみパスフレーズを要求
-    } else {
-      data = await decodeRemoteSyncPayload(raw);
-    }
-    if (!data || !Array.isArray(data.entries)) {
-      if (!quiet) showToast('Driveのデータ形式が不正です', 'warning');
-      return;
-    }
-    // Drive由来データも信頼せずサニタイズ・正規化してからマージ（#5）
-    const incoming = data.entries.filter(e => e && typeof e === 'object' && e.id).map(normalizeImportedEntry);
-    // バックアップから戻した日記に当たる墓標は捨てる（戻した日記が次の同期で消えないように）
-    const tombs = applyRestored(entries, mergeTombs(loadTombstones(), Array.isArray(data.deleted) ? data.deleted : []));
-    saveTombstones(tombs);
-    // 他端末で貼った画像も受け取る（これが無いと本文に「画像が見つかりません」が並ぶ）
-    let imgFailed = 0;
-    if (Array.isArray(data.images) && data.images.length) imgFailed = await restoreImages(data.images);
-    if (imgFailed) driveWarn('imgRestore', `Driveの画像${imgFailed}枚を端末に取り込めませんでした（空き容量をご確認ください）`, quiet);
-    const r = mergeEntriesByUpdatedAt(entries, incoming, tombs);
-    const d = dedupeEntriesByDate(r.merged);
-    entries = d.entries;
-    // マージでオブジェクトが差し替わっている可能性があるため、編集中エントリを引き直す。
-    // 消えていたらここでエディタを閉じて知らせる（黙って入力を捨てない）
-    const lostCurrent = rebindCurrentEntryAfterMerge();
-    await saveEntriesToStorage();
-    renderCalendar();
-    renderEntriesList();
-    // 通信の往復中に打ち始めていたら本文は描き直さない（打った文字が消えるため）。
-    // ただし開いていた日記自体が消えた場合は rebind 側で描き直し済み
-    if (!lostCurrent && !isDirty) renderEditor();
-    setDriveSyncProblem(null);
-    if (!quiet || r.added || r.updated) {
-      showToast(`Drive: 追加${r.added} 更新${r.updated}` + (d.merged ? ` 同日統合${d.merged}` : ''), 'success');
-    }
+    // ★手動のときは、クリックの中で（await の前に）トークンを頼む。ログイン画面を出せるのはその間だけ
+    const tokP = driveToken(!quiet);
+    tokP.catch(() => {});
+    await driveLocked(async (D) => {
+      const tok = await tokP;
+      // 取り込みは currentEntry ごと差し替えるので、先に編集中の内容を確定させる（#3）
+      if (!(await flushPendingEditsForSync())) {
+        if (quiet) return;
+        if (!confirm('未保存の変更を保存できませんでした。このまま読み込むと変更が失われます。続行しますか？')) return;
+      }
+      const ff = await driveLocate(D, tok);
+      if (!ff.id) {
+        if (!quiet) showToast('Driveに diary.json がありません', 'warning');
+        return;
+      }
+      const raw = await driveDownloadDiaryById(D, tok, ff.id);
+      // 暗号化されているかを控える（開けなくても。次にこの端末から書くとき平文で潰さないため）
+      noteDriveEnc(raw);
+      let data;
+      if (!quiet && isEncBlob(raw)) {
+        data = JSON.parse(await decryptIncomingBlob(raw)); // 手動時のみパスフレーズを要求
+      } else {
+        data = await decodeRemoteSyncPayload(raw);
+      }
+      if (!data || !Array.isArray(data.entries)) {
+        if (!quiet) showToast('Driveのデータ形式が不正です', 'warning');
+        return;
+      }
+      // 重複した diary.json にしか無い日記・削除の記録も取り込む（書き戻しとゴミ箱へは保存のときに）。
+      // 正のファイルを開いたあとで読む（いま入れたパスフレーズの鍵で、重複も開けるように）
+      const dups = await driveReadDups(D, tok, ff.dups);
+      noteDriveEnc(driveEncRef(raw, dups));
+      data = driveMergeDups(data, dups);
+      // Drive由来データも信頼せずサニタイズ・正規化してからマージ（#5）
+      const incoming = data.entries.filter(e => e && typeof e === 'object' && e.id).map(normalizeImportedEntry);
+      // バックアップから戻した日記に当たる墓標は捨てる（戻した日記が次の同期で消えないように）
+      const tombs = applyRestored(entries, mergeTombs(loadTombstones(), Array.isArray(data.deleted) ? data.deleted : []));
+      saveTombstones(tombs);
+      // 写真を中に入れていた旧版の diary.json なら、端末に無い・読めないものだけ受け取る
+      let imgFailed = 0;
+      if (Array.isArray(data.images) && data.images.length) imgFailed = await restoreImages(data.images);
+      if (imgFailed) driveWarn('imgRestore', `Driveの画像${imgFailed}枚を端末に取り込めませんでした（空き容量をご確認ください）`, quiet);
+      const r = mergeEntriesByUpdatedAt(entries, incoming, tombs);
+      const d = dedupeEntriesByDate(r.merged);
+      entries = d.entries;
+      // マージでオブジェクトが差し替わっている可能性があるため、編集中エントリを引き直す。
+      // 消えていたらここでエディタを閉じて知らせる（黙って入力を捨てない）
+      const lostCurrent = rebindCurrentEntryAfterMerge();
+      await saveEntriesToStorage();
+      renderCalendar();
+      renderEntriesList();
+      // 通信の往復中に打ち始めていたら本文は描き直さない（打った文字が消えるため）。
+      // ただし開いていた日記自体が消えた場合は rebind 側で描き直し済み
+      if (!lostCurrent && !isDirty) renderEditor();
+      setDriveSyncProblem(null);
+      if (!quiet || r.added || r.updated) {
+        showToast(`Drive: 追加${r.added} 更新${r.updated}` + (d.merged ? ` 同日統合${d.merged}` : ''), 'success');
+      }
+      // 他端末で貼った写真は、写真ごとのファイルから受け取る（端末に無い・読めないものだけ）
+      const drec = isEncBlob(raw) ? raw.salt : 'plain';
+      let fetchFailed = 0;
+      try {
+        const map = await driveImgMap(D, tok, drec, ff.foreign);
+        try { localStorage.setItem(DRIVE_SYNCFILE_KEY, ff.id); } catch (e) {}
+        fetchFailed = await driveFetchImgs(D, tok, map);
+      } catch (e) { console.warn('[diary] Drive の写真', e); fetchFailed = -1; }
+      if (fetchFailed) driveWarn('imgFetch', 'Driveの写真の一部を受け取れませんでした（通信・空き容量・パスフレーズをご確認ください）。次の同期でもう一度試します', quiet);
+    });
   } catch (err) {
     console.error(err);
     const m = String((err && err.message) || err);
@@ -4365,7 +4611,7 @@ async function drivePullAndMerge(quiet = false) {
       return;
     }
     if (quiet) return;
-    showToast(m === 'cancelled' ? 'ロック解除をキャンセルしました' : m === 'BAD_ITER' ? BAD_ITER_MSG : 'Drive 読み込み失敗', m === 'cancelled' ? 'warning' : 'error');
+    showToast(m === 'cancelled' ? 'ロック解除をキャンセルしました' : m === 'BAD_ITER' ? BAD_ITER_MSG : (driveErrMsg(err) || 'Drive 読み込み失敗'), m === 'cancelled' ? 'warning' : 'error');
   } finally {
     syncInFlight--;
   }
@@ -4379,55 +4625,42 @@ function remoteHasContent(remote) {
   return Array.isArray(remote.entries) && remote.entries.length > 0;
 }
 
-// hint: { count, fileId, remote, allowEmpty } いずれも省略可（呼び出し側が既に知っていれば渡す）
+// hint: { count, fileId, remote, allowEmpty, recreate } いずれも省略可（呼び出し側が既に知っていれば渡す）
 // allowEmpty: 0件になった理由が説明できている（墓標で全部消した／利用者が明示的に作り直した）
-async function driveUploadDiaryObject(obj, hint) {
+// recreate: 守り方が変わる（平文→暗号化・別の鍵）。書き換えずに作り直して、古いファイルは消す。
+//   Drive は書き換える前の版を30日ほど残すので、書き換えると平文や古い鍵の版が残ってしまう。
+//   新しい方を作ってから古い方を消す（途中で止まっても、どちらかは残る）。古い方を消せなかったときは、
+//   次の同期でも正（いちばん古いもの）がまだ古い守り方なので、もう一度作り直すことになる
+// 返り値: 書けた diary.json の { id, modifiedTime }
+async function driveUploadDiaryObject(D, tok, obj, hint) {
   hint = hint || {};
-  const fileId = (hint.fileId !== undefined) ? hint.fileId : await driveFindDiaryFileId();
+  const fileId = hint.fileId || null;
   const count = (typeof hint.count === 'number')
     ? hint.count
     : (obj && Array.isArray(obj.entries) ? obj.entries.length : -1);
   if (fileId && count === 0 && !hint.allowEmpty) {
     let remote = hint.remote;
-    if (remote === undefined) { try { remote = await driveDownloadDiaryById(fileId); } catch (e) { remote = null; } }
+    if (remote === undefined) { try { remote = await driveDownloadDiaryById(D, tok, fileId); } catch (e) { remote = null; } }
     if (remoteHasContent(remote)) throw new Error('EMPTY_OVERWRITE');
   }
-
-  const metadata = fileId
-    ? { name: DRIVEDIARYFILENAME }
-    : { name: DRIVEDIARYFILENAME, parents: ['appDataFolder'] };
-
-  const form = new FormData();
-  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-  form.append('file', new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' }));
-
-  let token = await driveEnsureToken(false);
-  const url = fileId
-    ? `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`
-    : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
-  const method = fileId ? 'PATCH' : 'POST';
-
-  let res = await fetch(url, { method, headers: { Authorization: `Bearer ${token}` }, body: form });
-  if (res.status === 401) {
-    // トークン期限切れ等。再取得して一度だけ再試行（#9）
-    driveAccessToken = null;
-    token = await driveRequestToken('');
-    res = await fetch(url, { method, headers: { Authorization: `Bearer ${token}` }, body: form });
-  }
-  if (!res.ok) throw new Error(await res.text());
-  return await res.json();
+  const content = JSON.stringify(obj, null, 2);
+  if (fileId && !hint.recreate) return await D.upload(tok, { id: fileId, content, mime: 'application/json' });
+  const made = await D.upload(tok, { name: DRIVEDIARYFILENAME, space: 'appDataFolder', content, mime: 'application/json' });
+  try { localStorage.setItem(DRIVE_FILE_KEY, made.id); } catch (e) {}
+  if (fileId) await driveRemoveQuiet(D, tok, fileId);
+  return made;
 }
 
 /* Drive同期は「読んで→混ぜて→書く」。全件上書きだと、他端末で書いた日記が
    こちらの1文字目の自動保存で消える（#2）。
-   同時に走らせないのは、driveFindDiaryFileId が両方とも null を返して
-   appDataFolder に diary.json が2つできてしまうため。 */
+   同時に走らせないのは、どちらも「diary.json がまだ無い」と見て
+   appDataFolder に diary.json が2つできてしまうため（別のタブとは driveLocked で重ねない）。 */
 let drivePushBusy = false;
 let drivePushPending = false;
 
 /* 自動同期は「打つたび」には走らせない。
-   本文の自動保存は入力が0.8秒止まるたびに走るので、そのたびに全画像を含む
-   ファイルを送ると、写真が増えるほど通信量と待ち時間が膨らむ。
+   本文の自動保存は入力が0.8秒止まるたびに走るので、そのたびに送ると通信が膨らむ
+   （写真は別ファイルにして、変わったものだけ送るようになったが、diary.json は毎回まるごと送る）。
    静かな同期はまとめて一定間隔にする（手動の「Driveへ保存」は待たせない）。 */
 const DRIVE_QUIET_MIN_INTERVAL_MS = 20000;
 let drivePushQuietTimer = null;
@@ -4480,6 +4713,7 @@ async function drivePushRun(quiet = false) {
 async function drivePushAllOnce(quiet) {
   syncInFlight++;   // 送信中は掃除を止める（相手から受け取った画像を消さないため）
   try {
+    if (!driveReady(quiet)) return;
     if (quiet && !driveHasToken()) {
       // 自動同期はユーザー操作なしで認証ポップアップを開けない（ブロックされる）ため、
       // 有効なトークンが無いときは静かにスキップする。次回の手動操作で再認証される。
@@ -4489,7 +4723,11 @@ async function drivePushAllOnce(quiet) {
     // 空の平文で消えたうえに markBackupDone で督促まで隠れる（#1）
     const blocked = syncBlockedReason();
     if (blocked) { if (!quiet) showToast(blocked, 'error'); return; }
-    await driveEnsureToken(!quiet);
+    // ★手動のときは、クリックの中で（await の前に）トークンを頼む。ログイン画面を出せるのはその間だけ
+    const tokP = driveToken(!quiet);
+    tokP.catch(() => {});
+    await driveLocked(async (D) => {
+    const tok = await tokP;
 
     // マージの勝敗は updatedAt だけで決まるので、送る前に編集中の分を確定させる。
     // 保存できないまま送ると、ローカルとDriveが食い違ったままになる（B-7）
@@ -4498,13 +4736,14 @@ async function drivePushAllOnce(quiet) {
       return;
     }
 
-    // 1) いまDriveにあるものを読む
-    const fileId = await driveFindDiaryFileId();
+    // 1) いまDriveにあるものを読む（重複した diary.json があれば、その中身も寄せる）
+    const ff = await driveLocate(D, tok);
+    const fileId = ff.id;
     let remote = null, remoteEntries = [], remoteTombs = [], remoteImages = [], remoteBroken = false;
     let rawRemote = null;
     if (fileId) {
       try {
-        rawRemote = await driveDownloadDiaryById(fileId);
+        rawRemote = await driveDownloadDiaryById(D, tok, fileId);
       } catch (e) {
         // 中身が壊れて読めないだけなら、こちらの内容で作り直す。読めないものに
         // 合わせて中止し続けると、バックアップが二度と更新されない（B-4）。
@@ -4514,17 +4753,21 @@ async function drivePushAllOnce(quiet) {
         remoteBroken = true;
       }
       if (rawRemote) {
-        // 暗号化されているかを控える（開けなくても。平文で潰さないため）
-        noteDriveEnc(rawRemote);
         // 開けなければ例外。手動のときはパスフレーズを聞く（聞かずに止めると、再開する手立てが無い）
+        noteDriveEnc(rawRemote);
         remote = (!quiet && isEncBlob(rawRemote))
           ? JSON.parse(await decryptIncomingBlob(rawRemote))
           : await decodeRemoteSyncPayload(rawRemote);
-        if (remote && Array.isArray(remote.entries)) remoteEntries = remote.entries.filter(e => e && typeof e === 'object' && e.id).map(normalizeImportedEntry);
-        if (remote && Array.isArray(remote.deleted)) remoteTombs = remote.deleted;
-        if (remote && Array.isArray(remote.images)) remoteImages = remote.images;
       }
     }
+    const dups = await driveReadDups(D, tok, ff.dups);
+    // 暗号化されているかを控える（開けなくても。平文で潰さないため）。重複のどれかが暗号文でも暗号化とみなす
+    const encRef = driveEncRef(rawRemote, dups);
+    noteDriveEnc(encRef);
+    const merged = driveMergeDups(remote, dups);
+    if (merged && Array.isArray(merged.entries)) remoteEntries = merged.entries.filter(e => e && typeof e === 'object' && e.id).map(normalizeImportedEntry);
+    if (merged && Array.isArray(merged.deleted)) remoteTombs = merged.deleted;
+    if (merged && Array.isArray(merged.images)) remoteImages = merged.images;
     // 通信の往復中に打った分も確定させてからマージする
     if (!(await flushPendingEditsForSync())) {
       if (!quiet) showToast('未保存の変更を保存できないため、Driveへの保存を中止しました', 'error');
@@ -4538,8 +4781,8 @@ async function drivePushAllOnce(quiet) {
     const tombs = applyRestored(entries, mergeTombs(loadTombstones(), remoteTombs));
     const restoredNow = JSON.stringify(entries) !== beforeRestore;
     saveTombstones(tombs);
-    // 相手が持っていた画像を先に取り込む。取り込まずに書き戻すと、
-    // マージで残った相手の日記から画像だけが失われる。
+    // 写真を中に入れていた旧版の diary.json なら、その写真を先に取り込む。取り込まずに書き戻すと
+    // （書き戻す diary.json にはもう写真を入れない）、マージで残った相手の日記から写真だけが失われる。
     if (Array.isArray(remoteImages) && remoteImages.length) {
       const failed = await restoreImages(remoteImages);
       if (failed) {
@@ -4566,22 +4809,25 @@ async function drivePushAllOnce(quiet) {
     const emptyByTombstone = entries.length === 0
       && remoteEntries.every(e => tombIds.has(String(e.id)));
 
-    // 4) 同じものをDriveへ書き戻す。
-    //    こちらで用意できなかった画像は、Driveにあったぶんをそのまま持ち越す。
-    //    持ち越さないと、1枚読めなかっただけでDrive側から写真が消える
+    // 4) 写真を先に送り、そのあとで diary.json を書き戻す（diary.json だけ先に進めない）。
     //    Drive が暗号化されていれば平文では書かない（鍵が無ければここで止まる）
-    const encTo = driveUploadEnc(rawRemote);
-    const obj = await buildSyncObject(tombs, remoteImages, encTo);
-    // ここまで来て足りない画像は、この端末にもDriveにも無いもの。送っても
+    const encTo = driveUploadEnc(encRef);
+    const map = await driveImgMap(D, tok, encTo ? encTo.salt : 'plain', ff.foreign);
+    const missing = await drivePushImgs(D, tok, encTo, map);
+    // ここまで来て足りない写真は、この端末にもDriveにも無いもの。送っても
     // 失われるものは無いので、同期は止めない（止めると二度と保存できなくなる）。
     // ただし本文が画像を指しているのに実体が無い、という事実は伝える
-    if (buildSyncObject.lastMissing) {
-      driveWarn('imgMissing', `本文で使っている画像${buildSyncObject.lastMissing}枚が見つかりません（バックアップから戻すと復活することがあります）`, quiet);
+    if (missing) {
+      driveWarn('imgMissing', `本文で使っている画像${missing}枚が見つかりません（バックアップから戻すと復活することがあります）`, quiet);
     }
-    await driveUploadDiaryObject(obj, {
-      count: entries.length, fileId, remote,
+    const obj = await buildSyncObject(tombs, null, encTo, true);
+    // 平文から暗号化へ（または別の鍵へ）変わるときは、書き換えずに作り直す（古い版を Drive に残さない）
+    const recreate = !!(fileId && encTo && rawRemote && (!isEncBlob(rawRemote) || rawRemote.salt !== encTo.salt));
+    const up = await driveUploadDiaryObject(D, tok, obj, {
+      count: entries.length, fileId, remote, recreate,
       allowEmpty: emptyByTombstone || remoteBroken
     });
+    driveSetSyncFile(up.id);
     noteDriveEnc(obj);
     if (!encTo || encTo.mine) clearDriveReplace();   // Drive はこの端末の設定どおりになった
     markBackupDone();
@@ -4595,6 +4841,16 @@ async function drivePushAllOnce(quiet) {
       if (!lostCurrent && !isDirty) renderEditor(); // 打っている最中は本文を描き直さない
     }
     if (!quiet) showToast('Driveへ保存しました', 'success');
+    // 5) 書けたあとの片付け。重複した diary.json（中身は寄せ済み）、他端末の写真の受け取り、
+    //    Drive の写真の掃除（diary.json と重複分を全部読めたときだけ。読めないものの写真を消さない）。
+    //    ここで失敗しても保存はできているので、「保存失敗」とは言わない（次の同期でやり直す）
+    try {
+      await driveRetireDups(D, tok, dups, !!encTo);
+      const fetchFailed = await driveFetchImgs(D, tok, map);
+      if (fetchFailed) driveWarn('imgFetch', `Driveの写真${fetchFailed}枚を受け取れませんでした（通信・空き容量・パスフレーズをご確認ください）。次の同期でもう一度試します`, quiet);
+      if (!remoteBroken && dups.every(x => x.data)) await driveImgCleanup(D, tok, encTo, map);
+    } catch (e) { console.warn('[diary] Drive の片付け', e); }
+    });
   } catch (err) {
     console.error(err);
     const m = String((err && err.message) || err);
@@ -4608,7 +4864,7 @@ async function drivePushAllOnce(quiet) {
       driveWarn('emptyOverwrite', 'Driveの日記を空で上書きしそうになったため中止しました', quiet);
       setDriveSyncProblem('Driveへの保存が中止されています（空で上書きしそうになりました）。');
     } else if (!quiet) {
-      showToast(m === 'cancelled' ? 'ロック解除をキャンセルしました' : m === 'BAD_ITER' ? BAD_ITER_MSG : 'Drive 保存失敗', m === 'cancelled' ? 'warning' : 'error');
+      showToast(m === 'cancelled' ? 'ロック解除をキャンセルしました' : m === 'BAD_ITER' ? BAD_ITER_MSG : (driveErrMsg(err) || 'Drive 保存失敗'), m === 'cancelled' ? 'warning' : 'error');
     }
   } finally {
     syncInFlight--;
@@ -4619,8 +4875,13 @@ async function drivePushAllOnce(quiet) {
    読めないものに合わせて止まり続けるより、いま手元にある内容で作り直せるようにする。
    暗号化を解除したあと（Drive側は暗号文のまま）もここで復旧できる（B-3）。 */
 async function driveRebuildRemote(quiet = false) {
+  if (!driveReady(quiet)) return false;
   const blocked = syncBlockedReason();
   if (blocked) { if (!quiet) showToast(blocked, 'error'); return false; }
+  // ★手動のときは、確認を出す前に（クリックの中で）トークンを頼む。確認のあとではログイン画面を出せないことがある
+  if (quiet && !driveHasToken()) return false;
+  const tokP = driveToken(!quiet);
+  tokP.catch(() => {});
   if (!quiet) {
     const warn = entries.length === 0
       ? 'いまこの端末の日記は0件です。Drive上の日記も0件で作り直します。よろしいですか？'
@@ -4628,51 +4889,62 @@ async function driveRebuildRemote(quiet = false) {
     if (!confirm(warn)) return false;
   }
   try {
-    await driveEnsureToken(!quiet);
-    if (!(await flushPendingEditsForSync())) {
-      if (!quiet) showToast('未保存の変更を保存できないため中止しました', 'error');
-      return false;
-    }
-    const fileId = await driveFindDiaryFileId();
-    // 作り直しても、暗号化された Drive を黙って平文にはしない。いまの中身を見て鍵を決める
-    // （壊れて読めないときは控え diaryDriveEnc で判断する）
-    let rawRemote = null;
-    if (fileId) {
-      try { rawRemote = await driveDownloadDiaryById(fileId); }
-      catch (e) { if (!/REMOTE_CORRUPT/.test(String((e && e.message) || e))) throw e; }
-      noteDriveEnc(rawRemote);
-      if (isEncBlob(rawRemote)) { try { await decodeRemoteSyncPayload(rawRemote); } catch (e) {} }   // 手元の鍵で開けるか
-    }
-    let encTo;
-    try { encTo = driveUploadEnc(rawRemote); }
-    catch (e) {
-      if (!/REMOTE_ENC_NOKEY/.test(String((e && e.message) || e))) throw e;
-      if (encEnabled && cryptoKey && encMeta) {
-        // 作り直すと決めたので、この端末の鍵で暗号化して書く（平文にはならない）
-        encTo = { key: cryptoKey, salt: encMeta.salt, iter: encMeta.iter, mine: true };
-      } else {
-        // 平文で置き換えるのは、利用者がはっきり選んだときだけ（自動では書かない）
-        if (quiet || !confirm('Drive上の日記は暗号化されていますが、この端末では暗号化が無効です。\n\nこのまま作り直すと Drive 上の日記は平文になり、他の端末も暗号化されていない日記を受け取ります。よろしいですか？\n（暗号化したままにするには、キャンセルして「Driveから読み込み」でパスフレーズを入力してください）')) return false;
-        encTo = null;
+    return await driveLocked(async (D) => {
+      const tok = await tokP;
+      if (!(await flushPendingEditsForSync())) {
+        if (!quiet) showToast('未保存の変更を保存できないため中止しました', 'error');
+        return false;
       }
-    }
-    const tombs = loadTombstones();
-    const obj = await buildSyncObject(tombs, undefined, encTo);
-    // 利用者が明示的に「作り直す」と言っているので、空でも止めない。
-    // ただし画像が欠けたまま作り直すと他端末の写真まで消えるので、それは伝える
-    if (buildSyncObject.lastMissing && !quiet) {
-      if (!confirm(`本文で使っている画像${buildSyncObject.lastMissing}枚がこの端末で見つかりません。このまま作り直すと、その画像はDriveからも失われます。続けますか？`)) return false;
-    }
-    await driveUploadDiaryObject(obj, { count: entries.length, fileId, allowEmpty: true });
-    noteDriveEnc(obj);
-    if (!encTo || encTo.mine) clearDriveReplace();
-    markBackupDone();
-    setDriveSyncProblem(null);
-    if (!quiet) showToast('Driveを作り直しました', 'success');
-    return true;
+      const ff = await driveLocate(D, tok);
+      const fileId = ff.id;
+      // 作り直しても、暗号化された Drive を黙って平文にはしない。いまの中身を見て鍵を決める
+      // （壊れて読めないときは控え diaryDriveEnc で判断する）
+      let rawRemote = null;
+      if (fileId) {
+        try { rawRemote = await driveDownloadDiaryById(D, tok, fileId); }
+        catch (e) { if (!/REMOTE_CORRUPT/.test(String((e && e.message) || e))) throw e; }
+        noteDriveEnc(rawRemote);
+        if (isEncBlob(rawRemote)) { try { await decodeRemoteSyncPayload(rawRemote); } catch (e) {} }   // 手元の鍵で開けるか
+      }
+      // 重複のどれかが暗号文なら、Drive は暗号化されているとみなす（driveEncRef）
+      const encRef = driveEncRef(rawRemote, await driveReadDups(D, tok, ff.dups));
+      noteDriveEnc(encRef);
+      let encTo;
+      try { encTo = driveUploadEnc(encRef); }
+      catch (e) {
+        if (!/REMOTE_ENC_NOKEY/.test(String((e && e.message) || e))) throw e;
+        if (encEnabled && cryptoKey && encMeta) {
+          // 作り直すと決めたので、この端末の鍵で暗号化して書く（平文にはならない）
+          encTo = { key: cryptoKey, salt: encMeta.salt, iter: encMeta.iter, mine: true };
+        } else {
+          // 平文で置き換えるのは、利用者がはっきり選んだときだけ（自動では書かない）
+          if (quiet || !confirm('Drive上の日記は暗号化されていますが、この端末では暗号化が無効です。\n\nこのまま作り直すと Drive 上の日記は平文になり、他の端末も暗号化されていない日記を受け取ります。よろしいですか？\n（暗号化したままにするには、キャンセルして「Driveから読み込み」でパスフレーズを入力してください）')) return false;
+          encTo = null;
+        }
+      }
+      // 写真を先に送る（Drive にあるものはそのまま使う）
+      const map = await driveImgMap(D, tok, encTo ? encTo.salt : 'plain', ff.foreign);
+      const missing = await drivePushImgs(D, tok, encTo, map);
+      // 利用者が明示的に「作り直す」と言っているので、空でも止めない。
+      // ただし写真が欠けたまま作り直すことは伝える（この端末にも Drive にも無い写真）
+      if (missing && !quiet) {
+        if (!confirm(`本文で使っている画像${missing}枚がこの端末にもDriveにも見つかりません。このまま作り直すと、その画像は表示できないままになります。続けますか？`)) return false;
+      }
+      const tombs = loadTombstones();
+      const obj = await buildSyncObject(tombs, null, encTo, true);
+      const recreate = !!(fileId && encTo && rawRemote && (!isEncBlob(rawRemote) || rawRemote.salt !== encTo.salt));
+      const up = await driveUploadDiaryObject(D, tok, obj, { count: entries.length, fileId, recreate, allowEmpty: true });
+      driveSetSyncFile(up.id);
+      noteDriveEnc(obj);
+      if (!encTo || encTo.mine) clearDriveReplace();
+      markBackupDone();
+      setDriveSyncProblem(null);
+      if (!quiet) showToast('Driveを作り直しました', 'success');
+      return true;
+    });
   } catch (err) {
     console.error(err);
-    if (!quiet) showToast('Driveの作り直しに失敗しました', 'error');
+    if (!quiet) showToast(driveErrMsg(err) || 'Driveの作り直しに失敗しました', 'error');
     return false;
   }
 }
@@ -4850,8 +5122,9 @@ function toggleAutoSyncDrive() {
     if(d.nkSync==='security'){ try{ window.openSecurityModal(); }catch(err){} setTimeout(reportEnc,400); return; }
     if(d.nkSync==='cid'){
       try{ localStorage.removeItem('shared:gd:token'); }catch(err){}
-      // クライアントIDが変わった。古いIDで作ったログイン部品と手元のトークンも捨てる（次の要求で作り直す）
-      try{ driveAccessToken=null; driveAccessTokenExp=0; driveTokenClient=null; }catch(err){}
+      // クライアントIDが変わると appDataFolder も別の置き場になる。前の置き場の diary.json と写真のidは捨てる
+      // （Drive の暗号化の控え diaryDriveEnc は残す。平文で上書きしないほうへ倒す）
+      try{ localStorage.removeItem('diary:gd:file'); localStorage.removeItem('diary:gd:img'); }catch(err){}
       return;
     }
   });
