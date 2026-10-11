@@ -764,7 +764,9 @@
        *  やりとりする前に、Driveの最新を取り込んでおくためなど）。
        *  走行中ならそれが終わってからもう一度。まだつないでいなければ何もしない */
       syncQuiet: function () {
-        if (!clientId()) return Promise.resolve();
+        // 自動同期をOFFにしているあいだは混ぜない（バックアップから戻した直後など。
+        // 入口が「内容を確かめてからONに」と案内しているのを、裏で崩さない）
+        if (!clientId() || !autoOn()) return Promise.resolve();
         var noop = function () {};
         return (inflight || Promise.resolve()).then(noop, noop).then(function () { return run(false); });
       },
