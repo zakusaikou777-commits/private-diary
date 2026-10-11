@@ -14,7 +14,10 @@
   window.google.accounts = window.google.accounts || {};
   window.google.accounts.oauth2 = {
     initTokenClient: function (cfg) {
-      return {
+      // 本物と同じく、作ったあとで client.callback / error_callback を差し替えても効くようにする
+      var client = {
+        callback: cfg.callback,
+        error_callback: cfg.error_callback,
         requestAccessToken: function (o) {
           var c = cfgOf(), mode = c.mode || "ok", t = topWin();
           var hasAct = false;
@@ -27,11 +30,12 @@
             else t.__fakeGisPopupUsed = true;
           }
           setTimeout(function () {
-            if (fail) { if (cfg.error_callback) cfg.error_callback({ type: "popup_failed_to_open" }); return; }
-            cfg.callback({ access_token: "fake." + btoa(cfg.scope || ""), expires_in: 3599, scope: cfg.scope || "", token_type: "Bearer" });
+            if (fail) { if (client.error_callback) client.error_callback({ type: "popup_failed_to_open" }); return; }
+            client.callback({ access_token: "fake." + btoa(cfg.scope || ""), expires_in: 3599, scope: cfg.scope || "", token_type: "Bearer" });
           }, c.delay == null ? 10 : c.delay);
         }
       };
+      return client;
     },
     revoke: function (tok, cb) { if (cb) setTimeout(cb, 0); },
     hasGrantedAllScopes: function (resp) {
