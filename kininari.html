@@ -323,6 +323,8 @@ function _extends() { return _extends = Object.assign ? Object.assign.bind() : f
 const {
   useState,
   useEffect,
+  useLayoutEffect,
+  useCallback,
   useMemo,
   useRef
 } = React;
@@ -698,6 +700,9 @@ function normalizeMemo(m) {
   };
   delete o.link;
   if (o.gcalEventId != null && typeof o.gcalEventId !== "string") delete o.gcalEventId;
+  // ノート表示の箱の並び。壊れた・他端末から来た形でも描画で落ちないようにそろえる（無ければ持たない）
+  const cv = normalizeCanvas(m.canvas);
+  if (cv) o.canvas = cv;else delete o.canvas;
   return o;
 }
 function normalizeFolder(f, i) {
@@ -1006,9 +1011,13 @@ function bodyImageIds(html) {
   while ((m = KID_RE.exec(html))) out.push(m[1]);
   return out;
 }
-// メモ1件が参照している全ファイルID（添付＋本文画像）
+// メモ1件が参照している全ファイルID（添付＋本文画像＋ノート表示の箱）。
+// Driveへの送信・Driveの片付け・端末の掃除（gcAttachments）・書き出しは、どれもここで「使われている」を判断する。
+// 箱の画像は本文に、PDF・ファイルは添付にも入るが、念のため箱そのものも数える（本文が古い版に書き換えられても消さない）
 function memoFileIds(m) {
-  return [...(m.attachments || []).map(a => a.id), ...bodyImageIds(m.body)];
+  const ids = [...(m.attachments || []).map(a => a.id), ...bodyImageIds(m.body)];
+  if (m.canvas && Array.isArray(m.canvas.blocks)) m.canvas.blocks.forEach(b => { if (b && b.kid) ids.push(b.kid); });
+  return ids;
 }
 // data-kid を持つ <img> に IndexedDB から blob URL を割り当てる。
 // 返り値は生成したURLの配列（呼び出し側で revoke する）
@@ -1256,6 +1265,8 @@ async function gdAttFetchMissing(D, token, memos) {
   const want = new Set();
   memos.forEach(m => {
     (m.attachments || []).forEach(a => { if (a && a.id) info[a.id] = a; });
+    // ノートの画像の箱は添付に入らないので、名前と種類は箱から拾う
+    if (m.canvas && Array.isArray(m.canvas.blocks)) m.canvas.blocks.forEach(b => { if (b && b.kid && !info[b.kid]) info[b.kid] = b; });
     memoFileIds(m).forEach(id => want.add(id));
   });
   if (!want.size) return 0;
@@ -2530,7 +2541,8 @@ function MemoCard({
   onSave,
   onTagClick,
   onSetGcal,
-  onToast
+  onToast,
+  onOpenNote
 }) {
   const [editing, setEditing] = useState(false);
   const [t, setT] = useState(memo.title);
@@ -2544,10 +2556,17 @@ function MemoCard({
   const [remind, setRemind] = useState(memo.remind ?? null);
   const [attachments, setAttachments] = useState(memo.attachments || []);
   const [viewer, setViewer] = useState(null);
-  const [gcalBusy, setGcalBusy] = useState(false);
+  const { gcalBusy, calRegister, calUpdate, calUnregister } = useGcalActions(memo, onSetGcal, onToast);
+  // ノート表示で作った（箱のある）メモは、ここの編集ではなくノートのページで書く（編集のしかたを1つにする）
+  const noteEdit = () => {
+    if (!memo.canvas || !onOpenNote) return false;
+    onOpenNote(memo.id);
+    return true;
+  };
   // 全画面で見る／書く。カードの中は狭くて、本文も表も窮屈だった。
   const [full, setFull] = useState(false);
   const openFull = (edit) => {
+    if (edit && noteEdit()) return;
     if (edit) {
       setT(memo.title); setB(memo.body); setCat(memo.category);
       setTags(memo.tags || []); setLinks(memo.links || []); setFid(memo.notebookId);
@@ -2592,6 +2611,8 @@ function MemoCard({
     let pushed = false;
     try { window.history.pushState({ knFull: memo.id }, ""); pushed = true; } catch (e) {}
     const onPop = () => {
+      // 上に重ねたノートの全画面が自分の履歴を戻しただけのときは、閉じない
+      if (Date.now() < knPopIgnoreUntil) return;
       pushed = false;
       // 「戻る」も×と同じ扱いにする。ここだけ確認なしで捨てていた。
       if (dirtyRef.current && dirtyRef.current()) {
@@ -2638,73 +2659,10 @@ function MemoCard({
         }, "\u00D7")),
       React.createElement("div", { className: "kn-full-body" }, inner)));
   };
-  const calRegister = async () => {
-    setGcalBusy(true);
-    try {
-      const ev = await calRun(tk => gcalInsert(tk, memo));
-      onSetGcal(memo.id, ev.id);
-      onToast({
-        title: "Googleカレンダーに登録しました",
-        body: memo.time ? "" : "終日予定として登録しました。"
-      });
-    } catch (e) {
-      onToast({
-        title: "登録できませんでした",
-        body: calErr(e)
-      });
-    }
-    setGcalBusy(false);
-  };
-  const calUpdate = async () => {
-    setGcalBusy(true);
-    try {
-      await calRun(tk => gcalPatch(tk, memo.gcalEventId, memo));
-      onToast({
-        title: "カレンダーを更新しました",
-        body: ""
-      });
-    } catch (e) {
-      if (/4(03|04|10)/.test(String(e && e.message || e))) {
-        try {
-          const ev = await calRun(tk => gcalInsert(tk, memo));
-          onSetGcal(memo.id, ev.id);
-          onToast({
-            title: "カレンダーに再登録しました",
-            body: ""
-          });
-        } catch (e2) {
-          onToast({
-            title: "更新できませんでした",
-            body: calErr(e2)
-          });
-        }
-      } else onToast({
-        title: "更新できませんでした",
-        body: calErr(e)
-      });
-    }
-    setGcalBusy(false);
-  };
-  const calUnregister = async () => {
-    setGcalBusy(true);
-    try {
-      await calRun(tk => gcalDelete(tk, memo.gcalEventId));
-      onSetGcal(memo.id, null);
-      onToast({
-        title: "カレンダーから削除しました",
-        body: ""
-      });
-    } catch (e) {
-      onToast({
-        title: "削除できませんでした",
-        body: calErr(e)
-      });
-    }
-    setGcalBusy(false);
-  };
   const cardUrls = useAttachmentUrls(memo.attachments);
   const editDnd = dropPasteHandlers(added => setAttachments(prev => [...prev, ...added]));
   const begin = () => {
+    if (noteEdit()) return;
     setT(memo.title);
     setB(memo.body);
     setCat(memo.category);
@@ -2955,15 +2913,7 @@ function MemoCard({
   }), inShell ? React.createElement("button", {
     className: "mini",
     title: "タスクタブに送る（このメモは残ります）",
-    onClick: () => {
-      try {
-        parent.postMessage({ nkToTask: {
-          title: memo.title || "(無題)",
-          note: htmlToText(memo.body || "").slice(0, 500),
-          date: memo.date || "", time: memo.time || ""
-        } }, window.location.origin);
-      } catch (e) {}
-    }
+    onClick: () => sendMemoToTask(memo)
   }, "\u30BF\u30B9\u30AF\u306B\u3059\u308B") : null, React.createElement("button", {
     className: "mini",
     onClick: begin
@@ -4034,6 +3984,2377 @@ function ReviewFocus({ memo, index, total, onAnswer, onClose }) {
   ));
 }
 
+/* ══ ノート表示（OneNote風）════════════════════════════════════
+   左＝フォルダ（ノートの見出し）、中＝ページ（メモ）の一覧、右＝ページ。
+   ページの中身は、自由な位置に置ける「箱」（文字・画像・PDF・ファイル）で、マウスで動かせる。
+
+   メモに canvas = { v:1, blocks:[{ id, t, x, y, w, h?, html?, kid?, name?, type?, size? }], sig } を足す。
+     t は "text"（文字）/ "img"（画像）/ "pdf" / "file"。x・y・w・h はページ上の位置と大きさ（px）。
+   ★本文（body）はこれまでどおり必ず持つ。同期・以前の版・カード表示・復習・検索・AI は body を見るので、
+     保存のたびに箱を読む順（上→下、左→右）に並べて作り直す。文字はそのまま、画像は <img data-kid>。
+     PDF・ファイルは本文に入れず、添付（attachments）に入れる（以前の版でも添付として見える）。
+   ★sig は作り直した body の指紋（文字・画像・リンク先だけを見る。ブラウザごとの HTML の書き方の差では
+     変わらない）。body が別の所（以前の版・カードの編集・クリップ）で書き換えられて指紋が合わないときは、
+     画像・PDF・ファイルの箱は位置ごと残し、文字の箱を新しい本文1つに置き換える（中身は失わない）。
+   ★見るだけでは canvas を書かない。ノート表示で触ったときだけ書く。
+   ------------------------------------------------------------ */
+const NOTE_KEY = "kininari:note:";        // 端末ごとの設定（同期しない）: view / w / lc / zoom / sel
+function noteGet(k, def) {
+  try {
+    const v = localStorage.getItem(NOTE_KEY + k);
+    return v == null ? def : JSON.parse(v);
+  } catch (e) { return def; }
+}
+function noteSet(k, v) {
+  try { localStorage.setItem(NOTE_KEY + k, JSON.stringify(v)); } catch (e) {}
+}
+const NOTE_WIDE_Q = "(min-width: 860px)";  // これより狭いと、フォルダ→ページ一覧→ページの順に1枚ずつ出す
+const NOTE_W_DEF = { l: 240, m: 280 };
+const NOTE_W_LIM = { l: [160, 420], m: [180, 560] };
+const noteClampW = (k, v) => {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? Math.min(NOTE_W_LIM[k][1], Math.max(NOTE_W_LIM[k][0], n)) : NOTE_W_DEF[k];
+};
+function noteWidthsGet() {
+  const o = noteGet("w", null) || {};
+  return { l: noteClampW("l", o.l != null ? o.l : NOTE_W_DEF.l), m: noteClampW("m", o.m != null ? o.m : NOTE_W_DEF.m) };
+}
+const noteClampZoom = v => {
+  const n = Math.round(Number(v) / 10) * 10;
+  return Number.isFinite(n) ? Math.min(200, Math.max(50, n)) : 100;
+};
+const NOTE_GRID = 8;
+const NOTE_MAX_BLOCKS = 500;
+const NOTE_TEXT_W = 560;     // 本文を1つの箱にしたときの幅（読みやすい行の長さ）
+const NOTE_NEW_W = 400;      // クリックで作る文字の箱の幅
+const NOTE_KID_RE = /^[A-Za-z0-9_-]{1,80}$/;
+const NOTE_MIN_W = { text: 80, img: 40, pdf: 160, file: 160 };
+const snap8 = v => Math.round(v / NOTE_GRID) * NOTE_GRID;
+function noteNum(v, lo, hi, def) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : def;
+}
+/** 他の端末・取り込み・壊れた保存データから来た canvas を、描画で落ちない形にそろえる。
+ *  形の合わない箱は捨て、数は 500 個まで。（文字の箱の HTML は、描くときにサニタイズする） */
+function normalizeCanvas(c) {
+  if (!c || typeof c !== "object" || Array.isArray(c) || !Array.isArray(c.blocks)) return null;
+  const seen = new Set();
+  const blocks = [];
+  for (const b of c.blocks) {
+    if (blocks.length >= NOTE_MAX_BLOCKS) break;
+    if (!b || typeof b !== "object" || Array.isArray(b)) continue;
+    const t = b.t;
+    if (t !== "text" && t !== "img" && t !== "pdf" && t !== "file") continue;
+    let id = normStr(b.id).slice(0, 80);
+    if (!id || seen.has(id)) id = uid();
+    seen.add(id);
+    const o = {
+      id,
+      t,
+      x: noteNum(b.x, 0, 20000, 24),
+      y: noteNum(b.y, 0, 100000, 24),
+      w: noteNum(b.w, NOTE_MIN_W[t], 4000, t === "text" ? NOTE_TEXT_W : 320)
+    };
+    if (t === "text") {
+      o.html = typeof b.html === "string" ? b.html.slice(0, 400000) : "";
+    } else {
+      const kid = normStr(b.kid);
+      if (!NOTE_KID_RE.test(kid)) continue;
+      o.kid = kid;
+      o.name = normStr(b.name).slice(0, 200) || (t === "img" ? "画像" : "file");
+      o.type = normStr(b.type).slice(0, 120);
+      if (t === "img" && b.h != null && Number.isFinite(Number(b.h))) o.h = noteNum(b.h, 8, 40000, 8);
+      if (t !== "img" && b.size != null && Number.isFinite(Number(b.size))) o.size = Math.max(0, Math.round(Number(b.size)));
+    }
+    blocks.push(o);
+  }
+  return { v: 1, blocks, sig: typeof c.sig === "string" ? c.sig.slice(0, 40) : "" };
+}
+/** 文字列の指紋（FNV-1a） */
+function noteHash(s) {
+  s = String(s || "");
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36) + "." + s.length.toString(36);
+}
+/** body の指紋。文字・画像（data-kid）・リンク先だけを見る。HTML の書き方（属性の並び・色の書き方）は
+ *  ブラウザごとに違うので、それで変わると、別の端末で開くたびに「書き換えられた」と誤解してしまう */
+function noteSigOf(body) {
+  const b = body || "";
+  return noteHash(htmlToText(b) + "\u0001" + bodyImageIds(b).join(",") + "\u0001" + (b.match(/href\s*=\s*"[^"]*"/gi) || []).join(","));
+}
+const noteEsc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" })[c]);
+/** 本文を箱に入れられる HTML にする。タグの無い本文はエディタと同じく &…; を戻してから包み直す */
+function noteBodyHtml(body) {
+  const b = body || "";
+  if (!b) return "";
+  if (looksLikeHtmlKn(b)) return b;
+  return noteEsc(unescapeKn(b)).replace(/\r?\n/g, "<br>");
+}
+/** 中身があるか（空白・<br> だけは空とみなす） */
+function noteHasContent(html) {
+  if (!html) return false;
+  if (/<img\b/i.test(html)) return true;
+  return !!htmlToText(html).replace(/ /g, " ").trim();
+}
+const noteOrder = blocks => [...blocks].sort((a, b) => a.y - b.y || a.x - b.x);
+/** 箱から本文を作る。読む順に、文字はそのまま・画像は <img data-kid>。PDF・ファイルは入れない。
+ *  2回サニタイズして、読み込み直したとき（normalizeMemo）に形が変わらないようにする */
+function noteBodyOf(blocks) {
+  const parts = [];
+  noteOrder(blocks).forEach(b => {
+    if (b.t === "text") {
+      if (noteHasContent(b.html)) parts.push({ text: true, h: b.html });
+    } else if (b.t === "img") parts.push({ text: false, h: "<img data-kid=\"" + noteEsc(b.kid) + "\" alt=\"\">" });
+  });
+  const raw = parts.length === 1 ? parts[0].h : parts.map(p => p.text ? "<div>" + p.h + "</div>" : p.h).join("");
+  return sanitizeMemoHtml(sanitizeMemoHtml(raw));
+}
+/** 添付の一覧を箱から作る（PDF・ファイルの箱）。名前や大きさは前の添付からも拾う */
+function noteAttachmentsOf(blocks, prev) {
+  const prevById = new Map((prev || []).filter(a => a && a.id).map(a => [a.id, a]));
+  const out = [];
+  const seen = new Set();
+  noteOrder(blocks).forEach(b => {
+    if (b.t !== "pdf" && b.t !== "file" || seen.has(b.kid)) return;
+    seen.add(b.kid);
+    const p = prevById.get(b.kid) || {};
+    const a = { id: b.kid, name: b.name || p.name || "file", type: b.type || p.type || "" };
+    const size = b.size != null ? b.size : p.size;
+    if (size != null) a.size = size;
+    out.push(a);
+  });
+  // ノートに置けない形の id の添付（古い取り込みなど）は、消さずにそのまま残す
+  (prev || []).forEach(a => {
+    if (a && a.id && !NOTE_KID_RE.test(String(a.id)) && !seen.has(a.id)) out.push(a);
+  });
+  return out;
+}
+/** 保存する中身（canvas・body・attachments）。画面だけの印（_auto）と、空の文字の箱
+ *  （作ったばかりで、まだ何も書いていない箱）は保存しない */
+function notePatchOf(blocks, memo) {
+  const clean = blocks.filter(b => b.t !== "text" || noteHasContent(b.html)).map(b => {
+    if (!b._auto) return b;
+    const o = { ...b };
+    delete o._auto;
+    return o;
+  });
+  const body = noteBodyOf(clean);
+  return {
+    canvas: { v: 1, blocks: clean, sig: noteSigOf(body) },
+    body,
+    attachments: noteAttachmentsOf(clean, memo && memo.attachments)
+  };
+}
+const noteIsPdf = (type, name) => /^application\/pdf$/i.test(type || "") || /\.pdf$/i.test(name || "");
+/** 添付1件を箱にする（ノートに置けない id のものは null） */
+function noteAttBlock(a) {
+  if (!a || !NOTE_KID_RE.test(String(a.id || ""))) return null;
+  const name = normStr(a.name) || "file", type = normStr(a.type);
+  if (isImg(type)) return { id: "a-" + a.id, t: "img", kid: a.id, name, type, x: 24, y: 24, w: 320 };
+  const pdf = noteIsPdf(type, name);
+  const b = { id: "a-" + a.id, t: pdf ? "pdf" : "file", kid: a.id, name, type, x: 24, y: 24, w: pdf ? NOTE_TEXT_W : 280 };
+  if (a.size != null && Number.isFinite(Number(a.size))) b.size = Number(a.size);
+  return b;
+}
+/** 画面で測れないときの、箱の高さの見積もり */
+function noteEstH(b) {
+  if (b.t === "img") return b.h || Math.round(b.w * 0.75);
+  if (b.t === "pdf") return Math.round(b.w * 1.42) + 40;
+  if (b.t === "file") return 56;
+  const h = b.html || "";
+  const lines = Math.max(1, Math.ceil(htmlToText(h).length * 15 / Math.max(80, b.w))) + (h.match(/<(br|div|p|li|h\d)\b/gi) || []).length;
+  return Math.min(4000, 28 * lines + 12);
+}
+const noteBottom = blocks => blocks.reduce((m, b) => Math.max(m, b.y + noteEstH(b)), 0);
+function noteStripImgs(html, kids) {
+  if (!html || !kids.size || !/<img\b/i.test(html)) return html;
+  try {
+    const t = document.createElement("template");
+    t.innerHTML = html;
+    t.content.querySelectorAll("img[data-kid]").forEach(im => {
+      if (kids.has(im.getAttribute("data-kid"))) im.remove();
+    });
+    const d = document.createElement("div");
+    d.appendChild(t.content.cloneNode(true));
+    return d.innerHTML;
+  } catch (e) { return html; }
+}
+/** メモから箱の並びを作る（表示用。これだけでは保存しない）。
+ *  - canvas の無いメモ: 本文を1つの文字の箱にし、添付をその下に並べる（_auto: 位置は画面の流れで決め、
+ *    触ったときに固定する）
+ *  - body が sig と合わない: 画像・PDF・ファイルの箱は位置ごと残し、文字の箱を新しい本文1つに置き換える
+ *  - 箱の無い添付（以前の版で足されたもの）は、いちばん下に足す */
+function noteBlocksOf(memo) {
+  const atts = memo.attachments || [];
+  if (!memo.canvas) {
+    const out = [];
+    const html = noteBodyHtml(memo.body);
+    if (noteHasContent(html)) out.push({ id: "t-" + memo.id, t: "text", x: 24, y: 24, w: NOTE_TEXT_W, html, _auto: 1 });
+    atts.forEach(a => {
+      const b = noteAttBlock(a);
+      if (b) out.push({ ...b, _auto: 1 });
+    });
+    return out;
+  }
+  let blocks = memo.canvas.blocks.map(b => ({ ...b }));
+  if (noteSigOf(memo.body) !== memo.canvas.sig) {
+    const texts = noteOrder(blocks.filter(b => b.t === "text"));
+    const others = blocks.filter(b => b.t !== "text");
+    const imgKids = new Set(others.filter(b => b.t === "img").map(b => b.kid));
+    // 画像の箱として出しているものは、本文の中には重ねて出さない
+    const html = noteStripImgs(noteBodyHtml(memo.body), imgKids);
+    blocks = others;
+    if (noteHasContent(html)) {
+      const at = texts[0] || { id: uid(), x: 24, y: snap8(others.length ? noteBottom(others) + 24 : 24), w: NOTE_TEXT_W };
+      blocks.push({ id: at.id, t: "text", x: at.x, y: at.y, w: at.w, html });
+    }
+  }
+  const have = new Set(blocks.filter(b => b.kid).map(b => b.kid));
+  let y = null;
+  atts.forEach(a => {
+    if (have.has(a.id)) return;
+    const b = noteAttBlock(a);
+    if (!b) return;
+    if (y == null) y = noteBottom(blocks) + 24;
+    b.y = snap8(y);
+    y += noteEstH(b) + 16;
+    have.add(a.id);
+    blocks.push(b);
+  });
+  return blocks;
+}
+/** 比べるための形（キーの並びをそろえる） */
+const noteCanonJson = c => {
+  const n = normalizeCanvas(c);
+  return n ? JSON.stringify(n.blocks) : "-";
+};
+/** 画像の縦横（読めなければ 0） */
+async function noteImageDims(blob) {
+  try {
+    const bm = await createImageBitmap(blob);
+    const d = { w: bm.width, h: bm.height };
+    try { bm.close(); } catch (e) {}
+    return d;
+  } catch (e) {
+    return { w: 0, h: 0 };
+  }
+}
+/** 貼った・落とした・選んだファイルを端末の中（IndexedDB）に置く。添付と同じ形（at つき）で、
+ *  保存されるまで掃除されないよう pendingFileIds にも入れる。画像は本文の画像と同じく縮めてから置く */
+async function noteIngest(files) {
+  const out = [];
+  let failed = 0;
+  for (const f of Array.from(files || [])) {
+    const type = f.type || "";
+    const name = f.name || (isImg(type) ? "貼り付け画像.png" : "file");
+    try {
+      if (isImg(type)) {
+        const blob = await downscaleImageBlob(f, 1280, 0.72);
+        if (blob) {
+          const dim = await noteImageDims(blob);
+          const id = uid();
+          await idbPut({ id, blob, name, type: blob.type || "image/jpeg", size: blob.size, at: Date.now() });
+          pendingFileIds.add(id);
+          out.push({ t: "img", kid: id, name, type: blob.type || "image/jpeg", size: blob.size, nw: dim.w, nh: dim.h });
+          continue;
+        }
+        // 縮められない画像（この端末で読めない形式）は、ファイルとして置く
+      }
+      const pdf = noteIsPdf(type, name);
+      const id = uid();
+      const t2 = pdf ? "application/pdf" : type;
+      await idbPut({ id, blob: f, name, type: t2, size: f.size, at: Date.now() });
+      pendingFileIds.add(id);
+      out.push({ t: pdf ? "pdf" : "file", kid: id, name, type: t2, size: f.size });
+    } catch (e) {
+      failed++;
+    }
+  }
+  if (failed) knAttachFailed(failed);
+  return out;
+}
+// ブラウザでそのまま開いてよい形式。★HTML・SVG などをこのアプリと同じオリジンの blob: で開くと、
+// 中のスクリプトが動いて Google のトークンまで読めてしまう。それ以外は開かずに保存させる。
+const NOTE_VIEWABLE = /^(application\/pdf|image\/(png|jpeg|gif|webp|avif|bmp)|audio\/[\w.+-]+|video\/[\w.+-]+)$/i;
+async function noteOpenFile(b, download) {
+  let rec = null;
+  try { rec = await idbGet(b.kid); } catch (e) {}
+  if (!rec || !rec.blob) return false;
+  const type = String(b.type || rec.type || rec.blob.type || "").toLowerCase();
+  const view = !download && NOTE_VIEWABLE.test(type);
+  const u = URL.createObjectURL(new Blob([rec.blob], { type: view ? type : "application/octet-stream" }));
+  const a = document.createElement("a");
+  a.href = u;
+  if (view) {
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+  } else a.download = b.name || rec.name || "file";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(u), 60000);
+  return true;
+}
+/** 貼り付けた HTML を文字の箱に入れられる形にする。サニタイズし、画像は箱から出す（data: の画像と
+ *  この端末の画像は別の画像の箱にし、ネットの画像は読み込まずに捨てる）。リンクは safeLink を通す */
+function notePasteHtml(html) {
+  const out = { html: "", images: [] };
+  try {
+    const t = document.createElement("template");
+    t.innerHTML = sanitizeMemoHtml(String(html || ""));
+    t.content.querySelectorAll("img").forEach(im => {
+      const kid = im.getAttribute("data-kid") || "";
+      const src = im.getAttribute("src") || "";
+      if (NOTE_KID_RE.test(kid)) out.images.push({ kid });
+      else if (/^data:image\//i.test(src)) out.images.push({ src });
+      im.remove();
+    });
+    t.content.querySelectorAll("a").forEach(a => {
+      const h = a.getAttribute("href");
+      if (h != null && !safeLink(h)) a.removeAttribute("href");
+    });
+    const w = document.createTreeWalker(t.content, NodeFilter.SHOW_COMMENT);
+    const cm = [];
+    while (w.nextNode()) cm.push(w.currentNode);
+    cm.forEach(n => n.remove());
+    const d = document.createElement("div");
+    d.appendChild(t.content.cloneNode(true));
+    out.html = d.innerHTML.trim();
+  } catch (e) {
+    out.html = noteEsc(htmlToText(html));
+  }
+  return out;
+}
+/** 箱の HTML を取り出す。一時的な blob: URL は落として data-kid だけ残す（RichEditor と同じ） */
+function noteHtmlOfEl(el) {
+  const clone = el.cloneNode(true);
+  clone.querySelectorAll("img[data-kid]").forEach(im => {
+    im.removeAttribute("src");
+    im.removeAttribute("data-kid-resolved");
+  });
+  return clone.innerHTML;
+}
+/** 作った日時（OneNote のようにタイトルの下に出す） */
+function noteWhen(ts) {
+  const n = Number(ts);
+  if (!n) return "";
+  const d = new Date(n);
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日(${WD[d.getDay()]})  ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function noteShortDate(ts) {
+  const n = Number(ts);
+  if (!n) return "";
+  const d = new Date(n);
+  return d.getFullYear() === new Date().getFullYear() ? `${d.getMonth() + 1}月${d.getDate()}日` : `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+}
+// 重ねて開いた画面（ノートの全画面）を閉じるときの history.back() で、下の全画面まで閉じないようにする
+let knPopIgnoreUntil = 0;
+function knBackQuiet() {
+  knPopIgnoreUntil = Date.now() + 400;
+  try { window.history.back(); } catch (e) {}
+}
+/** 「タスクにする」（タスクタブへ送る。このメモは残る） */
+function sendMemoToTask(memo) {
+  try {
+    parent.postMessage({ nkToTask: {
+      title: memo.title || "(無題)",
+      note: htmlToText(memo.body || "").slice(0, 500),
+      date: memo.date || "", time: memo.time || ""
+    } }, window.location.origin);
+  } catch (e) {}
+}
+let _pdfjs = null, _pdfjsFails = 0;
+/** pdf.js は PDF を出すときに初めて読む（ふだんの起動では読まない）。置き場所はこのページと同じフォルダの
+ *  vendor/pdfjs/（入口 index.html の iframe の中で開いても、kininari.html 単体でも同じ）。 */
+function noteLoadPdfjs() {
+  if (!_pdfjs) {
+    const base = new URL("vendor/pdfjs/", window.location.href);
+    // 一度失敗した import() は、同じURLだと読み込み直すまで失敗のまま覚えられている。やり直すときは ?r= を変える
+    // （service worker のキャッシュは ? の前だけを見るので、オフライン用の控えはそのまま使える）
+    const u = new URL("pdf.min.mjs", base);
+    if (_pdfjsFails) u.search = "?r=" + _pdfjsFails;
+    _pdfjs = import(u.href).then(lib => {
+      lib.GlobalWorkerOptions.workerSrc = new URL("pdf.worker.min.mjs", base).href;
+      return lib;
+    });
+    // オフラインで読めなかったときは、次に PDF を出すときに読み直す
+    _pdfjs.catch(() => {
+      _pdfjs = null;
+      _pdfjsFails++;
+    });
+  }
+  return _pdfjs;
+}
+function useMedia(q) {
+  const get = () => {
+    try { return window.matchMedia(q).matches; } catch (e) { return true; }
+  };
+  const [v, setV] = useState(get);
+  useEffect(() => {
+    let mq;
+    try { mq = window.matchMedia(q); } catch (e) { return; }
+    const on = () => setV(mq.matches);
+    if (mq.addEventListener) mq.addEventListener("change", on);else mq.addListener(on);
+    on();
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", on);else mq.removeListener(on);
+    };
+  }, [q]);
+  return v;
+}
+function useNoteZoom() {
+  const [z, setZ] = useState(() => noteClampZoom(noteGet("zoom", 100)));
+  const set = useCallback(v => setZ(p => {
+    const n = noteClampZoom(typeof v === "function" ? v(p) : v);
+    noteSet("zoom", n);
+    return n;
+  }), []);
+  return [z, set];
+}
+/** 自動保存（OneNote のように保存ボタンは無い）。続けて書いている間はまとめ、止まってから ms 後に保存する。
+ *  ページの切り替え・表示の切り替え（＝画面を閉じる）・画面が隠れたとき・ページを離れるときは、待たずに保存する。
+ *  make は「保存する中身を作る関数」で、保存の直前に最新の内容から作る。 */
+function useNoteSaver(make, save, ms) {
+  const fns = useRef({});
+  fns.current.make = make;
+  fns.current.save = save;
+  const st = useRef({ t: null, dirty: false });
+  const api = useMemo(() => {
+    const o = {
+      flush() {
+        const s = st.current;
+        if (s.t) { clearTimeout(s.t); s.t = null; }
+        if (!s.dirty) return;
+        s.dirty = false;
+        fns.current.save(fns.current.make());
+      },
+      schedule() {
+        const s = st.current;
+        s.dirty = true;
+        if (s.t) clearTimeout(s.t);
+        s.t = setTimeout(() => o.flush(), ms);
+      },
+      pending: () => st.current.dirty
+    };
+    return o;
+  }, []);
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === "hidden") api.flush(); };
+    const onHide = () => api.flush();
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pagehide", onHide);
+      api.flush();
+    };
+  }, []);
+  return api;
+}
+/** カレンダーの登録・更新・解除（カードとノートのページで共通） */
+function useGcalActions(memo, onSetGcal, onToast) {
+  const [gcalBusy, setGcalBusy] = useState(false);
+  const calRegister = async () => {
+    setGcalBusy(true);
+    try {
+      const ev = await calRun(tk => gcalInsert(tk, memo));
+      onSetGcal(memo.id, ev.id);
+      onToast({
+        title: "Googleカレンダーに登録しました",
+        body: memo.time ? "" : "終日予定として登録しました。"
+      });
+    } catch (e) {
+      onToast({
+        title: "登録できませんでした",
+        body: calErr(e)
+      });
+    }
+    setGcalBusy(false);
+  };
+  const calUpdate = async () => {
+    setGcalBusy(true);
+    try {
+      await calRun(tk => gcalPatch(tk, memo.gcalEventId, memo));
+      onToast({
+        title: "カレンダーを更新しました",
+        body: ""
+      });
+    } catch (e) {
+      if (/4(03|04|10)/.test(String(e && e.message || e))) {
+        try {
+          const ev = await calRun(tk => gcalInsert(tk, memo));
+          onSetGcal(memo.id, ev.id);
+          onToast({
+            title: "カレンダーに再登録しました",
+            body: ""
+          });
+        } catch (e2) {
+          onToast({
+            title: "更新できませんでした",
+            body: calErr(e2)
+          });
+        }
+      } else onToast({
+        title: "更新できませんでした",
+        body: calErr(e)
+      });
+    }
+    setGcalBusy(false);
+  };
+  const calUnregister = async () => {
+    setGcalBusy(true);
+    try {
+      await calRun(tk => gcalDelete(tk, memo.gcalEventId));
+      onSetGcal(memo.id, null);
+      onToast({
+        title: "カレンダーから削除しました",
+        body: ""
+      });
+    } catch (e) {
+      onToast({
+        title: "削除できませんでした",
+        body: calErr(e)
+      });
+    }
+    setGcalBusy(false);
+  };
+  return { gcalBusy, calRegister, calUpdate, calUnregister };
+}
+/* ── ページの中の箱 ──────────────────────────────────────── */
+/** 文字の箱。中身は contenteditable で、打っている最中は React から触らない（外から変わったときだけ入れ直す） */
+const NoteText = React.memo(function NoteText({ id, html, focusReq, api }) {
+  const ref = useRef(null);
+  const last = useRef(null);
+  const made = useRef([]);
+  const setRef = useMemo(() => el => {
+    ref.current = el;
+    api.textEl(id, el);
+  }, [id]);
+  const revoke = () => {
+    made.current.forEach(u => URL.revokeObjectURL(u));
+    made.current = [];
+  };
+  const hydrate = () => {
+    const el = ref.current;
+    if (!el) return;
+    hydrateBodyImages(el).then(us => {
+      if (ref.current) made.current.push(...us);else us.forEach(u => URL.revokeObjectURL(u));
+    });
+  };
+  const markEmpty = () => {
+    const el = ref.current;
+    if (el) el.setAttribute("data-empty", noteHasContent(el.innerHTML) ? "0" : "1");
+  };
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || html === last.current) return;
+    last.current = html;
+    revoke();
+    el.innerHTML = sanitizeMemoHtml(html || "");
+    markEmpty();
+    hydrate();
+  }, [html]);
+  useEffect(() => {
+    // 画像をDriveから取ってきたら、まだ出ていないものを埋め直す
+    window.addEventListener(ATT_EVENT, hydrate);
+    return () => {
+      window.removeEventListener(ATT_EVENT, hydrate);
+      revoke();
+    };
+  }, []);
+  useEffect(() => {
+    if (focusReq && ref.current) {
+      try { ref.current.focus({ preventScroll: false }); } catch (e) {}
+    }
+  }, [focusReq]);
+  const emit = () => {
+    const el = ref.current;
+    if (!el) return;
+    const out = noteHtmlOfEl(el);
+    last.current = out;
+    markEmpty();
+    api.textInput(id, out);
+  };
+  return React.createElement("div", {
+    ref: setRef,
+    className: "nb-text",
+    contentEditable: true,
+    suppressContentEditableWarning: true,
+    role: "textbox",
+    "aria-multiline": "true",
+    "aria-label": "文字の箱",
+    "data-ph": "ここに書く",
+    onInput: emit,
+    onFocus: () => api.textFocus(id),
+    onBlur: () => api.textBlur(id, ref.current),
+    onKeyDown: e => {
+      // Escape で書くのをやめて箱を選ぶ（矢印で動かす・Delete で消すに移れる）
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        api.textEscape(id);
+      }
+    },
+    onClick: e => {
+      // 書いている途中なので、リンクは Ctrl/⌘ を押しながらクリックしたときだけ開く
+      const a = e.target && e.target.closest ? e.target.closest("a[href]") : null;
+      if (a && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        const u = a.getAttribute("href");
+        if (safeLink(u)) window.open(u, "_blank", "noopener,noreferrer");
+      }
+    }
+  });
+});
+/** 端末の中（IndexedDB）のファイルを blob: URL にする。無ければ同期で届くのを待つ */
+function useIdbUrl(kid) {
+  const [st, setSt] = useState({ url: null, missing: false });
+  useEffect(() => {
+    let alive = true, made = null;
+    const load = () => idbGet(kid).then(rec => {
+      if (!alive || made) return;
+      if (rec && rec.blob) {
+        made = URL.createObjectURL(rec.blob);
+        setSt({ url: made, missing: false });
+      } else setSt({ url: null, missing: true });
+    }).catch(() => { if (alive && !made) setSt({ url: null, missing: true }); });
+    load();
+    const on = () => { if (!made) load(); };
+    window.addEventListener(ATT_EVENT, on);
+    return () => {
+      alive = false;
+      window.removeEventListener(ATT_EVENT, on);
+      if (made) URL.revokeObjectURL(made);
+    };
+  }, [kid]);
+  return st;
+}
+function NoteImage({ b }) {
+  const st = useIdbUrl(b.kid);
+  return React.createElement("div", {
+    className: "nb-img",
+    style: b.h ? { height: b.h } : null
+  }, st.url ? React.createElement("img", {
+    src: st.url,
+    alt: b.name || "",
+    draggable: false
+  }) : React.createElement("div", { className: "nb-ph" }, st.missing ? "画像がまだこの端末にありません（同期で届くのを待っています）" : "読み込み中…"));
+}
+function NoteFile({ b, api, note }) {
+  return React.createElement("div", { className: "nb-file" },
+    React.createElement(FileGlyph, null),
+    React.createElement("span", { className: "nb-fname", title: b.name }, b.name || "file"),
+    b.size != null && React.createElement("span", { className: "att-size" }, bytes(b.size)),
+    React.createElement("button", {
+      type: "button",
+      className: "nb-open",
+      title: "ファイルを開く",
+      "aria-label": "「" + (b.name || "file") + "」を開く",
+      onClick: () => api.openFile(b, false)
+    }, "開く"),
+    note && React.createElement("span", { className: "nb-fnote" }, note));
+}
+const NOTE_PDF_FIRST = 20;
+/** PDF の1ページ。見えたときだけ描き（IntersectionObserver）、見えなくなったら絵を捨てる。
+ *  幅・倍率が変わったら、少し待ってから描き直す */
+function NotePdfPage({ doc, n, w, zoom, ratio }) {
+  const wrapRef = useRef(null);
+  const cvRef = useRef(null);
+  const [vis, setVis] = useState(false);
+  const [r, setR] = useState(ratio);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") { setVis(true); return; }
+    const io = new IntersectionObserver(es => es.forEach(en => setVis(en.isIntersecting)), { rootMargin: "300px 0px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+  useEffect(() => {
+    const cv = cvRef.current;
+    if (!cv) return;
+    if (!vis || !w) {
+      // 見えていないページの絵は捨てる（何十ページもあるPDFでメモリを食い潰さないように）
+      if (!vis && cv.width) { cv.width = 0; cv.height = 0; cv.removeAttribute("data-done"); }
+      return;
+    }
+    let alive = true, task = null;
+    const t = setTimeout(async () => {
+      try {
+        const page = await doc.getPage(n);
+        if (!alive) return;
+        const base = page.getViewport({ scale: 1 });
+        const dpr = Math.min(3, window.devicePixelRatio || 1);
+        const vp = page.getViewport({ scale: w * (zoom / 100) * dpr / base.width });
+        const off = document.createElement("canvas");
+        off.width = Math.max(1, Math.floor(vp.width));
+        off.height = Math.max(1, Math.floor(vp.height));
+        task = page.render({ canvas: off, canvasContext: off.getContext("2d"), viewport: vp });
+        await task.promise;
+        if (!alive) return;
+        // 描き終えてから入れ替える（描き直しの間、白くちらつかないように）
+        cv.width = off.width;
+        cv.height = off.height;
+        cv.getContext("2d").drawImage(off, 0, 0);
+        off.width = 0;
+        cv.setAttribute("data-done", "1");
+        setR(base.height / base.width);
+      } catch (e) {}
+    }, cv.getAttribute("data-done") ? 250 : 0);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+      try { if (task) task.cancel(); } catch (e) {}
+    };
+  }, [vis, w, zoom, doc, n]);
+  return React.createElement("div", {
+    className: "nb-pdfpage",
+    ref: wrapRef,
+    style: w ? { height: Math.round(w * r) } : null
+  }, React.createElement("canvas", { ref: cvRef, "aria-label": n + "ページ目" }));
+}
+/** PDF の箱。ページを縦に並べた絵（OneNote の「印刷イメージ」と同じ）。pdf.js が読めないとき
+ *  （初めて使うのがオフラインのときなど）は、開く・保存だけのファイルの箱にする */
+function NotePdf({ b, api, zoom }) {
+  const [st, setSt] = useState({ phase: "load" });   // load | ok | fail | missing
+  const [shown, setShown] = useState(NOTE_PDF_FIRST);
+  const [cw, setCw] = useState(0);
+  const boxRef = useRef(null);
+  const docRef = useRef(null);
+  useEffect(() => {
+    let alive = true, task = null, phase = "load";
+    const set = s => { phase = s.phase; if (alive) setSt(s); };
+    const open = async () => {
+      let rec = null;
+      try { rec = await idbGet(b.kid); } catch (e) {}
+      if (!alive) return;
+      if (!rec || !rec.blob) { set({ phase: "missing" }); return; }
+      let lib;
+      try { lib = await noteLoadPdfjs(); } catch (e) { set({ phase: "fail" }); return; }
+      try {
+        const data = new Uint8Array(await rec.blob.arrayBuffer());
+        // ★isEvalSupported:false … PDF の中身から関数を組み立てて eval させない
+        task = lib.getDocument({ data, isEvalSupported: false });
+        const doc = await task.promise;
+        if (!alive) { doc.destroy(); return; }
+        docRef.current = doc;
+        const p1 = await doc.getPage(1);
+        const vp = p1.getViewport({ scale: 1 });
+        set({ phase: "ok", n: doc.numPages, ratio: vp.height / vp.width, doc });
+      } catch (e) {
+        set({ phase: "fail" });
+      }
+    };
+    open();
+    const on = () => {
+      if (phase !== "missing") return;
+      set({ phase: "load" });
+      open();
+    };
+    window.addEventListener(ATT_EVENT, on);
+    return () => {
+      alive = false;
+      window.removeEventListener(ATT_EVENT, on);
+      try {
+        if (docRef.current) docRef.current.destroy();else if (task) task.destroy();
+      } catch (e) {}
+      docRef.current = null;
+    };
+  }, [b.kid]);
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    setCw(el.clientWidth);
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setCw(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [st.phase]);
+  if (st.phase === "fail") return React.createElement(NoteFile, { b, api, note: "PDFを表示できませんでした（オフラインで初めて開いたときなど）" });
+  const bar = React.createElement("div", { className: "nb-pdfbar" },
+    React.createElement(FileGlyph, null),
+    React.createElement("span", { className: "nb-fname", title: b.name }, b.name || "PDF"),
+    st.phase === "ok" && React.createElement("span", { className: "att-size" }, st.n + "ページ"),
+    React.createElement("button", { type: "button", className: "nb-open", title: "新しいタブでPDFを開く", "aria-label": "PDFを開く", onClick: () => api.openFile(b, false) }, "開く"),
+    React.createElement("button", { type: "button", className: "nb-open", title: "PDFを保存する", "aria-label": "PDFをダウンロード", onClick: () => api.openFile(b, true) }, "ダウンロード"));
+  if (st.phase !== "ok") return React.createElement("div", { className: "nb-pdf" }, bar,
+    React.createElement("div", { className: "nb-ph" }, st.phase === "missing" ? "PDFがまだこの端末にありません（同期で届くのを待っています）" : "PDFを読み込んでいます…"));
+  const count = Math.min(shown, st.n);
+  const pages = [];
+  for (let i = 1; i <= count; i++) pages.push(React.createElement(NotePdfPage, { key: i, doc: st.doc, n: i, w: cw, zoom, ratio: st.ratio }));
+  return React.createElement("div", { className: "nb-pdf" }, bar,
+    React.createElement("div", { className: "nb-pdfpages", ref: boxRef }, pages),
+    st.n > count && React.createElement("button", {
+      type: "button",
+      className: "nb-pdfmore",
+      onClick: () => setShown(st.n)
+    }, "残り" + (st.n - count) + "ページを表示"));
+}
+/** 箱1つ。上の細い帯で動かし、右の端で幅を変える。画像とPDFは右下の角で縦横の比を保ったまま大きさを変える */
+const CanvasBlock = React.memo(function CanvasBlock({ b, sel, edit, flow, focusReq, zoom, api }) {
+  const setRef = useMemo(() => el => api.blockEl(b.id, el), [b.id]);
+  const style = flow ? (b.t === "img" ? { maxWidth: b.w } : null) : b._auto ? { width: b.w } : { left: b.x, top: b.y, width: b.w };
+  let inner;
+  if (b.t === "text") inner = React.createElement(NoteText, { id: b.id, html: b.html, focusReq, api });
+  else if (b.t === "img") inner = React.createElement(NoteImage, { b });
+  else if (b.t === "pdf") inner = React.createElement(NotePdf, { b, api, zoom });
+  else inner = React.createElement(NoteFile, { b, api });
+  return React.createElement("div", {
+    ref: setRef,
+    className: "nb nbk-" + b.t + (sel ? " sel" : "") + (edit ? " edit" : "") + (b._auto && !flow ? " auto" : ""),
+    style,
+    "data-bid": b.id,
+    // 画像・PDF・ファイルは押すと選ぶ（文字の箱は押すとそのまま書ける）
+    onPointerDown: b.t === "text" ? undefined : e => {
+      if (e.target.closest && e.target.closest("button,a,input")) return;
+      api.select(b.id, e);
+    }
+  }, !flow && React.createElement("div", {
+    className: "nb-bar",
+    title: "ドラッグで動かす",
+    "aria-label": "箱を動かす",
+    onPointerDown: e => api.startDrag(e, b.id, "move")
+  }), sel && React.createElement("button", {
+    type: "button",
+    className: "nb-x",
+    title: "この箱を消す",
+    "aria-label": "この箱を消す",
+    onPointerDown: e => e.stopPropagation(),
+    onClick: () => api.remove(b.id)
+  }, "×"), inner, !flow && React.createElement("div", {
+    className: "nb-rw",
+    title: "ドラッグで幅を変える",
+    onPointerDown: e => api.startDrag(e, b.id, "w")
+  }), !flow && (b.t === "img" || b.t === "pdf") && React.createElement("div", {
+    className: "nb-rc",
+    title: "ドラッグで大きさを変える（縦横の比はそのまま）",
+    onPointerDown: e => api.startDrag(e, b.id, "corner")
+  }));
+});
+const NOTE_FG = ["#2c2620", "#c0463c", "#3E6CA3", "#57845A", "#b8860b"];
+const NOTE_HL = [["#fff1a6", "黄色"], ["#d4f0c4", "緑"], ["#ffd5df", "桃色"], ["#d3e6ff", "水色"]];
+/** ページの中身（箱を自由に置ける紙）。flow のとき（狭い画面）は、箱を読む順に縦に並べる（位置は変えない） */
+const NoteCanvas = React.memo(function NoteCanvas({ memo, zoom, onZoom, flow, onSave, onToast, ctl }) {
+  const [blocks, setBlocks] = useState(() => noteBlocksOf(memo));
+  const blocksRef = useRef(blocks);
+  const [sel, setSel] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [textTarget, setTextTarget] = useState(null);   // 書式のボタンの相手（最後に書いていた文字の箱）
+  const [focusId, setFocusId] = useState(null);
+  const [ext, setExt] = useState({ w: 1200, h: 900 });
+  const [undoToast, setUndoToast] = useState(null);
+  const [linkDlg, setLinkDlg] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const rootRef = useRef(null), scrollRef = useRef(null), canvasRef = useRef(null), fileRef = useRef(null);
+  const els = useRef({});      // id → 箱の要素
+  const texts = useRef({});    // id → 文字の箱（contenteditable）
+  const undoSt = useRef([]), redoSt = useRef([]);
+  const created = useRef(new Set());   // クリックで作ったまま、まだ何も書いていない箱
+  const pendingAdd = useRef(null);
+  const lastPt = useRef(null);
+  const downAt = useRef(null);
+  const savedRange = useRef(null);
+  const nudgeAt = useRef(null);
+  const anchor = useRef(null);
+  const linkFor = useRef(null);
+  const selRef = useRef(null), editRef = useRef(null), targetRef = useRef(null);
+  const memoRef = useRef(memo);
+  memoRef.current = memo;
+  const zoomRef = useRef(zoom);
+  zoomRef.current = flow ? 100 : zoom;
+  const flowRef = useRef(flow);
+  flowRef.current = flow;
+  const onSaveRef = useRef(onSave);
+  onSaveRef.current = onSave;
+  const onZoomRef = useRef(onZoom);
+  onZoomRef.current = onZoom;
+  const toastRef = useRef(onToast);
+  toastRef.current = onToast;
+  const z = flow ? 1 : zoom / 100;
+  // 自分で保存した中身（同期などで戻ってきたときに「外から変わった」と誤解しないように）
+  const savedJson = useRef(null);
+  const saver = useNoteSaver(() => {
+    const p = notePatchOf(blocksRef.current, memoRef.current);
+    savedJson.current = noteCanonJson(p.canvas);
+    return p;
+  }, p => onSaveRef.current(p), 700);
+  // 他の端末・以前の版・カードの側で書き換えられたら読み直す（書きかけがあるときは、こちらを優先）
+  const srcKey = useMemo(() => noteCanonJson(memo.canvas) + "\u0001" + (memo.body || "") + "\u0001" + JSON.stringify(memo.attachments || []), [memo]);
+  const loadedKey = useRef(srcKey);
+  useEffect(() => {
+    if (srcKey === loadedKey.current) return;
+    loadedKey.current = srcKey;
+    if (memo.canvas && savedJson.current === noteCanonJson(memo.canvas) && noteSigOf(memo.body) === memo.canvas.sig) return;
+    if (saver.pending()) return;
+    const next = noteBlocksOf(memo);
+    blocksRef.current = next;
+    setBlocks(next);
+    undoSt.current = [];
+    redoSt.current = [];
+  }, [srcKey]);
+  const selectId = id => { selRef.current = id; setSel(id); };
+  const setTarget = id => { targetRef.current = id; setTextTarget(id); };
+  const commit = (next, dirty) => {
+    blocksRef.current = next;
+    setBlocks(next);
+    if (dirty) saver.schedule();
+  };
+  const pushUndo = snap => {
+    undoSt.current.push(snap);
+    if (undoSt.current.length > 100) undoSt.current.shift();
+    redoSt.current = [];
+  };
+  /** 自動で並べた箱（_auto）を、いま見えている位置で固定する。動かす・書く・足す前に呼ぶ */
+  const materialize = () => {
+    const cur = blocksRef.current;
+    if (!cur.some(b => b._auto)) return cur;
+    let yy = 24;
+    const next = cur.map(b => {
+      if (!b._auto) return b;
+      const o = { ...b };
+      delete o._auto;
+      const el = els.current[b.id];
+      if (!flowRef.current && el) {
+        o.x = snap8(el.offsetLeft);
+        o.y = snap8(el.offsetTop);
+      } else {
+        o.x = 24;
+        o.y = snap8(yy);
+        yy += noteEstH(o) + 16;
+      }
+      return o;
+    });
+    blocksRef.current = next;
+    return next;
+  };
+  /** 箱の並びを変える。undo: 元に戻せるように控える / silent: 保存しない（見た目だけの変更） */
+  const change = (fn, opts) => {
+    const before = materialize();
+    const next = fn(before);
+    if (next === before) return;
+    if (opts && opts.undo) pushUndo(before);
+    commit(next, !(opts && opts.silent));
+  };
+  /** 文字の箱は、元に戻しても打った文字は戻さない（文字はブラウザの「元に戻す」に任せる） */
+  const keepText = (target, cur) => {
+    const byId = new Map(cur.map(b => [b.id, b]));
+    return target.map(b => b.t === "text" && byId.has(b.id) ? { ...b, html: byId.get(b.id).html } : b);
+  };
+  const toCanvas = (cx, cy) => {
+    const c = canvasRef.current;
+    if (!c) return { x: 24, y: 24 };
+    const r = c.getBoundingClientRect();
+    const zz = zoomRef.current / 100;
+    return { x: Math.max(0, (cx - r.left) / zz), y: Math.max(0, (cy - r.top) / zz) };
+  };
+  /** いちばん下の箱のさらに下 */
+  const belowAll = () => {
+    if (flowRef.current) return { x: 24, y: snap8(noteBottom(blocksRef.current) + 24) };
+    const c = canvasRef.current;
+    let bottom = 0;
+    if (c) for (const el of c.children) if (el.hasAttribute("data-bid")) bottom = Math.max(bottom, el.offsetTop + el.offsetHeight);
+    return { x: 24, y: snap8(bottom ? bottom + 24 : 24) };
+  };
+  /** 自動で置く場所（貼り付け・挿入）がほかの箱に重なるなら、重なった箱の下へずらす。
+   *  以前は書いている箱のすぐ下に置いたため、その下にあった文字の箱を画像が覆って隠していた。
+   *  落とした（ドロップした）ときは利用者が選んだ場所なので、ずらさない。more: 同じ回に置く箱 */
+  const clearSpot = (p, w, h, more) => {
+    const rects = blocksRef.current.map(b => {
+      const el = els.current[b.id];
+      return { x: b.x, y: b.y, w: el ? el.offsetWidth : b.w, h: el ? el.offsetHeight : noteEstH(b) };
+    }).concat((more || []).map(b => ({ x: b.x, y: b.y, w: b.w, h: noteEstH(b) })));
+    let y = p.y;
+    for (let n = 0; n < 200; n++) {
+      const hit = rects.filter(r => p.x < r.x + r.w + 8 && r.x < p.x + w + 8 && y < r.y + r.h + 8 && r.y < y + h + 8);
+      if (!hit.length) break;
+      y = snap8(Math.max(...hit.map(r => r.y + r.h)) + 16);
+    }
+    return { x: p.x, y };
+  };
+  /** 貼り付け・挿入の置き場所。書いている箱が空ならその場所（空の箱は片付ける）、中身があればその下 */
+  const insertPoint = () => {
+    if (flowRef.current) return belowAll();
+    const ed = editRef.current;
+    const b = ed && blocksRef.current.find(x => x.id === ed);
+    const el = ed && texts.current[ed];
+    if (b) {
+      if (el && !noteHasContent(el.innerHTML)) {
+        const pt = { x: b.x, y: b.y };
+        const quiet = created.current.has(ed);
+        created.current.delete(ed);
+        if (pendingAdd.current && pendingAdd.current.id === ed) pendingAdd.current = null;
+        editRef.current = null;
+        setEditing(null);
+        change(cur => cur.filter(x => x.id !== ed), { silent: quiet });
+        return pt;
+      }
+      const be = els.current[ed];
+      return { x: b.x, y: snap8(b.y + (be ? be.offsetHeight : noteEstH(b)) + 16) };
+    }
+    return lastPt.current || belowAll();
+  };
+  /** ファイルを箱にして置く（画像→画像の箱、PDF→PDFの箱、ほか→ファイルの箱）。extra は取り込み済みのもの。
+   *  exact: 落とした場所そのままに置く（ほかの箱に重なってもずらさない） */
+  const insertFiles = async (files, at, extra, exact) => {
+    let got = [];
+    if (files && files.length) {
+      setBusy(true);
+      try { got = await noteIngest(files); } finally { setBusy(false); }
+    }
+    got = [...(extra || []), ...got];
+    if (!got.length) return;
+    let p = at || belowAll();
+    const placed = [];
+    const add = got.map(g => {
+      const b = { id: uid(), t: g.t, kid: g.kid, name: g.name, type: g.type, x: snap8(p.x), y: snap8(p.y), w: 280 };
+      if (g.t === "img") {
+        b.w = Math.max(NOTE_MIN_W.img, snap8(Math.min(480, g.nw || 320)));
+        if (g.nw && g.nh) b.h = Math.max(8, Math.round(b.w * g.nh / g.nw));
+      } else {
+        if (g.t === "pdf") b.w = NOTE_TEXT_W;
+        if (g.size != null) b.size = g.size;
+      }
+      if (!exact && !flowRef.current) {
+        const q = clearSpot({ x: b.x, y: b.y }, b.w, noteEstH(b), placed);
+        b.y = q.y;
+      }
+      placed.push(b);
+      p = { x: p.x, y: b.y + noteEstH(b) + 16 };
+      return b;
+    });
+    change(cur => [...cur, ...add], { undo: true });
+    lastPt.current = flowRef.current ? null : { x: snap8(p.x), y: snap8(p.y) };
+    selectId(add[add.length - 1].id);
+  };
+  /** 貼り付けた HTML の中の画像を、別の画像の箱にする */
+  const insertPastedImages = async (imgs, at) => {
+    const files = [], extra = [];
+    for (const x of imgs.slice(0, 20)) {
+      try {
+        if (x.src) {
+          const bl = await (await fetch(x.src)).blob();
+          if (isImg(bl.type)) files.push(new File([bl], "貼り付け画像", { type: bl.type }));
+        } else if (x.kid) {
+          const rec = await idbGet(x.kid);
+          if (rec && rec.blob) {
+            const d = await noteImageDims(rec.blob);
+            extra.push({ t: "img", kid: x.kid, name: rec.name || "画像", type: rec.type || rec.blob.type, nw: d.w, nh: d.h });
+          }
+        }
+      } catch (e) {}
+    }
+    await insertFiles(files, at, extra);
+  };
+  const restoreSel = el => {
+    if (document.activeElement === el) return;
+    try {
+      el.focus();
+      const r = savedRange.current;
+      if (r && el.contains(r.startContainer)) {
+        const s = window.getSelection();
+        s.removeAllRanges();
+        s.addRange(r);
+      }
+    } catch (e) {}
+  };
+  const anchorIn = el => {
+    try {
+      const s = window.getSelection();
+      let n = s && s.rangeCount ? s.anchorNode : null;
+      if (n && n.nodeType === 3) n = n.parentNode;
+      while (n && n !== el) {
+        if (n.tagName === "A") return n;
+        n = n.parentNode;
+      }
+    } catch (e) {}
+    return null;
+  };
+  const impl = {
+    blockEl(id, el) { if (el) els.current[id] = el;else delete els.current[id]; },
+    textEl(id, el) { if (el) texts.current[id] = el;else delete texts.current[id]; },
+    textFocus(id) {
+      selectId(id);
+      editRef.current = id;
+      setEditing(id);
+      setTarget(id);
+    },
+    textInput(id, html) {
+      created.current.delete(id);
+      const b = blocksRef.current.find(x => x.id === id);
+      if (!b || b.html === html) return;
+      // 書き始めた箱の場所は、次に貼るときの置き場所に使わない（重ならないように）
+      if (lastPt.current && b.x === lastPt.current.x && b.y === lastPt.current.y) lastPt.current = null;
+      change(cur => cur.map(x => x.id === id ? { ...x, html } : x));
+    },
+    textBlur(id, el) {
+      if (editRef.current === id) {
+        editRef.current = null;
+        setEditing(null);
+      }
+      if (linkFor.current) return;   // リンクのダイアログを開いている間は片付けない
+      const cur = blocksRef.current;
+      if (!cur.some(b => b.id === id)) return;
+      if (el && !noteHasContent(el.innerHTML)) {
+        // 空の箱は片付ける（クリックで作っただけの箱なら、保存も元に戻すの控えも要らない）
+        const quiet = created.current.has(id);
+        created.current.delete(id);
+        if (pendingAdd.current && pendingAdd.current.id === id) pendingAdd.current = null;
+        if (quiet) commit(cur.filter(b => b.id !== id), false);else change(c => c.filter(b => b.id !== id), { undo: true });
+        if (selRef.current === id) selectId(null);
+        if (targetRef.current === id) setTarget(null);
+        return;
+      }
+      if (pendingAdd.current && pendingAdd.current.id === id) {
+        pushUndo(pendingAdd.current.before);
+        pendingAdd.current = null;
+      }
+    },
+    textEscape(id) {
+      const el = texts.current[id];
+      try { if (el) el.blur(); } catch (e) {}
+      if (blocksRef.current.some(b => b.id === id)) selectId(id);
+      try { rootRef.current.focus({ preventScroll: true }); } catch (e) {}
+    },
+    select(id, e) {
+      if (e && e.pointerType === "mouse" && e.button !== 0) return;
+      const ae = document.activeElement;
+      if (ae && ae.isContentEditable && rootRef.current && rootRef.current.contains(ae)) ae.blur();
+      selectId(id);
+      if (e) e.preventDefault();
+      try { rootRef.current.focus({ preventScroll: true }); } catch (er) {}
+    },
+    addText(p) {
+      const cur = materialize();
+      const b = { id: uid(), t: "text", x: p.x, y: p.y, w: NOTE_NEW_W, html: "" };
+      pendingAdd.current = { id: b.id, before: cur };
+      created.current.add(b.id);
+      commit([...cur, b], false);
+      selectId(b.id);
+      setFocusId(b.id);
+    },
+    remove(id) {
+      const cur = materialize();
+      const b = cur.find(x => x.id === id);
+      if (!b) return;
+      created.current.delete(id);
+      pushUndo(cur);
+      commit(cur.filter(x => x.id !== id), true);
+      selectId(null);
+      if (targetRef.current === id) setTarget(null);
+      setUndoToast({ b, at: Date.now() });
+      try { rootRef.current.focus({ preventScroll: true }); } catch (e) {}
+    },
+    restore(b) {
+      change(cur => cur.some(x => x.id === b.id) ? cur : [...cur, b], { undo: true });
+      selectId(b.id);
+      setUndoToast(null);
+      try { rootRef.current.focus({ preventScroll: true }); } catch (e) {}
+    },
+    undo() {
+      const prev = undoSt.current.pop();
+      if (!prev) return;
+      const cur = materialize();
+      redoSt.current.push(cur);
+      commit(keepText(prev, cur), true);
+    },
+    redo() {
+      const nx = redoSt.current.pop();
+      if (!nx) return;
+      const cur = materialize();
+      undoSt.current.push(cur);
+      commit(keepText(nx, cur), true);
+    },
+    nudge(id, dx, dy) {
+      const cur = materialize();
+      const n = nudgeAt.current;
+      // 続けて押した矢印は、まとめて1回の「元に戻す」にする
+      if (!n || n.id !== id || Date.now() - n.at > 1200) pushUndo(cur);
+      nudgeAt.current = { id, at: Date.now() };
+      commit(cur.map(b => b.id === id ? { ...b, x: Math.max(0, b.x + dx), y: Math.max(16, b.y + dy) } : b), true);
+    },
+    startDrag(e, id, mode) {
+      if (flowRef.current) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // 書いている途中の箱から抜ける（矢印・Delete・Ctrl+Z を箱の操作に使えるように）。
+      // 抜けると空の箱は片付くので、元に戻すの控えはそのあとで取る
+      const ae = document.activeElement;
+      if (ae && ae.isContentEditable && rootRef.current && rootRef.current.contains(ae)) ae.blur();
+      const before = materialize();
+      const b0 = before.find(x => x.id === id);
+      if (!b0) return;
+      selectId(id);
+      try { rootRef.current.focus({ preventScroll: true }); } catch (er) {}
+      const handle = e.currentTarget;
+      try { handle.setPointerCapture(e.pointerId); } catch (er) {}
+      const zz = zoomRef.current / 100;
+      const x0 = e.clientX, y0 = e.clientY;
+      const sc = scrollRef.current;
+      const sl0 = sc ? sc.scrollLeft : 0, st0 = sc ? sc.scrollTop : 0;
+      const bel = els.current[id];
+      const im = bel && bel.querySelector(".nb-img");
+      const h0 = b0.h || (im && im.offsetHeight) || Math.round(b0.w * 0.75);
+      let last = { x: x0, y: y0 }, moved = false;
+      const calc = (cx, cy, snap) => {
+        const s = snap ? snap8 : Math.round;
+        // 端で紙が流れた分も足す（流れた先へ一緒に動く）
+        const dx = (cx - x0 + (sc ? sc.scrollLeft - sl0 : 0)) / zz, dy = (cy - y0 + (sc ? sc.scrollTop - st0 : 0)) / zz;
+        const o = { ...blocksRef.current.find(x => x.id === id) || b0 };
+        if (mode === "move") {
+          o.x = Math.max(0, s(b0.x + dx));
+          o.y = Math.max(16, s(b0.y + dy));
+        } else {
+          o.w = Math.max(NOTE_MIN_W[b0.t], s(b0.w + dx));
+          if (b0.t === "img") {
+            if (mode === "corner") o.h = Math.max(8, Math.round(o.w * h0 / b0.w));
+            else o.h = h0;   // 右の端だけで変えるときは高さはそのまま（横に伸び縮みする）
+          }
+        }
+        return o;
+      };
+      // 見えている所の端まで運んだら、紙を流す（右・下へ運ぶと紙も伸びる）
+      const edge = ev => {
+        if (!sc) return;
+        const r = sc.getBoundingClientRect();
+        if (ev.clientX > r.right - 28) sc.scrollLeft += 16;else if (ev.clientX < r.left + 28) sc.scrollLeft -= 16;
+        if (ev.clientY > r.bottom - 28) sc.scrollTop += 16;else if (ev.clientY < r.top + 28) sc.scrollTop -= 16;
+      };
+      const mv = ev => {
+        if (!moved && Math.abs(ev.clientX - x0) + Math.abs(ev.clientY - y0) < 3) return;
+        moved = true;
+        edge(ev);
+        last = { x: ev.clientX, y: ev.clientY };
+        const o = calc(last.x, last.y, false);
+        commit(blocksRef.current.map(x => x.id === id ? o : x), false);
+      };
+      const up = ev => {
+        handle.removeEventListener("pointermove", mv);
+        handle.removeEventListener("pointerup", up);
+        handle.removeEventListener("pointercancel", up);
+        if (!moved) return;
+        if (ev.type === "pointerup") last = { x: ev.clientX, y: ev.clientY };
+        const o = calc(last.x, last.y, true);
+        pushUndo(before);
+        commit(blocksRef.current.map(x => x.id === id ? o : x), true);
+      };
+      handle.addEventListener("pointermove", mv);
+      handle.addEventListener("pointerup", up);
+      handle.addEventListener("pointercancel", up);
+    },
+    openFile(b, download) {
+      noteOpenFile(b, download).then(okk => {
+        if (!okk) toastRef.current({ title: "ファイルがまだこの端末にありません", body: "同期で届くまでお待ちください。" });
+      });
+    },
+    paste(e) {
+      const dt = e.clipboardData;
+      if (!dt) return;
+      const files = [];
+      Array.from(dt.items || []).forEach(it => {
+        if (it.kind === "file") {
+          const f = it.getAsFile();
+          if (f) files.push(f);
+        }
+      });
+      if (!files.length && dt.files && dt.files.length) files.push(...Array.from(dt.files));
+      if (files.length) {
+        e.preventDefault();
+        insertFiles(files, insertPoint());
+        return;
+      }
+      const html = dt.getData("text/html") || "";
+      const plain = dt.getData("text/plain") || "";
+      const ed = editRef.current;
+      const el = ed && texts.current[ed];
+      if (el) {
+        // 書いている箱への貼り付け。HTML はサニタイズして差し込み、画像は別の箱にする
+        if (html) {
+          e.preventDefault();
+          const r = notePasteHtml(html);
+          if (r.html) {
+            try { document.execCommand("insertHTML", false, r.html); } catch (er) {}
+          }
+          if (r.images.length) {
+            const b = blocksRef.current.find(x => x.id === ed);
+            const be = els.current[ed];
+            insertPastedImages(r.images, b && !flowRef.current ? { x: b.x, y: b.y + (be ? be.offsetHeight : noteEstH(b)) + 16 } : null);
+          }
+          return;
+        }
+        // URL だけを貼ったらリンクにする（本文のエディタと同じ）
+        const u = normalizeUrlKn(plain);
+        if (plain && !/\s/.test(plain.trim()) && /^https?:/i.test(u) && urlAllowedKn(u) && safeLink(u)) {
+          e.preventDefault();
+          let label = "";
+          try { label = String(window.getSelection().toString() || ""); } catch (er) {}
+          try { document.execCommand("insertHTML", false, "<a href=\"" + noteEsc(u) + "\" target=\"_blank\" rel=\"noopener noreferrer\">" + noteEsc(label || u) + "</a>&nbsp;"); } catch (er) {}
+        }
+        return;   // 素の文字はブラウザに任せる
+      }
+      // 何も書いていないときの貼り付けは、新しい文字の箱にする（OneNote と同じ）
+      if (!html && !plain.trim()) return;
+      e.preventDefault();
+      const r = html ? notePasteHtml(html) : { html: noteEsc(plain).replace(/\r?\n/g, "<br>"), images: [] };
+      const p = insertPoint();
+      if (noteHasContent(r.html)) {
+        const b = { id: uid(), t: "text", x: snap8(p.x), y: snap8(p.y), w: NOTE_NEW_W, html: r.html };
+        change(cur => [...cur, b], { undo: true });
+        selectId(b.id);
+        lastPt.current = null;
+        if (r.images.length) insertPastedImages(r.images, { x: b.x, y: b.y + noteEstH(b) + 16 });
+      } else if (r.images.length) insertPastedImages(r.images, p);
+    },
+    focusFirst() {
+      const first = noteOrder(blocksRef.current).find(b => b.t === "text");
+      const el = first && texts.current[first.id];
+      if (el) {
+        try {
+          el.focus();
+          const r = document.createRange();
+          r.selectNodeContents(el);
+          r.collapse(false);
+          const s = window.getSelection();
+          s.removeAllRanges();
+          s.addRange(r);
+        } catch (e) {}
+        return;
+      }
+      impl.addText(blocksRef.current.length ? belowAll() : { x: 24, y: 24 });
+    }
+  };
+  const implRef = useRef(impl);
+  implRef.current = impl;
+  const api = useMemo(() => {
+    const call = k => (...a) => implRef.current[k](...a);
+    return {
+      blockEl: call("blockEl"), textEl: call("textEl"), textFocus: call("textFocus"), textInput: call("textInput"),
+      textBlur: call("textBlur"), textEscape: call("textEscape"), select: call("select"), remove: call("remove"),
+      startDrag: call("startDrag"), openFile: call("openFile")
+    };
+  }, []);
+  if (ctl) ctl.current = { focusFirst: () => implRef.current.focusFirst() };
+  // 貼り付けは document で受ける（何も選んでいないとき＝body に来る貼り付けも拾うため）。
+  // タイトル・検索欄・ダイアログなど、ほかの入力欄への貼り付けは邪魔しない
+  useEffect(() => {
+    const onPaste = e => {
+      if (e.defaultPrevented) return;
+      const root = rootRef.current;
+      if (!root) return;
+      const t = e.target;
+      if (t && t.nodeType === 1 && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+      // ダイアログ・設定などの画面が上に開いているときは、下のページに貼らない
+      if (document.querySelector(".kn-dlg, .modal-bg, .rf-back")) return;
+      const a = document.activeElement;
+      const inRoot = n => !!(n && n.nodeType === 1 && root.contains(n));
+      if (!inRoot(t) && !(a == null || a === document.body || inRoot(a))) return;
+      implRef.current.paste(e);
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, []);
+  // 書式のボタンを押す直前の選択範囲を覚えておく（色の選択などで本文から焦点が外れても、同じ所に効かせる）
+  useEffect(() => {
+    const onSel = () => {
+      try {
+        const s = window.getSelection();
+        if (!s || !s.rangeCount) return;
+        const id = targetRef.current;
+        const el = id && texts.current[id];
+        if (el && el.contains(s.anchorNode)) savedRange.current = s.getRangeAt(0).cloneRange();
+      } catch (e) {}
+    };
+    document.addEventListener("selectionchange", onSel);
+    return () => document.removeEventListener("selectionchange", onSel);
+  }, []);
+  // ページの大きさ: いちばん右・下の箱より少し広く（箱を右や下へ動かすと紙が伸びる。箱が切れることは無い）
+  useLayoutEffect(() => {
+    if (flow) return;
+    const c = canvasRef.current, sc = scrollRef.current;
+    if (!c || !sc) return;
+    const calc = () => {
+      let mw = 0, mh = 0;
+      for (const el of c.children) {
+        mw = Math.max(mw, el.offsetLeft + el.offsetWidth);
+        mh = Math.max(mh, el.offsetTop + el.offsetHeight);
+      }
+      const zz = zoomRef.current / 100;
+      const w = Math.ceil(Math.max(mw + 240, sc.clientWidth / zz));
+      const h = Math.ceil(Math.max(mh + 320, sc.clientHeight / zz));
+      setExt(o => Math.abs(o.w - w) < 2 && Math.abs(o.h - h) < 2 ? o : { w, h });
+    };
+    calc();
+    if (typeof ResizeObserver === "undefined") return;
+    let raf = 0;
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(calc);
+    });
+    ro.observe(sc);
+    for (const el of c.children) ro.observe(el);
+    return () => {
+      ro.disconnect();
+      cancelAnimationFrame(raf);
+    };
+  }, [blocks, zoom, flow]);
+  // Ctrl（⌘）＋ホイールで拡大・縮小。指している所がずれないようにスクロールを合わせる
+  useEffect(() => {
+    const sc = scrollRef.current;
+    if (!sc || flow) return;
+    const onWheel = e => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      const r = sc.getBoundingClientRect();
+      anchor.current = { mx: e.clientX - r.left, my: e.clientY - r.top, z0: zoomRef.current, sl: sc.scrollLeft, st: sc.scrollTop };
+      onZoomRef.current(v => noteClampZoom(v + (e.deltaY < 0 ? 10 : -10)));
+    };
+    sc.addEventListener("wheel", onWheel, { passive: false });
+    return () => sc.removeEventListener("wheel", onWheel);
+  }, [flow]);
+  useLayoutEffect(() => {
+    const a = anchor.current;
+    anchor.current = null;
+    const sc = scrollRef.current;
+    if (!a || !sc || a.z0 === zoom) return;
+    const k = zoom / a.z0;
+    sc.scrollLeft = (a.sl + a.mx) * k - a.mx;
+    sc.scrollTop = (a.st + a.my) * k - a.my;
+  }, [zoom]);
+  useEffect(() => {
+    if (!undoToast) return;
+    const t = setTimeout(() => setUndoToast(null), 6000);
+    return () => clearTimeout(t);
+  }, [undoToast]);
+  const onKeyDown = e => {
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (isImeEnter(e)) return;
+    // ボタン・リンクに焦点があるときは、Enter などはそのボタンのもの。元に戻す・やり直すだけ受ける
+    const onCtl = !!(t && t !== rootRef.current && /^(BUTTON|A)$/.test(t.tagName));
+    const mod = e.ctrlKey || e.metaKey;
+    const k = e.key;
+    if (mod && !e.altKey && (k === "z" || k === "Z")) {
+      e.preventDefault();
+      if (e.shiftKey) impl.redo();else impl.undo();
+      return;
+    }
+    if (mod && !e.altKey && (k === "y" || k === "Y")) {
+      e.preventDefault();
+      impl.redo();
+      return;
+    }
+    if (mod || e.altKey || onCtl) return;
+    const id = selRef.current;
+    if (!id || !blocksRef.current.some(b => b.id === id)) return;
+    if (k === "Delete" || k === "Backspace") {
+      e.preventDefault();
+      impl.remove(id);
+      return;
+    }
+    if (k === "Enter") {
+      const el = texts.current[id];
+      if (el) {
+        e.preventDefault();
+        try { el.focus(); } catch (er) {}
+      }
+      return;
+    }
+    const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[k];
+    if (d && !flow) {
+      e.preventDefault();
+      const step = e.shiftKey ? 10 : 1;
+      impl.nudge(id, d[0] * step, d[1] * step);
+    }
+  };
+  const dragInside = useRef(false);   // この紙の中で始まったドラッグ（文字の移動など）はブラウザに任せる
+  const onDragOver = e => {
+    try {
+      const ty = Array.from(e.dataTransfer.types || []);
+      if (ty.indexOf("Files") !== -1 || !dragInside.current && ty.indexOf(KN_PAGE_DND) === -1 && (ty.indexOf("text/html") !== -1 || ty.indexOf("text/plain") !== -1)) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }
+    } catch (x) {}
+  };
+  const onDrop = e => {
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    const fs = dt.files;
+    const p0 = flowRef.current ? null : toCanvas(e.clientX, e.clientY);
+    const at = p0 ? { x: snap8(p0.x), y: snap8(Math.max(16, p0.y)) } : null;
+    if (fs && fs.length) {
+      e.preventDefault();
+      e.stopPropagation();
+      insertFiles(Array.from(fs), at, null, true);
+      return;
+    }
+    // ほかのページから文字を落としたとき。ブラウザに任せると、HTML（ネットの画像など）がそのまま入る
+    if (dragInside.current) return;
+    let types = [];
+    try { types = Array.from(dt.types || []); } catch (x) {}
+    if (types.indexOf(KN_PAGE_DND) !== -1) return;
+    const html = dt.getData("text/html") || "";
+    const plain = dt.getData("text/plain") || "";
+    if (!html && !plain.trim()) return;
+    e.preventDefault();
+    const r = html ? notePasteHtml(html) : { html: noteEsc(plain).replace(/\r?\n/g, "<br>"), images: [] };
+    const tEl = e.target && e.target.closest ? e.target.closest(".nb-text") : null;
+    if (tEl && rootRef.current && rootRef.current.contains(tEl)) {
+      // 落とした所にカーソルを置いてから差し込む
+      try {
+        let rg = null;
+        if (document.caretRangeFromPoint) rg = document.caretRangeFromPoint(e.clientX, e.clientY);
+        else if (document.caretPositionFromPoint) {
+          const cp = document.caretPositionFromPoint(e.clientX, e.clientY);
+          if (cp) { rg = document.createRange(); rg.setStart(cp.offsetNode, cp.offset); rg.collapse(true); }
+        }
+        tEl.focus();
+        if (rg && tEl.contains(rg.startContainer)) {
+          const sl = window.getSelection();
+          sl.removeAllRanges();
+          sl.addRange(rg);
+        }
+        if (r.html) document.execCommand("insertHTML", false, r.html);
+      } catch (x) {}
+      if (r.images.length) insertPastedImages(r.images, null);
+      return;
+    }
+    const pt = at || belowAll();
+    if (noteHasContent(r.html)) {
+      const b = { id: uid(), t: "text", x: pt.x, y: pt.y, w: NOTE_NEW_W, html: r.html };
+      change(cur => [...cur, b], { undo: true });
+      selectId(b.id);
+      if (r.images.length) insertPastedImages(r.images, { x: b.x, y: b.y + noteEstH(b) + 16 });
+    } else if (r.images.length) insertPastedImages(r.images, pt);
+  };
+  const onCanvasDown = e => {
+    if (e.target !== canvasRef.current) return;
+    downAt.current = { x: e.clientX, y: e.clientY };
+  };
+  const onCanvasClick = e => {
+    if (e.target !== canvasRef.current) return;
+    const d = downAt.current;
+    downAt.current = null;
+    if (d && Math.abs(d.x - e.clientX) + Math.abs(d.y - e.clientY) > 6) return;   // なぞっただけ
+    const p = toCanvas(e.clientX, e.clientY);
+    // 押した所に文字の箱を作って、そのまま書けるようにする（OneNote と同じ）
+    const pt = { x: snap8(Math.max(0, p.x - 8)), y: snap8(Math.max(16, p.y - 14)) };
+    lastPt.current = pt;
+    selectId(null);
+    impl.addText(pt);
+  };
+  // 書式（文字の箱に効かせる）
+  const fmtEl = () => {
+    const id = targetRef.current;
+    return id && texts.current[id] || null;
+  };
+  const fmt = (c, v) => {
+    const el = fmtEl();
+    if (!el) return;
+    restoreSel(el);
+    try { document.execCommand("styleWithCSS", false, true); } catch (e) {}
+    try { document.execCommand(c, false, v); } catch (e) {}
+    try { el.dispatchEvent(new Event("input", { bubbles: true })); } catch (e) {}
+  };
+  const openLink = () => {
+    const el = fmtEl();
+    if (!el) return;
+    restoreSel(el);
+    const a = anchorIn(el);
+    let text = "", url = "";
+    if (a) {
+      text = a.textContent || "";
+      url = a.getAttribute("href") || "";
+    } else {
+      try { text = String(window.getSelection().toString() || ""); } catch (e) {}
+    }
+    let range = null;
+    try {
+      const s = window.getSelection();
+      if (s && s.rangeCount && el.contains(s.anchorNode)) range = s.getRangeAt(0).cloneRange();
+    } catch (e) {}
+    linkFor.current = { id: targetRef.current, range, editing: !!a };
+    setLinkDlg({ text, url, editing: !!a });
+  };
+  const closeLink = () => {
+    const lf = linkFor.current;
+    linkFor.current = null;
+    setLinkDlg(null);
+    return lf;
+  };
+  // リンクを入れずに閉じたとき、ダイアログの間は片付けなかった空の箱を片付ける
+  const cancelLink = () => {
+    const lf = closeLink();
+    const el = lf && texts.current[lf.id];
+    if (el && document.activeElement !== el && !noteHasContent(el.innerHTML)) impl.textBlur(lf.id, el);
+  };
+  const applyLink = (text, rawUrl) => {
+    const lf = closeLink();
+    const el = lf && texts.current[lf.id];
+    if (!el) return;
+    const url = normalizeUrlKn(rawUrl);
+    if (!url || !urlAllowedKn(url) || !safeLink(url)) {
+      toastRef.current({ title: "リンクを入れられませんでした", body: "http(s): / mailto: / tel: のURLを入れてください。" });
+      return;
+    }
+    try {
+      el.focus();
+      if (lf.range) {
+        const s = window.getSelection();
+        s.removeAllRanges();
+        s.addRange(lf.range);
+      }
+    } catch (e) {}
+    const a = lf.editing ? anchorIn(el) : null;
+    if (a) {
+      a.setAttribute("href", url);
+      a.setAttribute("target", "_blank");
+      a.setAttribute("rel", "noopener noreferrer");
+      if (!a.querySelector("*")) a.textContent = text || url;
+    } else {
+      try { document.execCommand("insertHTML", false, "<a href=\"" + noteEsc(url) + "\" target=\"_blank\" rel=\"noopener noreferrer\">" + noteEsc(text || url) + "</a>&nbsp;"); } catch (e) {}
+    }
+    try { el.dispatchEvent(new Event("input", { bubbles: true })); } catch (e) {}
+  };
+  const removeLink = () => {
+    const lf = closeLink();
+    const el = lf && texts.current[lf.id];
+    if (!el) return;
+    try {
+      el.focus();
+      if (lf.range) {
+        const s = window.getSelection();
+        s.removeAllRanges();
+        s.addRange(lf.range);
+      }
+    } catch (e) {}
+    const a = anchorIn(el);
+    if (!a) return;
+    const parent = a.parentNode;
+    while (a.firstChild) parent.insertBefore(a.firstChild, a);
+    parent.removeChild(a);
+    try { el.dispatchEvent(new Event("input", { bubbles: true })); } catch (e) {}
+  };
+  const off = !textTarget || !texts.current[textTarget];
+  const keep = e => e.preventDefault();   // 書いている箱から焦点を奪わない
+  const fb = (label, title, onClick, style) => React.createElement("button", {
+    type: "button",
+    className: "rich-b",
+    title,
+    "aria-label": title,
+    disabled: off,
+    style,
+    onMouseDown: keep,
+    onClick
+  }, label);
+  const tb = React.createElement("div", { className: "nc-tb", role: "toolbar", "aria-label": "ページの道具" },
+    React.createElement("button", {
+      type: "button",
+      className: "nc-ins",
+      title: "画像・PDF・ファイルを入れる（貼り付け・ドラッグでも入ります）",
+      "aria-label": "画像・PDF・ファイルを挿入",
+      onMouseDown: keep,
+      onClick: () => fileRef.current && fileRef.current.click(),
+      disabled: busy
+    }, busy ? "取り込み中…" : "＋ 挿入"),
+    React.createElement("input", {
+      ref: fileRef,
+      type: "file",
+      multiple: true,
+      style: { display: "none" },
+      "aria-hidden": "true",
+      tabIndex: -1,
+      onChange: e => {
+        const fs = Array.from(e.target.files || []);
+        e.target.value = "";
+        if (fs.length) insertFiles(fs, insertPoint());
+      }
+    }),
+    React.createElement("span", { className: "nc-sep" }),
+    fb("B", "太字", () => fmt("bold"), { fontWeight: 800 }),
+    fb("I", "斜体", () => fmt("italic"), { fontStyle: "italic" }),
+    fb("U", "下線", () => fmt("underline"), { textDecoration: "underline" }),
+    fb("S", "取り消し線", () => fmt("strikeThrough"), { textDecoration: "line-through" }),
+    React.createElement("span", { className: "rich-colors", title: "文字の色" },
+      NOTE_FG.map(c => React.createElement("button", {
+        type: "button",
+        key: c,
+        className: "rich-sw",
+        style: { background: c },
+        title: "文字の色",
+        "aria-label": "文字の色 " + c,
+        disabled: off,
+        onMouseDown: keep,
+        onClick: () => fmt("foreColor", c)
+      })),
+      React.createElement("label", { className: "rich-color" + (off ? " off" : ""), title: "好きな文字の色を選ぶ" }, "色",
+        React.createElement("input", { type: "color", disabled: off, "aria-label": "好きな文字の色を選ぶ", onChange: e => fmt("foreColor", e.target.value) }))),
+    React.createElement("span", { className: "nc-hls", title: "蛍光ペン" },
+      React.createElement("span", { className: "nc-hl-l", "aria-hidden": "true" }, "蛍光"),
+      NOTE_HL.map(([c, nm]) => React.createElement("button", {
+        type: "button",
+        key: c,
+        className: "nc-hl",
+        style: { background: c },
+        title: "蛍光ペン（" + nm + "）",
+        "aria-label": "蛍光ペン（" + nm + "）",
+        disabled: off,
+        onMouseDown: keep,
+        onClick: () => fmt("hiliteColor", c)
+      })),
+      React.createElement("button", {
+        type: "button",
+        className: "nc-hl none",
+        title: "蛍光ペンを消す",
+        "aria-label": "蛍光ペンを消す",
+        disabled: off,
+        onMouseDown: keep,
+        onClick: () => fmt("hiliteColor", "transparent")
+      }, "×")),
+    fb("•", "箇条書き", () => fmt("insertUnorderedList")),
+    fb("1.", "番号付きの箇条書き", () => fmt("insertOrderedList")),
+    fb("🔗", "リンク", openLink));
+  const blockEls = (flow ? noteOrder(blocks) : blocks).map(b => React.createElement(CanvasBlock, {
+    key: b.id,
+    b,
+    sel: sel === b.id,
+    edit: editing === b.id,
+    flow,
+    focusReq: focusId === b.id,
+    zoom: b.t === "pdf" ? (flow ? 100 : zoom) : 100,
+    api
+  }));
+  const hint = blocks.length === 0 && React.createElement("div", { className: "nc-hint", "aria-hidden": "true" },
+    flow ? "下の「＋ 文字を書く」で書けます。画像・PDF・ファイルは「＋ 挿入」か貼り付けで入ります。"
+      : "何も無い所を押すと、そこに書けます。\n画像・PDF・ファイルは、貼り付け・ドラッグ・「＋ 挿入」で好きな所に置けます。");
+  const body = flow ? React.createElement("div", { className: "nc-flow", ref: canvasRef }, hint, blockEls,
+    React.createElement("button", {
+      type: "button",
+      className: "nc-addtext",
+      onClick: () => impl.addText(belowAll())
+    }, "＋ 文字を書く")) : React.createElement("div", {
+    className: "nc-sizer",
+    style: { width: Math.ceil(ext.w * z), height: Math.ceil(ext.h * z) }
+  }, React.createElement("div", {
+    className: "nc-canvas",
+    ref: canvasRef,
+    style: { width: ext.w, height: ext.h, transform: z === 1 ? "none" : "scale(" + z + ")" },
+    onPointerDown: onCanvasDown,
+    onClick: onCanvasClick
+  }, hint, blockEls));
+  return React.createElement("div", {
+    className: "nc" + (flow ? " flow" : ""),
+    ref: rootRef,
+    tabIndex: -1,
+    onKeyDown,
+    onDragStart: () => { dragInside.current = true; },
+    onDragEnd: () => { dragInside.current = false; }
+  }, tb, React.createElement("div", {
+    className: "nc-scroll",
+    ref: scrollRef,
+    onDragOver,
+    onDrop,
+    "aria-label": flow ? "ページの中身" : "ページの中身（何も無い所を押すと文字の箱を作ります）"
+  }, body), undoToast && React.createElement("div", { className: "nc-toast", role: "status" },
+    React.createElement("span", null, "箱を消しました"),
+    React.createElement("button", { type: "button", onClick: () => impl.restore(undoToast.b) }, "元に戻す")),
+  linkDlg && React.createElement(LinkDialog, {
+    init: linkDlg,
+    onClose: cancelLink,
+    onApply: applyLink,
+    onRemove: removeLink
+  }));
+});
+/* ── ページ（右の面）────────────────────────────────────── */
+const NotePage = React.memo(function NotePage({ memo, folders, flatFolders, allTags, h, zoom, onZoom, flow, focusTitle, onBack }) {
+  const id = memo.id;
+  const [title, setTitle] = useState(memo.title || "");
+  const titleVal = useRef(memo.title || "");
+  const titleRef = useRef(null);
+  const [menu, setMenu] = useState(false);
+  const [det, setDet] = useState(false);
+  const [moving, setMoving] = useState(false);
+  const menuRef = useRef(null);
+  const ctl = useRef(null);
+  const tSaver = useNoteSaver(() => ({ title: titleVal.current }), p => h.save(id, p), 700);
+  // 他の端末・カードで題名が変わったら、打っている最中でなければ入れ直す
+  useEffect(() => {
+    if (tSaver.pending() || document.activeElement === titleRef.current) return;
+    const t = memo.title || "";
+    if (t !== titleVal.current) {
+      titleVal.current = t;
+      setTitle(t);
+    }
+  }, [memo.title]);
+  useEffect(() => {
+    if (focusTitle && titleRef.current) {
+      try { titleRef.current.focus(); } catch (e) {}
+    }
+  }, []);
+  useEffect(() => {
+    if (!menu) return;
+    const out = e => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenu(false); };
+    document.addEventListener("pointerdown", out, true);
+    return () => document.removeEventListener("pointerdown", out, true);
+  }, [menu]);
+  useEffect(() => {
+    if (!moving) return;
+    const esc = e => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setMoving(false);
+    };
+    window.addEventListener("keydown", esc, true);
+    return () => window.removeEventListener("keydown", esc, true);
+  }, [moving]);
+  const canvasSave = useCallback(p => h.save(id, p), [id]);
+  const gc = useGcalActions(memo, (mid, eid) => h.save(mid, { gcalEventId: eid }), h.toast);
+  const folder = folders.find(f => f.id === memo.notebookId);
+  const due = srsIsDue(memo);
+  const act = fn => () => {
+    setMenu(false);
+    fn();
+  };
+  const mi = (label, onClick, opt) => React.createElement("button", {
+    type: "button",
+    role: "menuitem",
+    className: "np-mi" + (opt && opt.danger ? " danger" : ""),
+    disabled: !!(opt && opt.disabled),
+    onClick
+  }, label);
+  const linkIc = React.createElement("svg", { viewBox: "0 0 24 24" },
+    React.createElement("path", { d: "M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" }),
+    React.createElement("path", { d: "M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" }));
+  return React.createElement("div", { className: "np" + (flow ? " flow" : ""), "data-mid": id },
+    React.createElement("div", { className: "np-top" },
+      onBack && React.createElement("button", {
+        type: "button",
+        className: "np-back",
+        onClick: onBack,
+        title: "ページの一覧へ戻る",
+        "aria-label": "ページの一覧へ戻る"
+      }, "‹ 一覧"),
+      React.createElement("div", { className: "np-hm" },
+        React.createElement("input", {
+          ref: titleRef,
+          className: "np-title",
+          value: title,
+          placeholder: "タイトル",
+          "aria-label": "ページのタイトル",
+          onChange: e => {
+            titleVal.current = e.target.value;
+            setTitle(e.target.value);
+            tSaver.schedule();
+          },
+          onBlur: () => tSaver.flush(),
+          onKeyDown: e => {
+            // Enter で本文へ（変換を確定する Enter では動かない）
+            if (e.key === "Enter" && !isImeEnter(e)) {
+              e.preventDefault();
+              tSaver.flush();
+              if (ctl.current) ctl.current.focusFirst();
+            }
+          }
+        }),
+        React.createElement("div", { className: "np-when", title: "作った日時" }, noteWhen(memo.createdAt))),
+      // 表示の倍率（ページごとではなく、この端末の設定。Ctrl＋ホイールでも変わる）
+      !flow && React.createElement("span", { className: "nc-zoom", role: "group", "aria-label": "表示の倍率" },
+        React.createElement("button", { type: "button", title: "縮小", "aria-label": "縮小", disabled: zoom <= 50, onClick: () => onZoom(v => noteClampZoom(v - 10)) }, "−"),
+        React.createElement("button", { type: "button", className: "zv", title: "100% に戻す", "aria-label": "倍率 " + zoom + "%（押すと100%に戻す）", onClick: () => onZoom(100) }, zoom + "%"),
+        React.createElement("button", { type: "button", title: "拡大", "aria-label": "拡大", disabled: zoom >= 200, onClick: () => onZoom(v => noteClampZoom(v + 10)) }, "＋")),
+      React.createElement("div", {
+        className: "np-mwrap",
+        ref: menuRef,
+        onKeyDown: e => {
+          if (e.key === "Escape" && menu) {
+            e.stopPropagation();
+            setMenu(false);
+          }
+        }
+      }, React.createElement("button", {
+        type: "button",
+        className: "np-more" + (menu ? " on" : ""),
+        title: "このページの操作",
+        "aria-label": "このページの操作",
+        "aria-haspopup": "menu",
+        "aria-expanded": menu ? "true" : "false",
+        onClick: () => setMenu(v => !v)
+      }, "…"), menu && React.createElement("div", { className: "np-menu", role: "menu", "aria-label": "このページの操作" },
+        mi(memo.pinned ? "ピンを外す" : "ピン留めする", act(() => h.pin(id))),
+        mi(memo.done ? "未完了に戻す" : "完了にする", act(() => h.done(id))),
+        mi("フォルダへ移動…", act(() => setMoving(true))),
+        inShell && mi("タスクにする", act(() => sendMemoToTask(memo))),
+        memo.date && !memo.gcalEventId && mi(gc.gcalBusy ? "登録中…" : "カレンダーに登録", act(gc.calRegister), { disabled: gc.gcalBusy }),
+        memo.date && memo.gcalEventId && mi("カレンダーを更新", act(gc.calUpdate), { disabled: gc.gcalBusy }),
+        memo.date && memo.gcalEventId && mi("カレンダーから解除", act(gc.calUnregister), { disabled: gc.gcalBusy }),
+        memo.date && React.createElement("a", {
+          className: "np-mi",
+          role: "menuitem",
+          href: gcalUrl(memo),
+          target: "_blank",
+          rel: "noopener noreferrer",
+          onClick: () => setMenu(false)
+        }, "カレンダーに手動で追加"),
+        mi(memo.srs ? "復習から外す" : "復習に入れる", act(() => {
+          if (!memo.srs) h.startReview(id);
+          else if (window.confirm("このメモを復習から外しますか？")) h.stopReview(id);
+        })),
+        React.createElement("div", { className: "np-mhr", role: "separator" }),
+        mi("削除", act(() => h.del(id)), { danger: true })))),
+    React.createElement("div", { className: "np-info" },
+      folder && React.createElement("span", { className: "np-chip flat", style: { "--c": folder.color }, title: "フォルダ" },
+        React.createElement("span", { className: "dot" }), folder.name),
+      React.createElement("button", {
+        type: "button",
+        className: "np-chip",
+        style: { "--c": catColor(memo.category) },
+        title: "分類を変える",
+        "aria-label": "分類: " + memo.category + "（押すと変えられます）",
+        onClick: () => setDet(v => !v)
+      }, React.createElement("span", { className: "dot" }), memo.category),
+      memo.pinned && React.createElement("span", { className: "pinmark", title: "ピン留め" }, React.createElement(PinIcon, null)),
+      memo.done && React.createElement("span", { className: "np-chip flat" }, "完了"),
+      memo.srs ? React.createElement("span", {
+        className: "srs-chip" + (due ? " due" : "") + (memo.srs.st === SRS_ST.DONE ? " done" : ""),
+        title: "復習 " + (memo.srs.rv || 0) + "回"
+      }, memo.srs.st === SRS_ST.DONE ? "復習完了" : due ? "復習: 今日" : "次回 " + srsFmtDue(memo.srs.d)) : React.createElement("button", {
+        type: "button",
+        className: "srs-add",
+        title: "復習に入れる",
+        onClick: () => h.startReview(id)
+      }, "+ 復習"),
+      memo.srs && due && React.createElement("span", { className: "srs-acts" },
+        React.createElement("button", { type: "button", className: "srs-btn ok", onClick: () => h.review(id, "ok") }, "覚えた"),
+        React.createElement("button", { type: "button", className: "srs-btn", onClick: () => h.review(id, "again") }, "まだ")),
+      memo.date && React.createElement("span", { className: "when" }, fmtDate(memo.date, memo.time)),
+      memo.date && memo.remind != null && React.createElement("span", { className: "remind-chip", title: "通知 " + remindLabel(memo.remind) }, React.createElement(BellIcon, { on: true })),
+      (memo.tags || []).map(t => React.createElement("span", { key: "t-" + t, className: "tag-chip" }, "#", t)),
+      (memo.links || []).filter(safeLink).map((u, i) => React.createElement("a", {
+        key: "l-" + i,
+        className: "linkchip",
+        href: u,
+        target: "_blank",
+        rel: "noopener noreferrer"
+      }, linkIc, React.createElement("span", null, hostname(u)))),
+      React.createElement("button", {
+        type: "button",
+        className: "np-chip ghost",
+        "aria-expanded": det ? "true" : "false",
+        onClick: () => setDet(v => !v)
+      }, det ? "詳細をとじる" : "分類・タグ・日付・リンク")),
+    det && React.createElement("div", { className: "np-det" },
+      React.createElement("div", { className: "mini-label" }, "分類"),
+      React.createElement(CategoryPicker, { value: memo.category, onChange: v => h.save(id, { category: v }) }),
+      React.createElement("div", { className: "mini-label" }, "タグ"),
+      React.createElement(TagEditor, { tags: memo.tags || [], onChange: v => h.save(id, { tags: v }), suggestions: allTags }),
+      React.createElement("div", { className: "mini-label" }, "リンク（複数OK）"),
+      React.createElement(LinksEditor, { links: memo.links || [], onChange: v => h.save(id, { links: v }) }),
+      React.createElement("div", { className: "mini-label" }, "日付"),
+      React.createElement(DateFields, {
+        date: memo.date,
+        time: memo.time,
+        onDate: d => h.save(id, d ? { date: d } : { date: null, time: null, remind: null }),
+        onTime: t => h.save(id, { time: t })
+      }),
+      memo.date && React.createElement(ReminderField, { value: memo.remind ?? null, onChange: v => h.save(id, { remind: v }) })),
+    React.createElement(NoteCanvas, { memo, zoom, onZoom, flow, onSave: canvasSave, onToast: h.toast, ctl }),
+    moving && React.createElement("div", {
+      className: "kn-dlg",
+      onMouseDown: e => { if (e.target.classList.contains("kn-dlg")) setMoving(false); }
+    }, React.createElement("div", { className: "kn-dlg-card", role: "dialog", "aria-label": "フォルダへ移動" },
+      React.createElement("div", { className: "kn-dlg-h" }, "フォルダへ移動"),
+      React.createElement(FolderPicker, {
+        flat: flatFolders,
+        value: memo.notebookId ?? null,
+        onChange: fid => {
+          h.move(id, fid);
+          setMoving(false);
+        }
+      }),
+      React.createElement("div", { className: "kn-dlg-f" },
+        React.createElement("button", { type: "button", className: "kn-dlg-b ghost", onClick: () => setMoving(false) }, "やめる")))));
+});
+/* ── 左: フォルダ（ノートの見出し）──────────────────────────── */
+const KN_PAGE_DND = "application/x-kn-page";   // 中の一覧から左のフォルダへページを運ぶとき
+function NoteSections({ folders, counts, sel, expanded, onToggle, onSelect, onActions, onAddFolder, onMovePage, onCollapse }) {
+  const [adding, setAdding] = useState(false);
+  const [val, setVal] = useState("");
+  const [over, setOver] = useState(null);
+  const commit = () => {
+    if (val.trim()) onAddFolder(val.trim());
+    setVal("");
+    setAdding(false);
+  };
+  const dropKey = fid => fid == null ? "none" : fid;
+  const drop = fid => ({
+    onDragOver: e => {
+      try {
+        if (Array.from(e.dataTransfer.types || []).indexOf(KN_PAGE_DND) === -1) return;
+      } catch (x) { return; }
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      if (over !== dropKey(fid)) setOver(dropKey(fid));
+    },
+    onDragLeave: e => {
+      if (e.currentTarget.contains(e.relatedTarget)) return;
+      setOver(o => o === dropKey(fid) ? null : o);
+    },
+    onDrop: e => {
+      let pid = "";
+      try { pid = e.dataTransfer.getData(KN_PAGE_DND); } catch (x) {}
+      setOver(null);
+      if (!pid) return;
+      e.preventDefault();
+      onMovePage(pid, fid);
+    }
+  });
+  const roots = folders.filter(f => (f.parentId || null) === null).sort((a, b) => a.createdAt - b.createdAt);
+  const kidsOf = pid => folders.filter(f => (f.parentId || null) === pid).sort((a, b) => a.createdAt - b.createdAt);
+  const row = (key, label, opts) => React.createElement("div", _extends({
+    key,
+    className: "ns-row" + (sel === key ? " on" : "") + (over === key ? " over" : ""),
+    style: { "--c": opts.color || "var(--red)", paddingLeft: 8 + (opts.depth || 0) * 14 }
+  }, opts.drop || {}), opts.color && React.createElement("span", { className: "ns-tab", "aria-hidden": "true" }),
+    opts.tw || React.createElement("span", { className: "tw-spacer" }),
+    React.createElement("button", {
+      type: "button",
+      className: "ns-name",
+      "aria-current": sel === key ? "true" : undefined,
+      title: opts.title || label,
+      onClick: () => onSelect(key)
+    }, opts.icon && React.createElement("span", { className: "ns-ic", "aria-hidden": "true" }, opts.icon),
+      React.createElement("span", { className: "nm" }, label),
+      opts.pinned && React.createElement("span", { className: "pinmark sm" }, React.createElement(PinIcon, null)),
+      React.createElement("span", { className: "cnt" + (opts.count ? "" : " zero"), "aria-label": opts.count + "件" }, opts.count)),
+    opts.more);
+  const node = (f, depth, guard) => {
+    const kids = guard > 50 ? [] : kidsOf(f.id);
+    const open = expanded.has(f.id);
+    return React.createElement(React.Fragment, { key: f.id }, row(f.id, f.name || "（名前なし）", {
+      color: f.color,
+      depth,
+      count: counts.by.get(f.id) || 0,
+      pinned: f.pinned,
+      drop: drop(f.id),
+      tw: kids.length > 0 ? React.createElement("button", {
+        type: "button",
+        className: "tw" + (open ? " open" : ""),
+        onClick: () => onToggle(f.id),
+        title: open ? "たたむ" : "中のフォルダを出す",
+        "aria-label": open ? "「" + f.name + "」をたたむ" : "「" + f.name + "」の中のフォルダを出す",
+        "aria-expanded": open ? "true" : "false"
+      }, React.createElement(ChevIcon, null)) : null,
+      more: React.createElement("button", {
+        type: "button",
+        className: "ns-more",
+        title: "フォルダの操作（名前の変更・移動・削除など）",
+        "aria-label": "「" + f.name + "」の操作",
+        onClick: () => onActions(f.id)
+      }, "⋯")
+    }), open && kids.map(k => node(k, depth + 1, guard + 1)));
+  };
+  return React.createElement("section", { className: "ns", "aria-label": "フォルダ" },
+    React.createElement("div", { className: "ns-head" },
+      onCollapse && React.createElement("button", {
+        type: "button",
+        className: "ns-ham",
+        title: "フォルダの一覧をたたむ",
+        "aria-label": "フォルダの一覧をたたむ",
+        onClick: onCollapse
+      }, "≡"),
+      React.createElement("span", null, "フォルダ")),
+    React.createElement("div", { className: "ns-body" },
+      row("all", "すべて", { icon: "✦", count: counts.all, title: "すべてのページ" }),
+      row("none", "フォルダなし", { icon: "○", count: counts.none, drop: drop(null), title: "どのフォルダにも入っていないページ" }),
+      React.createElement("div", { className: "ns-sep", role: "separator" }),
+      roots.length === 0 && React.createElement("p", { className: "drawer-empty" }, "まだフォルダがありません。下のボタンから作れます。"),
+      roots.map(f => node(f, 0, 0)),
+      adding ? React.createElement("div", { className: "ns-form" },
+        React.createElement("input", {
+          autoFocus: true,
+          value: val,
+          placeholder: "フォルダ名",
+          "aria-label": "新しいフォルダの名前",
+          onChange: e => setVal(e.target.value),
+          onKeyDown: e => {
+            if (isImeEnter(e)) return;   // 変換の確定で作成まで走らせない
+            if (e.key === "Enter") commit();
+            if (e.key === "Escape") {
+              e.stopPropagation();
+              setAdding(false);
+              setVal("");
+            }
+          }
+        }),
+        React.createElement("button", { type: "button", className: "btn solid small", onClick: commit }, "追加"),
+        React.createElement("button", { type: "button", className: "btn ghost small", "aria-label": "やめる", onClick: () => { setAdding(false); setVal(""); } }, "×")) : React.createElement("button", {
+        type: "button",
+        className: "ns-add",
+        onClick: () => setAdding(true)
+      }, "＋ 新しいフォルダ")));
+}
+/* ── 中: ページの一覧 ─────────────────────────────────────── */
+function NotePages({ pages, selId, folders, showFolder, onSelect, onAdd, searchEl, filtersEl, filterOn, onBack, title }) {
+  const [fOpen, setFOpen] = useState(false);
+  const fById = useMemo(() => new Map(folders.map(f => [f.id, f])), [folders]);
+  return React.createElement("section", { className: "npg", "aria-label": "ページの一覧" },
+    onBack && React.createElement("div", { className: "nv-stackbar" },
+      React.createElement("button", { type: "button", className: "np-back", onClick: onBack, title: "フォルダの一覧へ戻る", "aria-label": "フォルダの一覧へ戻る" }, "‹ フォルダ"),
+      React.createElement("span", { className: "nv-stackt" }, title)),
+    React.createElement("div", { className: "npg-top" }, searchEl,
+      React.createElement("button", {
+        type: "button",
+        className: "npg-ftoggle" + (fOpen || filterOn ? " on" : ""),
+        "aria-expanded": fOpen ? "true" : "false",
+        onClick: () => setFOpen(v => !v)
+      }, (fOpen ? "▾ " : "▸ ") + "絞り込み・並べ方" + (filterOn ? "（絞り込み中）" : "")),
+      fOpen && filtersEl),
+    React.createElement("button", {
+      type: "button",
+      className: "npg-add",
+      title: "いま開いているフォルダに新しいページを作る",
+      onClick: onAdd
+    }, "＋ ページの追加"),
+    React.createElement("div", { className: "npg-list" }, pages.length === 0 ? React.createElement("p", { className: "npg-empty" }, "ページがありません。\n「＋ ページの追加」で作れます。") : pages.map(m => {
+      const f = showFolder && m.notebookId ? fById.get(m.notebookId) : null;
+      return React.createElement("button", {
+        key: m.id,
+        type: "button",
+        className: "npg-item" + (m.id === selId ? " on" : "") + (m.done ? " done" : ""),
+        "aria-current": m.id === selId ? "page" : undefined,
+        draggable: true,
+        title: "押すと開きます。左のフォルダへドラッグすると移動します",
+        onDragStart: e => {
+          try {
+            e.dataTransfer.setData(KN_PAGE_DND, m.id);
+            e.dataTransfer.effectAllowed = "move";
+          } catch (x) {}
+        },
+        onClick: () => onSelect(m.id)
+      }, React.createElement("span", { className: "npg-t" + (m.title ? "" : " untitled") },
+        m.pinned && React.createElement("span", { className: "pinmark sm" }, React.createElement(PinIcon, null)),
+        React.createElement("span", { className: "npg-tt" }, m.title || "（無題）")),
+      React.createElement("span", { className: "npg-d" }, noteShortDate(m.createdAt),
+        f && React.createElement("span", { className: "npg-f", style: { "--c": f.color } }, React.createElement("span", { className: "dot" }), f.name),
+        m.srs && srsIsDue(m) && React.createElement("span", { className: "npg-due" }, "復習")));
+    })));
+}
+/** 区切り（マウス・ペン・指で左右に動かして幅を変える。ダブルクリックで元の幅） */
+function Splitter({ label, onStart, onMove, onEnd, onReset }) {
+  return React.createElement("div", {
+    className: "nsplit",
+    role: "separator",
+    "aria-orientation": "vertical",
+    "aria-label": label,
+    title: label + "（ドラッグで幅を変える・ダブルクリックで元の幅）",
+    tabIndex: 0,
+    onPointerDown: e => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      e.preventDefault();
+      const el = e.currentTarget;
+      const x0 = e.clientX;
+      try { el.setPointerCapture(e.pointerId); } catch (er) {}
+      el.classList.add("on");
+      onStart();
+      const mv = ev => onMove(ev.clientX - x0);
+      const up = () => {
+        el.removeEventListener("pointermove", mv);
+        el.removeEventListener("pointerup", up);
+        el.removeEventListener("pointercancel", up);
+        el.classList.remove("on");
+        onEnd();
+      };
+      el.addEventListener("pointermove", mv);
+      el.addEventListener("pointerup", up);
+      el.addEventListener("pointercancel", up);
+    },
+    onDoubleClick: onReset,
+    onKeyDown: e => {
+      // キーボードでも動かせるように（← → で 16px ずつ）
+      const d = e.key === "ArrowLeft" ? -16 : e.key === "ArrowRight" ? 16 : 0;
+      if (!d) return;
+      e.preventDefault();
+      onStart();
+      onMove(d);
+      onEnd();
+    }
+  });
+}
+/** カード表示 / ノート表示 の切り替え */
+function ViewSwitch({ mode, onChange }) {
+  const b = (v, label, tip) => React.createElement("button", {
+    type: "button",
+    className: "vs-b" + (mode === v ? " on" : ""),
+    "aria-pressed": mode === v ? "true" : "false",
+    title: tip,
+    onClick: () => onChange(v)
+  }, label);
+  return React.createElement("div", { className: "vs", role: "group", "aria-label": "表示の切り替え" },
+    b("card", "カード表示", "メモをカードで並べる（いつもの表示）"),
+    b("note", "ノート表示", "フォルダ・ページの一覧・ページの中身を並べて見る（OneNote のような表示）"));
+}
+/* ── ノート表示の全体（3つの面）──────────────────────────────── */
+function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpand, sel, onSel, pages, page, freshId, searching, h, head, searchEl, filtersEl, filterOn, wide, loading }) {
+  const [w, setW] = useState(noteWidthsGet);
+  const drag0 = useRef(0);
+  const [lc, setLc] = useState(() => noteGet("lc", false) === true);
+  const [zoom, setZoom] = useNoteZoom();
+  const [stage, setStage] = useState("pages");   // 狭い画面: sections → pages → page
+  const counts = useMemo(() => {
+    const by = new Map();
+    let none = 0;
+    memos.forEach(m => {
+      const k = m.notebookId || null;
+      if (!k) none++;else by.set(k, (by.get(k) || 0) + 1);
+    });
+    return { all: memos.length, none, by };
+  }, [memos]);
+  const folderSel = sel.f === "all" || sel.f === "none" || folders.some(f => f.id === sel.f) ? sel.f : "all";
+  const sectionName = folderSel === "all" ? "すべて" : folderSel === "none" ? "フォルダなし" : (folders.find(f => f.id === folderSel) || {}).name || "";
+  const pickSection = f => {
+    onSel({ f, p: null });
+    setStage("pages");
+  };
+  const pickPage = pid => {
+    onSel({ f: folderSel, p: pid });
+    setStage("page");
+  };
+  const addPage = () => {
+    h.addPage();
+    setStage("page");
+  };
+  const setLcSaved = v => {
+    setLc(v);
+    noteSet("lc", v);
+  };
+  const sizer = k => ({
+    onStart: () => { drag0.current = w[k]; },
+    onMove: dx => setW(o => ({ ...o, [k]: noteClampW(k, drag0.current + dx) })),
+    onEnd: () => setW(o => { noteSet("w", o); return o; }),
+    onReset: () => setW(o => {
+      const n = { ...o, [k]: NOTE_W_DEF[k] };
+      noteSet("w", n);
+      return n;
+    })
+  });
+  const sections = React.createElement(NoteSections, {
+    folders,
+    counts,
+    sel: folderSel,
+    expanded,
+    onToggle: onToggleExpand,
+    onSelect: pickSection,
+    onActions: h.folderActions,
+    onAddFolder: name => {
+      h.addFolder(name);
+      setStage("pages");
+    },
+    onMovePage: h.move,
+    onCollapse: wide ? () => setLcSaved(true) : null
+  });
+  const list = React.createElement(NotePages, {
+    pages,
+    selId: page && page.id,
+    folders,
+    showFolder: searching || folderSel === "all",
+    onSelect: pickPage,
+    onAdd: addPage,
+    searchEl,
+    filtersEl,
+    filterOn,
+    onBack: wide ? null : () => setStage("sections"),
+    title: sectionName
+  });
+  const pageEl = page ? React.createElement(NotePage, {
+    key: page.id,
+    memo: page,
+    folders,
+    flatFolders,
+    allTags,
+    h,
+    zoom,
+    onZoom: setZoom,
+    flow: !wide,
+    focusTitle: page.id === freshId,
+    onBack: wide ? null : () => setStage("pages")
+  }) : React.createElement("div", { className: "np-none" }, loading ? "よみこみ中…" : "ページがありません。\n「＋ ページの追加」で作れます。");
+  if (!wide) {
+    return React.createElement("div", { className: "nv nv-narrow" }, head,
+      React.createElement("div", { className: "nv-body" },
+        stage === "sections" ? sections : stage === "page" && page ? React.createElement("div", { className: "np-area" }, pageEl) : list));
+  }
+  return React.createElement("div", {
+    className: "nv",
+    style: { "--lw": w.l + "px", "--mw": w.m + "px" }
+  }, head, React.createElement("div", { className: "nv-body" },
+    lc ? React.createElement("div", { className: "ns-mini" }, React.createElement("button", {
+      type: "button",
+      className: "ns-ham",
+      title: "フォルダの一覧を出す",
+      "aria-label": "フォルダの一覧を出す",
+      onClick: () => setLcSaved(false)
+    }, "≡")) : sections,
+    !lc && React.createElement(Splitter, _extends({ label: "フォルダとページ一覧の区切り" }, sizer("l"))),
+    list,
+    React.createElement(Splitter, _extends({ label: "ページ一覧とページの区切り" }, sizer("m"))),
+    React.createElement("div", { className: "np-area" }, pageEl)));
+}
+/** カード表示から、ノートで作ったメモを開く全画面。ページの部品はノート表示と同じ（編集のしかたを1つにする） */
+function NoteOverlay({ memo, onClose, folders, flatFolders, allTags, h, flow }) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const [zoom, setZoom] = useNoteZoom();
+  useEffect(() => {
+    const onKey = e => {
+      if (e.key !== "Escape") return;
+      // ダイアログ・メニューは自分で閉じる。書いている箱は、まず書くのをやめる（箱の側で止める）
+      if (document.querySelector(".kn-dlg, .np-menu")) return;
+      const t = e.target;
+      if (t && t.isContentEditable) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      closeRef.current();
+    };
+    window.addEventListener("keydown", onKey, true);
+    let pushed = false;
+    try {
+      window.history.pushState({ knNote: memo.id }, "");
+      pushed = true;
+    } catch (e) {}
+    const onPop = () => {
+      if (Date.now() < knPopIgnoreUntil) return;
+      pushed = false;
+      closeRef.current();
+    };
+    window.addEventListener("popstate", onPop);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("popstate", onPop);
+      document.body.style.overflow = prev;
+      // 自分が積んだ履歴だけを戻す（下に開いている全画面は閉じない）
+      if (pushed) knBackQuiet();
+    };
+  }, []);
+  return React.createElement("div", { className: "kn-full nv-ov", role: "dialog", "aria-modal": "true", "aria-label": "ノートで編集" },
+    React.createElement("div", { className: "nv-ov-card" + (flow ? " nv-narrow" : "") },
+      React.createElement("div", { className: "kn-full-bar" },
+        React.createElement("span", { className: "kn-full-t" }, "ノートで編集（自動で保存します）"),
+        React.createElement("button", {
+          type: "button",
+          className: "kn-full-x",
+          onClick: () => closeRef.current(),
+          title: "閉じる",
+          "aria-label": "閉じる"
+        }, "×")),
+      React.createElement(NotePage, { memo, folders, flatFolders, allTags, h, zoom, onZoom: setZoom, flow, focusTitle: false, onBack: null })));
+}
+
 function App() {
   const [memos, setMemos] = useState([]);
   const [folders, setFolders] = useState([]);
@@ -4093,6 +6414,25 @@ function App() {
   const [aiOpen, setAiOpen] = useState(false);
   const [dataOpen, setDataOpen] = useState(false);
   const [calOpen, setCalOpen] = useState(false);
+  // ノート表示（端末ごとの設定。同期しない）。既定はカード表示のまま
+  const [viewMode, setViewModeState] = useState(() => noteGet("view", "card") === "note" ? "note" : "card");
+  const setViewMode = v => {
+    setViewModeState(v);
+    noteSet("view", v);
+  };
+  const noteWide = useMedia(NOTE_WIDE_Q);
+  // ノート表示で選んでいるフォルダ（"all" / "none" / フォルダのid）とページ
+  const [noteSel, setNoteSelState] = useState(() => {
+    const s = noteGet("sel", null) || {};
+    return { f: typeof s.f === "string" && s.f ? s.f : "all", p: typeof s.p === "string" && s.p ? s.p : null };
+  });
+  const setNoteSel = s => {
+    setNoteSelState(s);
+    noteSet("sel", s);
+    setNoteFresh(f => f && f !== s.p ? null : f);
+  };
+  const [noteFresh, setNoteFresh] = useState(null);       // 作ったばかりのページ（タイトルに焦点を置く）
+  const [noteOverlay, setNoteOverlay] = useState(null);   // カード表示から開いたノートのページ
   const [apiKey, setApiKey] = useState(() => {
     try {
       return localStorage.getItem(API_KEY_KEY) || "";
@@ -4280,6 +6620,19 @@ function App() {
       };
     } catch (e) {}
     return { ok: false, memos: [], folders: [] };
+  };
+  /** ノート表示からの保存。★画面の state ではなく、いま保存されている内容（readLive）に当てる。
+   *  自動保存はページを替えた瞬間（＝ページの追加など別の保存と同じ描画の中）にも走るので、
+   *  state を土台にすると、直前に足したページを古い一覧で上書きして消してしまう。
+   *  persist はいちばん新しい描画のもの（updatedAt の打ち方もふだんの編集と同じ）を使う。 */
+  const persistRef = useRef(null);
+  persistRef.current = persist;
+  const updateLive = (id, fn) => {
+    const live = readLive();
+    if (!live.ok) return false;
+    // 消されたメモ（ほかの端末での削除など）は書き戻さない。削除を取り消してしまわないように
+    if (!live.memos.some(m => m.id === id)) return false;
+    return persistRef.current(live.memos.map(m => m.id === id ? fn(m) : m), live.folders);
   };
   /** アップロードが成功したあとに呼ぶ。送信できた項目にだけ「同期済み」の印を付ける。
    *  印は「Driveに載った」という意味なので、送信前に付けてはいけない。送信前に
@@ -5367,17 +7720,8 @@ function App() {
     const due = m => (m.srs && m.srs.d) ? m.srs.d : Infinity;
     return due(a) - due(b) || b.createdAt - a.createdAt;
   };
-  const visible = useMemo(() => {
-    const nowMs = reviewTick;
-    // 復習は「いま開いているフォルダ」ではなく全体から拾う。
-    // でないと、フォルダ分けしている人はバッジの件数と一覧が食い違う。
-    let list = (revFilter ? memos : baseMemos).filter(m => {
-      if (revFilter === "due" && !srsIsDue(m, nowMs)) return false;
-      if (revFilter === "learning" && !isLearning(m)) return false;
-      // 「完了を隠す」はタスクの完了の話なので、復習の一覧には効かせない
-      if (!revFilter && hideDone && m.done) return false;
-      return passFilters(m);
-    });
+  /** 一覧の並べ方（カードの一覧とノートのページ一覧で共通）。ピン留めが上、復習の一覧は次にやる順 */
+  const sortList = list => {
     const dval = m => m.date ? Number(m.date.replace(/-/g, "") + (m.time ? m.time.replace(":", "") : "0000")) : Infinity;
     if (revFilter) {
       list.sort(byReviewOrder);
@@ -5389,6 +7733,19 @@ function App() {
       });
     }
     return list;
+  };
+  const visible = useMemo(() => {
+    const nowMs = reviewTick;
+    // 復習は「いま開いているフォルダ」ではなく全体から拾う。
+    // でないと、フォルダ分けしている人はバッジの件数と一覧が食い違う。
+    let list = (revFilter ? memos : baseMemos).filter(m => {
+      if (revFilter === "due" && !srsIsDue(m, nowMs)) return false;
+      if (revFilter === "learning" && !isLearning(m)) return false;
+      // 「完了を隠す」はタスクの完了の話なので、復習の一覧には効かせない
+      if (!revFilter && hideDone && m.done) return false;
+      return passFilters(m);
+    });
+    return sortList(list);
   }, [baseMemos, memos, catFilter, tagFilter, hideDone, q, sort, searching, revFilter, reviewTick]);
   // 復習の対象件数（サイドの見出しとボタンに出す）。絞り込みに関係なく全体の件数。
   const dueMemos = useMemo(() => memos.filter(m => srsIsDue(m, reviewTick)), [memos, reviewTick]);
@@ -5446,39 +7803,10 @@ function App() {
     notebooks: folders
   }), [memos, folders]);
   const hasSubsHere = childrenOf(activeFolder).length > 0;
-  return React.createElement("div", {
-    className: "wrap"
-  }, React.createElement("style", null, CSS), React.createElement("div", {
-    className: "shell"
-  }, React.createElement("aside", {
-    className: "sidebar"
-  }, React.createElement("div", {
-    className: "sidebar-head"
-  }, React.createElement(FolderIcon, null), "\u30D5\u30A9\u30EB\u30C0"), React.createElement("div", {
-    className: "sidebar-body"
-  }, React.createElement(FolderTreeContent, {
-    folders: folders,
-    memos: memos,
-    expanded: expanded,
-    onToggle: toggleExpand,
-    active: activeFolder,
-    onSelect: id => {
-      setActiveFolder(id);
-      setIncludeSub(false);
-    },
-    onActions: id => setActionsId(id),
-    onAddRoot: addRoot
-  }))), React.createElement("div", {
-    className: "main" + (loaded ? " in" : "")
-  }, React.createElement("header", {
-    className: "head"
-  }, React.createElement("div", {
-    className: "brand"
-  }, React.createElement("span", {
-    className: "seal"
-  }, "\u6C17"), React.createElement("div", null, React.createElement("h1", null, "\u6C17\u306B\u306A\u308A\u5E33"), React.createElement("p", null, "\u6C17\u306B\u306A\u3063\u305F\u3053\u3068\u3001\u305C\u3093\u3076\u3053\u3053\u306B\u3002"))), React.createElement("div", {
-    className: "head-right"
-  }, React.createElement("div", {
+  // ── ノート表示 ──────────────────────────────
+  const noteMode = viewMode === "note";
+  // 右上のボタン（件数・通知・カレンダー・同期）。カード表示とノート表示の両方の見出しで使う
+  const headBtns = React.createElement(React.Fragment, null, React.createElement("div", {
     className: "counter"
   }, React.createElement("b", null, memos.length), "\u4EF6 \xB7 \u306E\u3053\u308A", React.createElement("b", null, remaining)), React.createElement("button", {
     className: "data-btn bell" + (notifyOn ? " on" : ""),
@@ -5511,7 +7839,206 @@ function App() {
     onClick: () => setDataOpen(true),
     title: syncState.phase === "error" ? syncState.msg || "同期に失敗しました" : syncState.phase === "syncing" ? "同期中…" : syncState.phase === "ok" ? "同期しました" : "端末間でデータを引き継ぐ",
     "aria-label": "\u7AEF\u672B\u9593\u3067\u30C7\u30FC\u30BF\u3092\u5F15\u304D\u7D99\u3050"
-  }, React.createElement(SyncIcon, null)))), React.createElement("div", {
+  }, React.createElement(SyncIcon, null)));
+  const viewSwitchEl = React.createElement(ViewSwitch, { mode: viewMode, onChange: setViewMode });
+  // 中の一覧＝左で選んだフォルダのページ。検索・分類・タグ・並べ方・完了を隠す・復習の一覧はカード表示と同じに効かせる
+  // （検索中と復習の一覧は、カード表示と同じく全体から拾う）
+  const notePages = useMemo(() => {
+    if (!noteMode) return [];
+    const f = noteSel.f;
+    const nowMs = reviewTick;
+    let list = revFilter || searching || f === "all" || !(f === "none" || folders.some(x => x.id === f)) ? memos
+      : f === "none" ? memos.filter(m => !m.notebookId) : memos.filter(m => m.notebookId === f);
+    list = list.filter(m => {
+      if (revFilter === "due" && !srsIsDue(m, nowMs)) return false;
+      if (revFilter === "learning" && !isLearning(m)) return false;
+      if (!revFilter && hideDone && m.done) return false;
+      return passFilters(m);
+    });
+    return sortList(list);
+  }, [noteMode, memos, folders, noteSel.f, catFilter, tagFilter, hideDone, q, sort, searching, revFilter, reviewTick]);
+  // 選んでいたページ（消えていたら一覧の先頭）
+  const notePage = noteMode ? (noteSel.p && memos.find(m => m.id === noteSel.p)) || notePages[0] || null : null;
+  /** ＋ページの追加: 開いているフォルダに、題名の空のページを作って開く（絞り込み中の分類・タグも付ける） */
+  const addPage = () => {
+    const fid = folders.some(x => x.id === noteSel.f) ? noteSel.f : null;
+    const m = normalizeMemo({
+      id: uid(),
+      title: "",
+      body: "",
+      category: catFilter !== "all" ? catFilter : "メモ",
+      tags: tagFilter ? [tagFilter] : [],
+      links: [],
+      notebookId: fid,
+      date: null,
+      time: null,
+      remind: null,
+      srs: null,
+      attachments: [],
+      done: false,
+      pinned: false,
+      createdAt: Date.now()
+    });
+    const live = readLive();
+    persist([m, ...(live.ok ? live.memos : memos)], live.ok ? live.folders : folders);
+    setNoteSel({ f: noteSel.f, p: m.id });
+    setNoteFresh(m.id);
+  };
+  // ページの部品へ渡す操作。描画ごとに作り直さない（ページの面を、ほかの面の入力のたびに描き直さないため）。
+  // 中身は毎回いちばん新しい描画のものを呼ぶ
+  const noteHRef = useRef(null);
+  noteHRef.current = {
+    save: (id, patch) => updateLive(id, m => ({ ...m, ...patch })),
+    pin: id => updateLive(id, m => ({ ...m, pinned: !m.pinned })),
+    done: id => updateLive(id, m => ({ ...m, done: !m.done })),
+    move: (id, fid) => updateLive(id, m => ({ ...m, notebookId: fid || null })),
+    review: (id, r) => updateLive(id, m => srsReview(m, r)),
+    startReview: id => updateLive(id, m => srsStart(m, null, 0)),
+    stopReview: id => updateLive(id, m => ({ ...m, srs: null })),
+    del: id => del(id),
+    toast: t => setToast(t),
+    addPage,
+    addFolder: name => {
+      const f = createFolder(name, null);
+      setNoteSel({ f: f.id, p: null });
+    },
+    folderActions: id => setActionsId(id)
+  };
+  const noteH = useMemo(() => {
+    const o = {};
+    ["save", "pin", "done", "move", "review", "startReview", "stopReview", "del", "toast", "addPage", "addFolder", "folderActions"].forEach(k => {
+      o[k] = (...a) => noteHRef.current[k](...a);
+    });
+    return o;
+  }, []);
+  const overlayMemo = noteOverlay ? memos.find(m => m.id === noteOverlay) || null : null;
+  const noteSearchEl = noteMode && React.createElement("div", { className: "search nv-search" },
+    React.createElement("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" },
+      React.createElement("circle", { cx: "11", cy: "11", r: "7" }),
+      React.createElement("path", { d: "M21 21l-4-4" })),
+    React.createElement("input", {
+      value: q,
+      placeholder: "すべてのページを検索",
+      "aria-label": "すべてのページを検索",
+      onChange: e => setQ(e.target.value)
+    }), q && React.createElement("button", {
+      type: "button",
+      className: "x",
+      title: "検索をやめる",
+      "aria-label": "検索をやめる",
+      onClick: () => setQ("")
+    }, "×"));
+  const noteFilterOn = catFilter !== "all" || !!tagFilter || hideDone || sort !== "created";
+  const noteFiltersEl = noteMode && React.createElement("div", { className: "nv-filters" },
+    React.createElement("select", {
+      value: catFilter,
+      title: "分類で絞り込む",
+      "aria-label": "分類で絞り込む",
+      onChange: e => setCatFilter(e.target.value)
+    }, React.createElement("option", { value: "all" }, "分類: すべて"), CATEGORIES.map(c => React.createElement("option", { key: c.key, value: c.key }, c.key))),
+    (allTags.length > 0 || tagFilter) && React.createElement("select", {
+      value: tagFilter || "",
+      title: "タグで絞り込む",
+      "aria-label": "タグで絞り込む",
+      onChange: e => setTagFilter(e.target.value || null)
+    }, React.createElement("option", { value: "" }, "タグ: すべて"),
+      (tagFilter && !allTags.includes(tagFilter) ? [tagFilter, ...allTags] : allTags).map(t => React.createElement("option", { key: t, value: t }, "#" + t))),
+    React.createElement("select", {
+      value: sort,
+      title: "並べ方",
+      "aria-label": "並べ方",
+      onChange: e => setSort(e.target.value)
+    }, React.createElement("option", { value: "created" }, "新しい順"), React.createElement("option", { value: "date" }, "日付が近い順")),
+    React.createElement("label", { className: "check-toggle" },
+      React.createElement("input", { type: "checkbox", checked: hideDone, onChange: e => setHideDone(e.target.checked) }), "完了を隠す"));
+  const noteHead = noteMode && React.createElement("header", { className: "nv-head" },
+    React.createElement("span", { className: "seal sm", "aria-hidden": "true" }, "気"),
+    React.createElement("span", { className: "nv-brand" }, "気になり帳"),
+    viewSwitchEl,
+    (learningMemos.length > 0 || revFilter) && React.createElement("div", { className: "nv-rev" },
+      React.createElement("button", {
+        type: "button",
+        className: "nv-rev-b" + (revFilter === "due" ? " on" : ""),
+        title: "期限の来た復習だけを並べる",
+        "aria-pressed": revFilter === "due" ? "true" : "false",
+        onClick: () => setRevFilter(v => v === "due" ? "" : "due")
+      }, "今日の復習", dueMemos.length ? React.createElement("b", null, dueMemos.length) : null),
+      React.createElement("button", {
+        type: "button",
+        className: "nv-rev-b learn" + (revFilter === "learning" ? " on" : ""),
+        title: "復習に入れているメモを、次回が近い順に並べる",
+        "aria-pressed": revFilter === "learning" ? "true" : "false",
+        onClick: () => setRevFilter(v => v === "learning" ? "" : "learning")
+      }, "覚え中", learningMemos.length ? React.createElement("b", null, learningMemos.length) : null),
+      revFilter === "due" && notePages.length > 0 && React.createElement("button", {
+        type: "button",
+        className: "rev-go",
+        disabled: focusPrep,
+        onClick: openFocus
+      }, focusPrep ? "同期中…" : "順番に復習する")),
+    React.createElement("div", { className: "head-right" },
+      React.createElement("button", {
+        type: "button",
+        className: "nv-icon",
+        title: "AIで整理する（いま並んでいるページ）",
+        "aria-label": "AIで整理する",
+        disabled: notePages.length === 0,
+        onClick: () => setAiOpen(true)
+      }, React.createElement(SparkIcon, null)), headBtns));
+  const noteViewEl = noteMode && React.createElement(NoteView, {
+    memos,
+    folders,
+    flatFolders,
+    allTags,
+    expanded,
+    onToggleExpand: toggleExpand,
+    sel: noteSel,
+    onSel: setNoteSel,
+    pages: notePages,
+    page: notePage,
+    freshId: noteFresh,
+    searching,
+    h: noteH,
+    head: noteHead,
+    searchEl: noteSearchEl,
+    filtersEl: noteFiltersEl,
+    filterOn: noteFilterOn,
+    wide: noteWide,
+    loading
+  });
+  return React.createElement("div", {
+    className: "wrap" + (noteMode ? " nv-mode" : "")
+  }, React.createElement("style", null, CSS), noteMode ? noteViewEl : React.createElement("div", {
+    className: "shell"
+  }, React.createElement("aside", {
+    className: "sidebar"
+  }, React.createElement("div", {
+    className: "sidebar-head"
+  }, React.createElement(FolderIcon, null), "\u30D5\u30A9\u30EB\u30C0"), React.createElement("div", {
+    className: "sidebar-body"
+  }, React.createElement(FolderTreeContent, {
+    folders: folders,
+    memos: memos,
+    expanded: expanded,
+    onToggle: toggleExpand,
+    active: activeFolder,
+    onSelect: id => {
+      setActiveFolder(id);
+      setIncludeSub(false);
+    },
+    onActions: id => setActionsId(id),
+    onAddRoot: addRoot
+  }))), React.createElement("div", {
+    className: "main" + (loaded ? " in" : "")
+  }, React.createElement("header", {
+    className: "head"
+  }, React.createElement("div", {
+    className: "brand"
+  }, React.createElement("span", {
+    className: "seal"
+  }, "\u6C17"), React.createElement("div", null, React.createElement("h1", null, "\u6C17\u306B\u306A\u308A\u5E33"), React.createElement("p", null, "\u6C17\u306B\u306A\u3063\u305F\u3053\u3068\u3001\u305C\u3093\u3076\u3053\u3053\u306B\u3002"))), React.createElement("div", {
+    className: "head-right"
+  }, viewSwitchEl, headBtns)), React.createElement("div", {
     className: "locbar"
   }, React.createElement("button", {
     className: "folder-btn",
@@ -5736,10 +8263,11 @@ function App() {
     onSetGcal: (id, eid) => save(id, {
       gcalEventId: eid
     }),
-    onToast: setToast
+    onToast: setToast,
+    onOpenNote: setNoteOverlay
   }))), React.createElement("footer", {
     className: "foot"
-  }, "\u30E1\u30E2\u306F\u3053\u306E\u30D6\u30E9\u30A6\u30B6\u5185\u306B\u4FDD\u5B58\u3055\u308C\u3001\u6B21\u306B\u958B\u3044\u305F\u3068\u304D\u3082\u6B8B\u308A\u307E\u3059\u3002"))), drawerOpen && React.createElement(FolderDrawer, {
+  }, "\u30E1\u30E2\u306F\u3053\u306E\u30D6\u30E9\u30A6\u30B6\u5185\u306B\u4FDD\u5B58\u3055\u308C\u3001\u6B21\u306B\u958B\u3044\u305F\u3068\u304D\u3082\u6B8B\u308A\u307E\u3059\u3002"))), !noteMode && drawerOpen && React.createElement(FolderDrawer, {
     folders: folders,
     memos: memos,
     expanded: expanded,
@@ -5765,7 +8293,7 @@ function App() {
     onTogglePin: togglePinFolder,
     onDelete: deleteFolder
   }), aiOpen && React.createElement(AIPanel, {
-    memos: subtreeMemos,
+    memos: noteMode ? notePages : subtreeMemos,
     folders: folders,
     apiKey: apiKey,
     onSaveKey: saveKey,
@@ -5802,6 +8330,15 @@ function App() {
     index: focusAt,
     onAnswer: focusAnswer,
     onClose: closeFocus
+  }), overlayMemo && React.createElement(NoteOverlay, {
+    key: overlayMemo.id,
+    memo: overlayMemo,
+    folders: folders,
+    flatFolders: flatFolders,
+    allTags: allTags,
+    h: noteH,
+    flow: !noteWide,
+    onClose: () => setNoteOverlay(null)
   }), toast && React.createElement("div", {
     className: "toast",
     onClick: () => setToast(null)
@@ -6359,6 +8896,215 @@ button.gcal { cursor:pointer; font-family:inherit; }
 @media (min-width:1180px) {
   .folders-list, .list { grid-template-columns:repeat(3, minmax(0,1fr)); }
 }
+/* ── ノート表示（OneNote風）──────────────────────────────────
+   左＝フォルダ、中＝ページの一覧、右＝ページ。紙とインクの色はカード表示と同じ。 */
+.vs { display:inline-flex; flex:none; gap:2px; padding:2px; border:1px solid var(--line); border-radius:10px; background:#fff; }
+.vs-b { border:none; background:none; color:var(--soft); font:inherit; font-size:12.5px; font-weight:700; padding:6px 10px; border-radius:8px; cursor:pointer; white-space:nowrap; }
+.vs-b:hover { color:var(--ink); }
+.vs-b.on { background:var(--ink); color:#f6efdf; }
+@media (max-width:600px) { .head { flex-wrap:wrap; } .vs-b { padding:5px 8px; font-size:12px; } }
+.wrap.nv-mode { height:100vh; height:100dvh; min-height:0; overflow:hidden; }
+.nv { display:flex; flex-direction:column; height:100%; min-height:0; }
+.nv button:focus-visible, .nv select:focus-visible, .nv a:focus-visible, .nv-ov button:focus-visible, .nv-ov select:focus-visible, .nv-ov a:focus-visible { outline:2px solid var(--blue); outline-offset:1px; }
+.nv-head { flex:none; display:flex; align-items:center; flex-wrap:wrap; gap:8px 10px; padding:8px 12px; background:var(--card); border-bottom:1px solid var(--line); min-width:0; }
+.seal.sm { width:30px; height:30px; font-size:17px; border-radius:7px; }
+.nv-brand { font-family:"Shippori Mincho",serif; font-weight:800; font-size:17px; letter-spacing:.04em; white-space:nowrap; }
+.nv-head .head-right { margin-left:auto; }
+.nv-head .counter { padding-top:0; }
+.nv-rev { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.nv-rev-b { display:inline-flex; align-items:center; gap:5px; border:1px solid var(--line); background:#fff; color:var(--soft); border-radius:999px; padding:4px 11px; font:inherit; font-size:12.5px; cursor:pointer; }
+.nv-rev-b b { background:#7c5aff; color:#fff; border-radius:999px; padding:0 6px; font-size:11px; line-height:1.6; }
+.nv-rev-b.on { background:#7c5aff; border-color:#7c5aff; color:#fff; }
+.nv-rev-b.on b { background:rgba(255,255,255,.25); }
+.nv-rev-b.learn b { background:#2e7d52; }
+.nv-rev-b.learn.on { background:#2e7d52; border-color:#2e7d52; }
+.nv-head .rev-go { padding:4px 12px; font-size:12.5px; }
+.nv-icon { flex:none; width:34px; height:34px; border:1px solid var(--line); background:#fff; border-radius:9px; cursor:pointer; display:grid; place-items:center; color:var(--red-d); }
+.nv-icon svg { width:15px; height:15px; fill:currentColor; }
+.nv-icon:disabled { opacity:.45; cursor:default; }
+.nv-body { flex:1; min-height:0; display:flex; }
+/* 左: フォルダ（色の付いた見出し） */
+.ns { width:var(--lw,240px); flex:none; min-height:0; display:flex; flex-direction:column; background:linear-gradient(180deg, color-mix(in srgb,#fff 35%, var(--paper)), var(--paper)); }
+.ns-head { flex:none; display:flex; align-items:center; gap:6px; padding:8px 8px 6px; font-family:"Shippori Mincho",serif; font-size:15px; font-weight:700; }
+.ns-ham { flex:none; width:32px; height:32px; border:1px solid transparent; background:none; border-radius:8px; cursor:pointer; font-size:19px; line-height:1; color:var(--ink); display:grid; place-items:center; }
+.ns-ham:hover { background:rgba(120,95,55,.1); border-color:var(--line); }
+.ns-mini { flex:none; width:44px; display:flex; flex-direction:column; align-items:center; padding-top:8px; background:var(--paper); border-right:1px solid var(--line); }
+.ns-body { flex:1; min-height:0; overflow-y:auto; padding:2px 0 28px; }
+.ns-row { position:relative; display:flex; align-items:center; gap:2px; margin:1px 6px; border-radius:7px; min-height:34px; }
+.ns-row:hover { background:rgba(120,95,55,.07); }
+.ns-row.on { background:color-mix(in srgb,var(--c) 15%,#fff); box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 32%,transparent); }
+.ns-row.over { background:color-mix(in srgb,var(--blue) 16%,#fff); box-shadow:inset 0 0 0 2px var(--blue); }
+.ns-tab { position:absolute; left:0; top:4px; bottom:4px; width:5px; border-radius:3px; background:var(--c); }
+.ns-row .tw, .ns-row .tw-spacer { width:20px; height:24px; }
+.ns-name { flex:1; min-width:0; display:flex; align-items:center; gap:7px; border:none; background:none; cursor:pointer; font:inherit; font-size:14px; color:var(--ink); padding:7px 2px; text-align:left; }
+.ns-row.on .ns-name { font-weight:700; }
+.ns-name .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ns-name .cnt { margin-left:auto; flex:none; font-size:11px; font-weight:400; color:var(--soft); }
+.ns-name .cnt.zero { opacity:.45; }
+.ns-ic { flex:none; width:14px; text-align:center; font-size:12px; color:var(--red); }
+.ns-more { flex:none; border:none; background:none; color:var(--soft); font-size:16px; cursor:pointer; padding:4px 8px; border-radius:6px; opacity:.55; }
+.ns-row:hover .ns-more, .ns-more:focus-visible { opacity:1; }
+.ns-more:hover { background:rgba(120,95,55,.12); color:var(--ink); }
+.ns-sep { height:1px; background:var(--line); margin:6px 12px; }
+.ns-add { margin:12px 10px 0; border:1px dashed color-mix(in srgb,var(--red) 40%,var(--line)); background:none; color:var(--red); border-radius:9px; padding:8px 12px; font:inherit; font-size:13px; cursor:pointer; }
+.ns-add:hover { background:color-mix(in srgb,var(--red) 7%,transparent); }
+.ns-form { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:12px 10px 0; }
+.ns-form input { flex:1; min-width:100px; border:1px solid var(--red); border-radius:9px; padding:7px 9px; font:inherit; font-size:13.5px; }
+.ns-form input:focus { outline:none; }
+/* 区切り */
+.nsplit { flex:none; position:relative; z-index:4; width:7px; margin:0 -3px; cursor:col-resize; touch-action:none; }
+.nsplit:after { content:""; position:absolute; top:0; bottom:0; left:3px; width:1px; background:var(--line); transition:background .15s, width .15s, left .15s; }
+.nsplit:hover:after, .nsplit.on:after, .nsplit:focus-visible:after { left:2px; width:3px; background:var(--red); }
+.nsplit:focus-visible { outline:none; }
+/* 中: ページの一覧 */
+.npg { width:var(--mw,280px); flex:none; min-height:0; display:flex; flex-direction:column; background:#fbf7ee; }
+.npg-top { flex:none; display:flex; flex-direction:column; gap:6px; padding:10px 10px 6px; }
+.nv-search { border-radius:10px; padding:0 9px; }
+.nv-search input { padding:8px 6px; font-size:14px; min-width:0; }
+.npg-ftoggle { align-self:flex-start; border:none; background:none; color:var(--soft); font:inherit; font-size:12px; cursor:pointer; padding:2px 4px; border-radius:6px; }
+.npg-ftoggle:hover, .npg-ftoggle.on { color:var(--ink); }
+.nv-filters { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.nv-filters select { max-width:100%; border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:8px; padding:5px 6px; font:inherit; font-size:12.5px; }
+.nv-filters .check-toggle { font-size:12.5px; }
+.npg-add { flex:none; margin:2px 10px 8px; display:flex; align-items:center; justify-content:center; gap:6px; border:1px solid color-mix(in srgb,var(--red) 35%,var(--line)); background:#fff; color:var(--red-d); border-radius:10px; padding:9px 12px; font:inherit; font-size:14px; font-weight:700; cursor:pointer; }
+.npg-add:hover { background:color-mix(in srgb,var(--red) 7%,#fff); }
+.npg-list { flex:1; min-height:0; overflow-y:auto; border-top:1px solid var(--line); }
+.npg-item { display:flex; flex-direction:column; gap:2px; width:100%; text-align:left; border:none; border-bottom:1px solid color-mix(in srgb,var(--line) 70%,transparent); border-left:3px solid transparent; background:none; padding:9px 12px 9px 11px; font:inherit; color:var(--ink); cursor:pointer; }
+.npg-item:hover { background:rgba(255,255,255,.75); }
+.npg-item.on { background:#fff; border-left-color:var(--red); }
+.npg-t { display:flex; align-items:center; gap:5px; min-width:0; font-size:14px; line-height:1.45; }
+.npg-tt { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.npg-t.untitled { color:var(--soft); }
+.npg-item.done .npg-tt { text-decoration:line-through; color:var(--soft); }
+.npg-d { display:flex; align-items:center; gap:7px; font-size:11px; color:var(--soft); min-width:0; }
+.npg-f { display:inline-flex; align-items:center; gap:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.npg-f .dot { width:7px; height:7px; border-radius:50%; background:var(--c); flex:none; }
+.npg-due { color:#7c5aff; font-weight:700; }
+.npg-empty { margin:0; padding:24px 14px; font-size:13px; line-height:1.8; color:var(--soft); text-align:center; white-space:pre-line; }
+/* 右: ページ */
+.np-area { flex:1; min-width:0; min-height:0; display:flex; background:#fffdf8; }
+.np-none { margin:auto; padding:20px; color:var(--soft); font-size:14px; line-height:1.8; text-align:center; white-space:pre-line; }
+.np { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; background:#fffdf8; }
+.np-top { flex:none; display:flex; align-items:flex-start; gap:8px; padding:18px 22px 4px; }
+.np-back { flex:none; border:1px solid var(--line); background:#fff; border-radius:9px; padding:6px 10px; font:inherit; font-size:13px; color:var(--ink); cursor:pointer; white-space:nowrap; }
+.np-hm { flex:1; min-width:0; }
+.np-title { display:block; width:100%; border:none; border-bottom:1px solid var(--line); background:transparent; padding:2px 2px 6px; font-family:"Shippori Mincho",serif; font-weight:700; font-size:26px; color:var(--ink); }
+.np-title:focus { outline:none; border-bottom-color:var(--red); }
+.np-title::placeholder { color:#c4b89e; }
+.np-when { margin-top:5px; font-size:12px; color:var(--soft); letter-spacing:.02em; white-space:pre; }
+.np-mwrap { position:relative; flex:none; }
+.np-more { width:36px; height:36px; border:1px solid var(--line); background:#fff; border-radius:9px; cursor:pointer; font-size:18px; line-height:1; color:var(--soft); }
+.np-more:hover, .np-more.on { color:var(--ink); border-color:var(--soft); }
+.np-menu { position:absolute; right:0; top:42px; z-index:40; min-width:220px; display:flex; flex-direction:column; padding:6px; background:#fff; border:1px solid var(--line); border-radius:12px; box-shadow:0 14px 40px rgba(60,45,25,.22); }
+.np-mi { display:block; border:none; background:none; text-align:left; font:inherit; font-size:13.5px; color:var(--ink); padding:9px 12px; border-radius:8px; cursor:pointer; text-decoration:none; }
+.np-mi:hover, .np-mi:focus-visible { background:var(--card); }
+.np-mi.danger { color:var(--red-d); }
+.np-mi:disabled { opacity:.5; cursor:default; }
+.np-mhr { height:1px; margin:4px 6px; background:var(--line); }
+.np-info { flex:none; display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:4px 22px 10px; }
+.np-chip { display:inline-flex; align-items:center; gap:5px; border:1px solid var(--line); background:#fff; color:var(--soft); border-radius:999px; padding:3px 10px; font:inherit; font-size:12px; cursor:pointer; }
+.np-chip .dot { width:7px; height:7px; border-radius:50%; background:var(--c,var(--soft)); }
+.np-chip:hover { color:var(--ink); border-color:var(--soft); }
+.np-chip.flat { cursor:default; }
+.np-chip.flat:hover { color:var(--soft); border-color:var(--line); }
+.np-chip.ghost { border-style:dashed; }
+.np-info .linkchip { margin-top:0; padding:3px 9px; font-size:12px; }
+.np-info .tag-chip { cursor:default; padding:3px 9px; }
+.np-det { flex:none; display:flex; flex-direction:column; gap:6px; max-height:46vh; overflow:auto; margin:0 22px 10px; padding:10px 12px; border:1px solid var(--line); border-radius:12px; background:var(--card); }
+/* ページの中身（箱を置く紙） */
+.nc { flex:1; min-height:0; display:flex; flex-direction:column; outline:none; }
+.nc-tb { flex:none; display:flex; flex-wrap:wrap; align-items:center; gap:4px; padding:6px 16px; background:var(--card); border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+.nc-tb .rich-b { width:30px; height:30px; }
+.nc-tb .rich-b:disabled, .nc-tb .rich-sw:disabled, .nc-tb .nc-hl:disabled, .nc-tb .rich-color.off { opacity:.38; cursor:default; transform:none; }
+.nc-tb .rich-b:disabled:hover { border-color:var(--line); color:var(--ink); }
+.nc-ins { border:1px solid color-mix(in srgb,var(--red) 35%,var(--line)); background:#fff; color:var(--red-d); border-radius:8px; padding:5px 11px; font:inherit; font-size:13px; font-weight:700; cursor:pointer; }
+.nc-ins:hover { background:color-mix(in srgb,var(--red) 7%,#fff); }
+.nc-ins:disabled { opacity:.6; cursor:default; }
+.nc-sep { width:1px; height:22px; margin:0 4px; background:var(--line); }
+.nc-hls { display:inline-flex; align-items:center; gap:3px; padding:0 3px; }
+.nc-hl-l { font-size:11px; color:var(--soft); margin-right:1px; white-space:nowrap; }
+.nc-hl { width:20px; height:20px; padding:0; border:1px solid rgba(0,0,0,.18); border-radius:5px; cursor:pointer; font-size:12px; line-height:1; color:var(--soft); background:#fff; }
+.nc-zoom { flex:none; display:inline-flex; align-items:center; gap:3px; margin-top:3px; }
+.nc-zoom button { min-width:30px; height:30px; border:1px solid var(--line); background:#fff; border-radius:7px; cursor:pointer; font:inherit; font-size:13px; color:var(--ink); }
+.nc-zoom button:disabled { opacity:.4; cursor:default; }
+.nc-zoom .zv { min-width:56px; font-size:12px; }
+.nc-scroll { flex:1; min-height:0; overflow:auto; position:relative; background:#fffdf8; }
+.nc-sizer { position:relative; }
+.nc-canvas { position:absolute; left:0; top:0; transform-origin:0 0; display:flex; flex-direction:column; align-items:flex-start; gap:16px; padding:24px; cursor:text; }
+.nc-hint { position:absolute; left:32px; top:32px; max-width:420px; pointer-events:none; white-space:pre-line; font-size:13.5px; line-height:1.8; color:#b3a78f; }
+.nc-flow .nc-hint { position:static; max-width:none; }
+/* 箱 */
+/* 枠は box-shadow で描く（border だと中身の幅が w より狭くなる） */
+.nb { position:absolute; border-radius:6px; cursor:default; }
+.nb.auto { position:relative; flex:none; }
+.nb:hover { box-shadow:0 0 0 1px color-mix(in srgb,var(--soft) 32%,transparent); }
+.nb.edit { box-shadow:0 0 0 1px color-mix(in srgb,var(--soft) 60%,transparent); }
+.nb.sel { box-shadow:0 0 0 1.5px color-mix(in srgb,var(--blue) 60%,transparent); }
+/* 選んでいる・書いている箱は手前に出す（重なった箱の下に隠れた中身にも届くように） */
+.nb.sel, .nb.edit { z-index:5; }
+.nb-bar { position:absolute; left:0; right:0; top:-14px; height:13px; border-radius:6px 6px 0 0; background:color-mix(in srgb,var(--soft) 26%,#fff); cursor:move; opacity:0; touch-action:none; transition:opacity .12s; }
+.nb-bar:before { content:""; position:absolute; left:50%; top:4px; width:22px; height:3px; margin-left:-11px; border-top:1px solid rgba(0,0,0,.28); border-bottom:1px solid rgba(0,0,0,.28); }
+.nb:hover .nb-bar, .nb.sel .nb-bar, .nb.edit .nb-bar { opacity:1; }
+.nb-x { position:absolute; z-index:3; top:-18px; right:-11px; width:22px; height:22px; display:grid; place-items:center; border:none; border-radius:50%; background:var(--ink); color:#fff; font-size:14px; line-height:1; cursor:pointer; box-shadow:0 2px 6px rgba(0,0,0,.25); }
+.nb-rw { position:absolute; top:0; bottom:0; right:-6px; width:10px; cursor:ew-resize; touch-action:none; }
+.nb-rw:after { content:""; position:absolute; top:50%; right:3px; width:4px; height:22px; margin-top:-11px; border-radius:2px; background:var(--soft); opacity:0; }
+.nb:hover .nb-rw:after, .nb.sel .nb-rw:after { opacity:.55; }
+.nb-rc { position:absolute; z-index:2; right:-7px; bottom:-7px; width:13px; height:13px; background:#fff; border:1.5px solid var(--soft); border-radius:3px; cursor:nwse-resize; touch-action:none; opacity:0; }
+.nb:hover .nb-rc, .nb.sel .nb-rc { opacity:1; }
+.nb-text { min-height:1.9em; padding:4px 8px; outline:none; font-size:15px; line-height:1.75; color:var(--ink); word-break:break-word; cursor:text; }
+.nb-text[data-empty="1"]:before { content:attr(data-ph); color:#b9ad95; pointer-events:none; }
+.nb-text h1 { font-size:1.5em; margin:.4em 0; font-family:"Shippori Mincho",serif; font-weight:800; }
+.nb-text h2 { font-size:1.28em; margin:.4em 0; font-family:"Shippori Mincho",serif; font-weight:700; }
+.nb-text h3 { font-size:1.12em; margin:.35em 0; font-weight:700; }
+.nb-text p { margin:.3em 0; }
+.nb-text ul, .nb-text ol { padding-left:1.4em; margin:.3em 0; }
+.nb-text img { display:block; max-width:100%; height:auto; margin:6px 0; border-radius:6px; }
+.nb-text a { color:#3E6CA3; text-decoration:underline; text-underline-offset:2px; }
+.nb-text table { border-collapse:collapse; margin:8px 0; max-width:100%; }
+.nb-text td, .nb-text th { border:1px solid var(--line); padding:5px 9px; min-width:48px; vertical-align:top; }
+.nb-img { overflow:hidden; border-radius:4px; }
+.nb-img img { display:block; width:100%; height:auto; user-select:none; -webkit-user-drag:none; }
+.nb-img[style*="height"] img { height:100%; object-fit:fill; }
+.nb-ph { min-height:110px; display:grid; place-items:center; padding:14px; border-radius:6px; font-size:12.5px; line-height:1.6; color:var(--soft); text-align:center; background:repeating-linear-gradient(45deg,#f6f0e2,#f6f0e2 8px,#efe7d4 8px,#efe7d4 16px); }
+.nb-img .nb-ph { height:100%; }
+.nb-file { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px 12px; background:#fff; border:1px solid var(--line); border-radius:10px; font-size:13px; color:var(--ink); }
+.nb-file svg, .nb-pdfbar svg { width:18px; height:18px; flex:none; color:var(--soft); }
+.nb-fname { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.nb-fnote { flex-basis:100%; font-size:11.5px; color:var(--soft); }
+.nb-open { flex:none; border:1px solid var(--line); background:var(--card); border-radius:8px; padding:4px 10px; font:inherit; font-size:12px; color:var(--ink); cursor:pointer; }
+.nb-open:hover { border-color:var(--blue); color:var(--blue); }
+.nb-pdf { overflow:hidden; background:#fff; border:1px solid var(--line); border-radius:8px; }
+.nb-pdfbar { display:flex; align-items:center; gap:6px; padding:6px 8px; background:var(--card); border-bottom:1px solid var(--line); font-size:12.5px; }
+.nb-pdfpage { position:relative; background:#fff; border-bottom:1px solid #eee5d2; }
+.nb-pdfpage:last-child { border-bottom:none; }
+.nb-pdfpage canvas { display:block; width:100%; height:100%; }
+.nb-pdfmore { display:block; width:100%; border:none; border-top:1px solid var(--line); background:var(--card); padding:9px; font:inherit; font-size:13px; color:var(--red-d); cursor:pointer; }
+.nc-toast { position:fixed; left:50%; bottom:22px; z-index:130; transform:translateX(-50%); display:flex; align-items:center; gap:12px; max-width:calc(100% - 32px); padding:10px 14px; border-radius:12px; background:var(--ink); color:#f6efdf; font-size:13.5px; box-shadow:0 10px 30px rgba(0,0,0,.3); }
+.nc-toast button { border:1px solid rgba(255,255,255,.4); background:none; color:#fff; border-radius:8px; padding:5px 11px; font:inherit; font-size:13px; font-weight:700; cursor:pointer; }
+/* 狭い画面: 箱は読む順に縦に並べる（位置は変えない） */
+.nc-flow { display:flex; flex-direction:column; gap:14px; padding:16px 14px 90px; }
+.nc-flow .nb { position:relative; left:auto; top:auto; width:auto; max-width:100%; }
+.nc-flow .nb:hover { box-shadow:none; }
+.nc-flow .nb-img { height:auto !important; }
+.nc-flow .nb-img img { height:auto; }
+.nc-flow .nb-x { top:6px; right:6px; }
+.nc-addtext { align-self:flex-start; border:1px dashed color-mix(in srgb,var(--red) 40%,var(--line)); background:none; color:var(--red-d); border-radius:9px; padding:8px 14px; font:inherit; font-size:13.5px; cursor:pointer; }
+.nv-narrow .ns, .nv-narrow .npg { width:100%; flex:1; }
+.nv-narrow .np-top { padding:12px 14px 4px; }
+.nv-narrow .np-title { font-size:21px; }
+.nv-narrow .np-info { padding:4px 14px 8px; }
+.nv-narrow .np-det { margin:0 14px 8px; }
+/* 狭い画面の道具は1行にして、横にずらして使う */
+.nv-narrow .nc-tb { padding:6px 10px; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; }
+.nv-narrow .nc-tb::-webkit-scrollbar { display:none; }
+.nv-narrow .nc-tb > * { flex:none; }
+.nv-stackbar { flex:none; display:flex; align-items:center; gap:8px; padding:8px 10px; background:var(--card); border-bottom:1px solid var(--line); }
+.nv-stackt { font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* カード表示から開く全画面 */
+.nv-ov { z-index:115; }
+.nv-ov-card { width:100%; max-width:1280px; height:100%; min-height:0; display:flex; flex-direction:column; background:#fffdf8; box-shadow:0 0 60px rgba(0,0,0,.35); }
+.nv-ov-card .np { min-height:0; }
+.toast { z-index:130; }
 `;
 /** 描画中の思わぬ例外で画面が真っ白にならないようにする。落ちた画面は閉じたままにして
  *  （そのあと保存や同期の書き込みが走らない）、理由と再読み込みの手段を出す。

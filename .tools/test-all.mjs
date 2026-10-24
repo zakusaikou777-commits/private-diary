@@ -1,6 +1,6 @@
 /* この版の検証をまとめて流す（配布には不要。要 playwright）
      node .tools/test-all.mjs            … 構文チェック＋全部
-     node .tools/test-all.mjs tasks bgm  … 名前に含む検証だけ（test-fix-<名前>.mjs）
+     node .tools/test-all.mjs tasks bgm  … 名前に含む検証だけ（test-fix-<名前>.mjs・test-note-view.mjs）
    1本ずつ順に流し、最後に成功/失敗の一覧を出す。どれかが失敗すると終了コードは 1。 */
 import fs from "node:fs";
 import path from "node:path";
@@ -10,7 +10,7 @@ import { ROOT } from "./lib/harness.mjs";
 const want = process.argv.slice(2);
 const dir = path.join(ROOT, ".tools");
 const tests = fs.readdirSync(dir)
-  .filter((f) => /^test-fix-.*\.mjs$/.test(f))
+  .filter((f) => /^test-(fix|note)-.*\.mjs$/.test(f))
   .filter((f) => !want.length || want.some((w) => f.includes(w)))
   .sort();
 const runs = [["check-all.mjs", []], ...tests.map((f) => [f, []])];
