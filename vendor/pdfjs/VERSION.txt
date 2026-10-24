@@ -1,0 +1,5 @@
+pdf.js（Mozilla）— 気になり帳のノート表示で、貼り付けたPDFをページの絵として描くために使う。
+  パッケージ: pdfjs-dist 6.4.299（npm）の legacy/build（古めのブラウザでも動く版）
+  ファイル:   pdf.min.mjs / pdf.worker.min.mjs
+  ライセンス: Apache License 2.0（同じフォルダの LICENSE）
+PDFを開いたときに初めて読み込む（ふだんの起動では読まない）。
