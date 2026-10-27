@@ -4011,6 +4011,13 @@ function noteSet(k, v) {
 const NOTE_WIDE_Q = "(min-width: 860px)";  // これより狭いと、フォルダ→ページ一覧→ページの順に1枚ずつ出す
 const NOTE_W_DEF = { l: 240, m: 280 };
 const NOTE_W_LIM = { l: [160, 420], m: [180, 560] };
+// 狭い画面（上下に分ける形）: 上の一覧の高さ（画面の%）と、その中のフォルダの列の幅（px）
+const NOTE_TH_DEF = 40, NOTE_TH_LIM = [18, 75];
+const NOTE_SW_DEF = 156, NOTE_SW_LIM = [100, 260];
+const noteClampN = (v, lim, def) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.min(lim[1], Math.max(lim[0], n)) : def;
+};
 const noteClampW = (k, v) => {
   const n = Math.round(Number(v));
   return Number.isFinite(n) ? Math.min(NOTE_W_LIM[k][1], Math.max(NOTE_W_LIM[k][0], n)) : NOTE_W_DEF[k];
@@ -5769,7 +5776,7 @@ const NoteCanvas = React.memo(function NoteCanvas({ memo, zoom, onZoom, flow, on
   }));
 });
 /* ── ページ（右の面）────────────────────────────────────── */
-const NotePage = React.memo(function NotePage({ memo, folders, flatFolders, allTags, h, zoom, onZoom, flow, focusTitle, onBack }) {
+const NotePage = React.memo(function NotePage({ memo, folders, flatFolders, allTags, h, zoom, onZoom, flow, focusTitle }) {
   const id = memo.id;
   const [title, setTitle] = useState(memo.title || "");
   const titleVal = useRef(memo.title || "");
@@ -5831,13 +5838,6 @@ const NotePage = React.memo(function NotePage({ memo, folders, flatFolders, allT
     React.createElement("path", { d: "M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" }));
   return React.createElement("div", { className: "np" + (flow ? " flow" : ""), "data-mid": id },
     React.createElement("div", { className: "np-top" },
-      onBack && React.createElement("button", {
-        type: "button",
-        className: "np-back",
-        onClick: onBack,
-        title: "ページの一覧へ戻る",
-        "aria-label": "ページの一覧へ戻る"
-      }, "‹ 一覧"),
       React.createElement("div", { className: "np-hm" },
         React.createElement("input", {
           ref: titleRef,
@@ -6098,19 +6098,10 @@ function NoteSections({ folders, counts, sel, expanded, onToggle, onSelect, onAc
       }, "＋ 新しいフォルダ")));
 }
 /* ── 中: ページの一覧 ─────────────────────────────────────── */
-function NotePages({ pages, selId, folders, showFolder, onSelect, onAdd, searchEl, filtersEl, filterOn, onBack, title, preview }) {
+function NotePages({ pages, selId, folders, showFolder, onSelect, onAdd, searchEl, filtersEl, filterOn }) {
   const [fOpen, setFOpen] = useState(false);
   const fById = useMemo(() => new Map(folders.map(f => [f.id, f])), [folders]);
-  // 狭い画面では、題名の下に本文の書き出しも出す（一覧だけで中身の見当がつくように。OneNote のスマホ版と同じ）
-  const excerpts = useMemo(() => {
-    const m = new Map();
-    if (preview) pages.forEach(p => m.set(p.id, htmlToText(p.body).replace(/\s+/g, " ").trim().slice(0, 120)));
-    return m;
-  }, [pages, preview]);
   return React.createElement("section", { className: "npg", "aria-label": "ページの一覧" },
-    onBack && React.createElement("div", { className: "nv-stackbar" },
-      React.createElement("button", { type: "button", className: "np-back", onClick: onBack, title: "フォルダの一覧へ戻る", "aria-label": "フォルダの一覧へ戻る" }, "‹ フォルダ"),
-      React.createElement("span", { className: "nv-stackt" }, title)),
     React.createElement("div", { className: "npg-top" }, searchEl,
       React.createElement("button", {
         type: "button",
@@ -6144,8 +6135,6 @@ function NotePages({ pages, selId, folders, showFolder, onSelect, onAdd, searchE
       }, React.createElement("span", { className: "npg-t" + (m.title ? "" : " untitled") },
         m.pinned && React.createElement("span", { className: "pinmark sm" }, React.createElement(PinIcon, null)),
         React.createElement("span", { className: "npg-tt" }, m.title || "（無題）")),
-      preview && excerpts.get(m.id) && React.createElement("span", { className: "npg-x" }, excerpts.get(m.id)),
-      preview && memoMarks(m),
       React.createElement("span", { className: "npg-d" }, noteShortDate(m.createdAt),
         f && React.createElement("span", { className: "npg-f", style: { "--c": f.color } }, React.createElement("span", { className: "dot" }), f.name),
         m.srs && srsIsDue(m) && React.createElement("span", { className: "npg-due" }, "復習")));
@@ -6192,6 +6181,60 @@ function Splitter({ label, onStart, onMove, onEnd, onReset }) {
     }
   });
 }
+/** 上下の区切り（狭い画面）。指・ペン・マウスで上下に動かして、上の一覧の高さを変える
+ *  （ダブルタップで元の高さ）。右のボタンで上の一覧をたたむ・出す。たたんでいるときは、
+ *  いま開いているフォルダとページの名前を出す */
+function HSplitter({ collapsed, info, onToggle, onStart, onMove, onEnd, onReset }) {
+  const label = "フォルダ・ページ一覧とページの区切り";
+  return React.createElement("div", { className: "nhsplit" + (collapsed ? " closed" : "") },
+    collapsed ? React.createElement("span", { className: "nhsplit-info" }, info) : React.createElement("div", {
+      className: "nhsplit-grip",
+      role: "separator",
+      "aria-orientation": "horizontal",
+      "aria-label": label,
+      title: label + "（上下にドラッグで高さを変える・ダブルタップで元の高さ）",
+      tabIndex: 0,
+      onPointerDown: e => {
+        if (e.pointerType === "mouse" && e.button !== 0) return;
+        e.preventDefault();
+        const el = e.currentTarget;
+        const y0 = e.clientY;
+        const box = el.closest(".nv-body");
+        const H = box ? box.clientHeight : window.innerHeight;
+        try { el.setPointerCapture(e.pointerId); } catch (er) {}
+        el.classList.add("on");
+        onStart();
+        const mv = ev => onMove((ev.clientY - y0) / Math.max(1, H) * 100);
+        const up = () => {
+          el.removeEventListener("pointermove", mv);
+          el.removeEventListener("pointerup", up);
+          el.removeEventListener("pointercancel", up);
+          el.classList.remove("on");
+          onEnd();
+        };
+        el.addEventListener("pointermove", mv);
+        el.addEventListener("pointerup", up);
+        el.addEventListener("pointercancel", up);
+      },
+      onDoubleClick: onReset,
+      onKeyDown: e => {
+        // キーボードでも動かせるように（↑ ↓ で 5% ずつ）
+        const d = e.key === "ArrowUp" ? -5 : e.key === "ArrowDown" ? 5 : 0;
+        if (!d) return;
+        e.preventDefault();
+        onStart();
+        onMove(d);
+        onEnd();
+      }
+    }),
+    React.createElement("button", {
+      type: "button",
+      className: "nhsplit-btn",
+      "aria-expanded": collapsed ? "false" : "true",
+      title: collapsed ? "フォルダとページの一覧を出す" : "フォルダとページの一覧をたたんで、ページを広く見る",
+      onClick: onToggle
+    }, collapsed ? "▼ 一覧を出す" : "▲ たたむ"));
+}
 /** カード表示 / ノート表示 の切り替え */
 function ViewSwitch({ mode, onChange }) {
   const b = (v, label, tip) => React.createElement("button", {
@@ -6211,15 +6254,14 @@ function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpa
   const drag0 = useRef(0);
   const [lc, setLc] = useState(() => noteGet("lc", false) === true);
   const [zoom, setZoom] = useNoteZoom();
-  // 狭い画面: sections → pages → page。開いたときは、いきなりページを出す（前に見ていたページ、
-  // 無ければ一覧のいちばん上）。一覧から始めていたため、ノート表示に切り替えても一覧しか出ず、
-  // 「ノートが出ない」ように見えていた。一覧・フォルダへは「‹ 一覧」で戻れる
-  const [stage, setStage] = useState(() => page ? "page" : "pages");
-  const navd = useRef(false);   // 利用者が自分で一覧・フォルダへ移ったら、勝手にページへは進めない
-  useEffect(() => {
-    // 読み込みが終わって初めてページが決まったとき（起動直後は memos が空）
-    if (!wide && !navd.current && page && stage === "pages") setStage("page");
-  }, [wide, page && page.id]);
+  // 狭い画面（スマホ）は、上にフォルダとページの一覧を左右に並べ、下にページを出す（PCの3列を
+  // 縦長の画面向けに組み替えた形）。以前は フォルダ→一覧→ページ を1枚ずつ出していたため、
+  // PCのように見渡せず、ノート表示にしても一覧しか出ないように見えていた。
+  // 上の高さ・フォルダの列の幅・たたんでいるかは、端末ごとに覚える
+  const [th, setTh] = useState(() => noteClampN(noteGet("th", NOTE_TH_DEF), NOTE_TH_LIM, NOTE_TH_DEF));
+  const [sw, setSw] = useState(() => noteClampN(noteGet("sw", NOTE_SW_DEF), NOTE_SW_LIM, NOTE_SW_DEF));
+  const [tc, setTc] = useState(() => noteGet("tc", false) === true);
+  const th0 = useRef(0), sw0 = useRef(0);
   const counts = useMemo(() => {
     const by = new Map();
     let none = 0;
@@ -6231,19 +6273,8 @@ function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpa
   }, [memos]);
   const folderSel = sel.f === "all" || sel.f === "none" || folders.some(f => f.id === sel.f) ? sel.f : "all";
   const sectionName = folderSel === "all" ? "すべて" : folderSel === "none" ? "フォルダなし" : (folders.find(f => f.id === folderSel) || {}).name || "";
-  const pickSection = f => {
-    navd.current = true;
-    onSel({ f, p: null });
-    setStage("pages");
-  };
-  const pickPage = pid => {
-    onSel({ f: folderSel, p: pid });
-    setStage("page");
-  };
-  const addPage = () => {
-    h.addPage();
-    setStage("page");
-  };
+  const pickSection = f => onSel({ f, p: null });
+  const pickPage = pid => onSel({ f: folderSel, p: pid });
   const setLcSaved = v => {
     setLc(v);
     noteSet("lc", v);
@@ -6266,10 +6297,7 @@ function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpa
     onToggle: onToggleExpand,
     onSelect: pickSection,
     onActions: h.folderActions,
-    onAddFolder: name => {
-      h.addFolder(name);
-      setStage("pages");
-    },
+    onAddFolder: name => h.addFolder(name),
     onMovePage: h.move,
     onCollapse: wide ? () => setLcSaved(true) : null
   });
@@ -6279,13 +6307,10 @@ function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpa
     folders,
     showFolder: searching || folderSel === "all",
     onSelect: pickPage,
-    onAdd: addPage,
+    onAdd: h.addPage,
     searchEl,
     filtersEl,
-    filterOn,
-    onBack: wide ? null : () => { navd.current = true; setStage("sections"); },
-    preview: !wide,
-    title: sectionName
+    filterOn
   });
   const pageEl = page ? React.createElement(NotePage, {
     key: page.id,
@@ -6297,13 +6322,36 @@ function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpa
     zoom,
     onZoom: setZoom,
     flow: !wide,
-    focusTitle: page.id === freshId,
-    onBack: wide ? null : () => { navd.current = true; setStage("pages"); }
+    focusTitle: page.id === freshId
   }) : React.createElement("div", { className: "np-none" }, loading ? "よみこみ中…" : "ページがありません。\n「＋ ページの追加」で作れます。");
   if (!wide) {
-    return React.createElement("div", { className: "nv nv-narrow" }, head,
+    const setTcSaved = v => {
+      setTc(v);
+      noteSet("tc", v);
+    };
+    const top = !tc && React.createElement("div", { className: "nv-top", style: { "--sw": sw + "px" } },
+      sections,
+      React.createElement(Splitter, {
+        label: "フォルダとページ一覧の区切り",
+        onStart: () => { sw0.current = sw; },
+        onMove: dx => setSw(noteClampN(sw0.current + dx, NOTE_SW_LIM, NOTE_SW_DEF)),
+        onEnd: () => setSw(v => { noteSet("sw", v); return v; }),
+        onReset: () => { setSw(NOTE_SW_DEF); noteSet("sw", NOTE_SW_DEF); }
+      }),
+      list);
+    return React.createElement("div", { className: "nv nv-narrow nv-split", style: { "--th": th + "%" } }, head,
       React.createElement("div", { className: "nv-body" },
-        stage === "sections" ? sections : stage === "page" && page ? React.createElement("div", { className: "np-area" }, pageEl) : list));
+        top,
+        React.createElement(HSplitter, {
+          collapsed: tc,
+          info: sectionName + (page ? " › " + (page.title || "（無題）") : ""),
+          onToggle: () => setTcSaved(!tc),
+          onStart: () => { th0.current = th; },
+          onMove: dp => setTh(noteClampN(th0.current + dp, NOTE_TH_LIM, NOTE_TH_DEF)),
+          onEnd: () => setTh(v => { noteSet("th", v); return v; }),
+          onReset: () => { setTh(NOTE_TH_DEF); noteSet("th", NOTE_TH_DEF); }
+        }),
+        React.createElement("div", { className: "np-area" }, pageEl)));
   }
   return React.createElement("div", {
     className: "nv",
@@ -6370,7 +6418,7 @@ function NoteOverlay({ memo, onClose, folders, flatFolders, allTags, h, flow }) 
           title: "閉じる",
           "aria-label": "閉じる"
         }, "×")),
-      React.createElement(NotePage, { memo, folders, flatFolders, allTags, h, zoom, onZoom: setZoom, flow, focusTitle: false, onBack: null })));
+      React.createElement(NotePage, { memo, folders, flatFolders, allTags, h, zoom, onZoom: setZoom, flow, focusTitle: false })));
 }
 
 function App() {
@@ -8998,15 +9046,12 @@ button.gcal { cursor:pointer; font-family:inherit; }
 .npg-f { display:inline-flex; align-items:center; gap:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .npg-f .dot { width:7px; height:7px; border-radius:50%; background:var(--c); flex:none; }
 .npg-due { color:#7c5aff; font-weight:700; }
-.npg-x { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; font-size:12.5px; line-height:1.55; color:var(--soft); }
-.npg-item .memo-marks { margin:1px 0 0; }
 .npg-empty { margin:0; padding:24px 14px; font-size:13px; line-height:1.8; color:var(--soft); text-align:center; white-space:pre-line; }
 /* 右: ページ */
 .np-area { flex:1; min-width:0; min-height:0; display:flex; background:#fffdf8; }
 .np-none { margin:auto; padding:20px; color:var(--soft); font-size:14px; line-height:1.8; text-align:center; white-space:pre-line; }
 .np { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; background:#fffdf8; }
 .np-top { flex:none; display:flex; align-items:flex-start; gap:8px; padding:18px 22px 4px; }
-.np-back { flex:none; border:1px solid var(--line); background:#fff; border-radius:9px; padding:6px 10px; font:inherit; font-size:13px; color:var(--ink); cursor:pointer; white-space:nowrap; }
 .np-hm { flex:1; min-width:0; }
 .np-title { display:block; width:100%; border:none; border-bottom:1px solid var(--line); background:transparent; padding:2px 2px 6px; font-family:"Shippori Mincho",serif; font-weight:700; font-size:26px; color:var(--ink); }
 .np-title:focus { outline:none; border-bottom-color:var(--red); }
@@ -9109,7 +9154,6 @@ button.gcal { cursor:pointer; font-family:inherit; }
 .nc-flow .nb-img img { height:auto; }
 .nc-flow .nb-x { top:6px; right:6px; }
 .nc-addtext { align-self:flex-start; border:1px dashed color-mix(in srgb,var(--red) 40%,var(--line)); background:none; color:var(--red-d); border-radius:9px; padding:8px 14px; font:inherit; font-size:13.5px; cursor:pointer; }
-.nv-narrow .ns, .nv-narrow .npg { width:100%; flex:1; }
 .nv-narrow .np-top { padding:12px 14px 4px; }
 .nv-narrow .np-title { font-size:21px; }
 .nv-narrow .np-info { padding:4px 14px 8px; }
@@ -9118,8 +9162,45 @@ button.gcal { cursor:pointer; font-family:inherit; }
 .nv-narrow .nc-tb { padding:6px 10px; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; }
 .nv-narrow .nc-tb::-webkit-scrollbar { display:none; }
 .nv-narrow .nc-tb > * { flex:none; }
-.nv-stackbar { flex:none; display:flex; align-items:center; gap:8px; padding:8px 10px; background:var(--card); border-bottom:1px solid var(--line); }
-.nv-stackt { font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 狭い画面（スマホ）: 上にフォルダとページ一覧を左右に、下にページ（PCの3列を縦長の画面向けに組み替えた形） */
+.nv-split .nv-body { flex-direction:column; }
+.nv-top { flex:0 0 var(--th,40%); min-height:0; display:flex; overflow:hidden; }
+.nv-top .ns { width:var(--sw,140px); flex:none; }
+.nv-top .npg { width:auto; flex:1; min-width:0; }
+.nv-split .nsplit { width:15px; margin:0 -7px; }
+.nv-split .nsplit:after { left:7px; }
+.nv-split .nsplit:hover:after, .nv-split .nsplit.on:after, .nv-split .nsplit:focus-visible:after { left:6px; }
+.nhsplit { flex:none; position:relative; z-index:5; display:flex; align-items:center; min-height:28px; background:var(--card); border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+.nhsplit-grip { flex:1; align-self:stretch; display:flex; align-items:center; justify-content:center; min-height:28px; cursor:row-resize; touch-action:none; }
+.nhsplit-grip:after { content:""; width:46px; height:4px; border-radius:2px; background:color-mix(in srgb,var(--soft) 55%,transparent); }
+.nhsplit-grip.on:after, .nhsplit-grip:focus-visible:after { background:var(--red); }
+.nhsplit-grip:focus-visible { outline:none; }
+.nhsplit-info { flex:1; min-width:0; padding:6px 10px; font-size:12.5px; color:var(--soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.nhsplit-btn { flex:none; border:none; background:none; color:var(--red-d); font:inherit; font-size:12.5px; font-weight:700; padding:6px 12px; cursor:pointer; white-space:nowrap; }
+/* 下のページは、題名から中身までまとめてスクロールする（場所が狭いので、題名や道具の帯の分も中身に回す）。道具の帯は上に貼り付ける */
+.nv-split .np-area { flex:1; min-height:0; overflow:auto; display:block; }
+.nv-split .np { display:block; min-height:100%; }
+.nv-split .nc { display:block; }
+.nv-split .nc-scroll { overflow:visible; }
+.nv-split .nc-tb { position:sticky; top:0; z-index:4; }
+/* 上の一覧は詰めて出す */
+.nv-split .ns-head { padding:6px 8px 4px; font-size:13.5px; }
+.nv-split .ns-row { min-height:30px; margin:0 4px; }
+.nv-split .ns-name { font-size:13px; padding:5px 2px; gap:5px; }
+.nv-split .ns-row .tw, .nv-split .ns-row .tw-spacer { width:14px; }
+/* フォルダの「…」は選んでいるフォルダにだけ出す（列が細いので、名前に場所を回す） */
+.nv-split .ns-more { display:none; padding:4px 5px; }
+.nv-split .ns-row.on .ns-more { display:block; opacity:1; }
+.nv-split .ns-add { margin:8px 6px 0; padding:6px 8px; font-size:12px; }
+.nv-split .npg-top { padding:6px 8px 4px; gap:4px; }
+.nv-split .nv-search input { padding:6px 4px; font-size:13px; }
+.nv-split .npg-add { margin:0 8px 6px; padding:6px 10px; font-size:13px; }
+.nv-split .npg-item { padding:7px 10px 7px 9px; }
+.nv-split .npg-t { font-size:13.5px; }
+/* 見出しも詰める（題名は入口のタブにも出ているので省く） */
+.nv-narrow .nv-brand { display:none; }
+.nv-narrow .nv-head { padding:6px 10px; gap:6px 8px; }
+.nv-narrow .nv-head .counter { display:none; }
 /* カード表示から開く全画面 */
 .nv-ov { z-index:115; }
 .nv-ov-card { width:100%; max-width:1280px; height:100%; min-height:0; display:flex; flex-direction:column; background:#fffdf8; box-shadow:0 0 60px rgba(0,0,0,.35); }

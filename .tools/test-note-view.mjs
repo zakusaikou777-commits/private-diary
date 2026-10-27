@@ -620,7 +620,7 @@ await section("6 sync: 箱・画像・PDF が別の端末に届いて描ける",
 });
 
 /* ── 12. 狭い画面 ────────────────────────────────────────── */
-await section("7 narrow: 狭い画面は1枚ずつ・ページは読む順に縦に並ぶ", async () => {
+await section("7 narrow: 狭い画面は上にフォルダとページ一覧・下にページ（PCの3列を縦に組み替えた形）", async () => {
   const ctx = await device({ viewport: NARROW });
   await preset(ctx, { [DATA_KEY]: { memos: baseMemos(), notebooks: FOLDERS } });
   const { page, errors } = await openApp(ctx);
@@ -645,23 +645,27 @@ await section("7 narrow: 狭い画面は1枚ずつ・ページは読む順に縦
   const rr = await page.$eval(".review-bar .f.rev", (e) => getComputedStyle(e).borderTopLeftRadius).catch(() => null);
   ok(rr && parseFloat(rr) >= 20, "カード表示の「今日の復習」は丸いボタン", rr);
   await toNote(page);
-  // 一覧から始めると「ノート表示にしても一覧しか出ない」ように見えていた。開いたらページを出す
-  await page.waitForSelector(".nv-narrow .np", { timeout: 5000 }).catch(() => {});
-  const opened = (await page.$(".nv-narrow .np")) && !(await page.$(".nv-narrow .npg")) ? await page.inputValue(".np-title") : null;
-  await page.click(".np-back");
-  ok(await page.$(".nv-narrow .npg") && !(await page.$(".nv-narrow .np")), "‹ 一覧 でページの一覧");
+  // フォルダ・ページ一覧・ページが1画面に同時に見える（以前は1枚ずつで、PCのように見渡せなかった）
+  await page.waitForSelector(".nv-split .np", { timeout: 5000 }).catch(() => {});
+  const vis = await page.evaluate(() => {
+    const on = (sel) => { const e = document.querySelector(sel); if (!e) return null; const r = e.getBoundingClientRect(); return r.width > 40 && r.height > 40 && r.bottom > 0 && r.top < innerHeight ? r : null; };
+    const ns = on(".nv-top .ns"), pg = on(".nv-top .npg"), np = on(".nv-split .np-area");
+    return { ns: !!ns, pg: !!pg, np: !!np, side: ns && pg && ns.right <= pg.left + 1, below: pg && np && np.top >= pg.bottom - 1 };
+  });
+  ok(vis.ns && vis.pg && vis.np, "フォルダ・ページ一覧・ページが同じ画面に見える", vis);
+  ok(vis.side && vis.below, "上にフォルダとページ一覧を左右に、下にページ", vis);
   const top = await page.textContent(".npg-item .npg-tt");
-  ok(opened != null && opened === top, "ノート表示にすると、いちばん上（前に見ていた）ページがすぐ出る", { opened, top });
-  const ex = await page.textContent('.npg-item:has(.npg-tt:text-is("会議のメモ")) .npg-x').catch(() => "");
-  ok(/議題は三つ/.test(ex || ""), "一覧には本文の書き出しも出る", ex);
-  await sleep(500);
-  ok(await page.$(".nv-narrow .npg") && !(await page.$(".nv-narrow .np")), "自分で一覧へ戻ったら、勝手にページへは進まない");
-  await page.click('.nv-stackbar button:has-text("フォルダ")');
-  ok(await page.$(".nv-narrow .ns") && !(await page.$(".nv-narrow .npg")), "戻るでフォルダの一覧");
+  ok((await page.inputValue(".np-title")) === top, "はじめから一覧のいちばん上のページの中身が出ている", top);
+  // フォルダを押すと、一覧がそのフォルダのページになり、下にその先頭のページが出る
+  await page.click('.ns-row:has(.nm:text-is("仕事")) .ns-name');
+  const titles = await page.$$eval(".npg-item .npg-tt", (e) => e.map((x) => x.textContent));
+  ok(titles.includes("会議のメモ") && !titles.includes("読みたい本"), "フォルダを押すと、そのフォルダのページだけが並ぶ", titles);
+  ok(titles.includes(await page.inputValue(".np-title")), "下のページも、そのフォルダのページになる");
+  // ページを押すと、下に出る（一覧はそのまま）
   await page.click('.ns-row:has(.nm:text-is("すべて")) .ns-name');
-  ok(await page.$(".nv-narrow .npg"), "フォルダを選ぶとページの一覧");
   await page.click('.npg-item:has(.npg-tt:text-is("狭い画面のページ"))');
-  await page.waitForSelector(".nv-narrow .np .nc-flow");
+  await page.waitForSelector(".nv-split .np .nc-flow");
+  ok((await page.inputValue(".np-title")) === "狭い画面のページ" && await page.$(".nv-top .npg"), "ページを押すと下に出る（一覧は出たまま）");
   const order = await page.$$eval(".nc-flow > .nb", (e) => e.map((x) => x.getAttribute("data-bid")));
   ok(order.join() === "n1,n2,n3", "箱は読む順（上→下、左→右）に縦に並ぶ", order);
   ok(!(await page.$(".nc-flow .nb-bar")) && !(await page.$(".nc-flow .nb-rw")), "狭い画面では位置を動かす帯は出ない");
@@ -679,8 +683,31 @@ await section("7 narrow: 狭い画面は1枚ずつ・ページは読む順に縦
   ok(ib && m2.canvas.blocks.every((b) => b === ib || b.y < ib.y), "挿入したものは、いちばん下に足される", ib);
   const last = await page.$$eval(".nc-flow > .nb", (e) => e[e.length - 1].getAttribute("data-bid"));
   ok(ib && last === ib.id, "画面でもいちばん下に出る");
-  await page.click(".np-back");
-  ok(await page.$(".nv-narrow .npg"), "‹ 一覧 でページの一覧に戻る");
+  // 上下の区切りを指で動かすと、上の一覧の高さが変わり、端末に覚える
+  const topH0 = await page.$eval(".nv-top", (e) => e.getBoundingClientRect().height);
+  const grip = await page.locator(".nhsplit-grip").boundingBox();
+  await dragBy(page, grip, 0, 120);
+  const topH1 = await page.$eval(".nv-top", (e) => e.getBoundingClientRect().height);
+  ok(topH1 > topH0 + 80, "区切りを下へ動かすと、上の一覧が高くなる", { topH0, topH1 });
+  // 左右の区切り（フォルダの列の幅）
+  const sw0 = await page.$eval(".nv-top .ns", (e) => e.getBoundingClientRect().width);
+  const vs = await page.locator(".nv-top .nsplit").boundingBox();
+  await dragBy(page, vs, 40, 0);
+  const sw1 = await page.$eval(".nv-top .ns", (e) => e.getBoundingClientRect().width);
+  ok(sw1 > sw0 + 25, "フォルダの列の幅も変えられる", { sw0, sw1 });
+  await page.reload();
+  await page.waitForSelector(".nv-split .nv-top");
+  const kept = await page.evaluate(() => ({ h: document.querySelector(".nv-top").getBoundingClientRect().height, w: document.querySelector(".nv-top .ns").getBoundingClientRect().width }));
+  ok(Math.abs(kept.h - topH1) < 6 && Math.abs(kept.w - sw1) < 4, "高さと幅は読み込み直しても残る", { kept, topH1, sw1 });
+  // たたむと、ページが広くなり、いまの場所（フォルダ › ページ）を出す
+  await page.click(".nhsplit-btn");
+  const info = await page.textContent(".nhsplit-info").catch(() => "");
+  ok(!(await page.$(".nv-top")) && /すべて › /.test(info || ""), "「▲ たたむ」で一覧を隠し、フォルダとページの名前を出す", info);
+  await page.reload();
+  await page.waitForSelector(".nv-split .nhsplit");
+  ok(!(await page.$(".nv-top")), "たたんだことも端末に覚える");
+  await page.click(".nhsplit-btn");
+  ok(await page.$(".nv-top .ns") && await page.$(".nv-top .npg"), "「▼ 一覧を出す」で元に戻る");
   ok(errors.length === 0, "エラーが無い", errors);
   await ctx.close();
 });
