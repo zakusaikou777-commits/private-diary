@@ -6098,9 +6098,15 @@ function NoteSections({ folders, counts, sel, expanded, onToggle, onSelect, onAc
       }, "＋ 新しいフォルダ")));
 }
 /* ── 中: ページの一覧 ─────────────────────────────────────── */
-function NotePages({ pages, selId, folders, showFolder, onSelect, onAdd, searchEl, filtersEl, filterOn, onBack, title }) {
+function NotePages({ pages, selId, folders, showFolder, onSelect, onAdd, searchEl, filtersEl, filterOn, onBack, title, preview }) {
   const [fOpen, setFOpen] = useState(false);
   const fById = useMemo(() => new Map(folders.map(f => [f.id, f])), [folders]);
+  // 狭い画面では、題名の下に本文の書き出しも出す（一覧だけで中身の見当がつくように。OneNote のスマホ版と同じ）
+  const excerpts = useMemo(() => {
+    const m = new Map();
+    if (preview) pages.forEach(p => m.set(p.id, htmlToText(p.body).replace(/\s+/g, " ").trim().slice(0, 120)));
+    return m;
+  }, [pages, preview]);
   return React.createElement("section", { className: "npg", "aria-label": "ページの一覧" },
     onBack && React.createElement("div", { className: "nv-stackbar" },
       React.createElement("button", { type: "button", className: "np-back", onClick: onBack, title: "フォルダの一覧へ戻る", "aria-label": "フォルダの一覧へ戻る" }, "‹ フォルダ"),
@@ -6138,6 +6144,8 @@ function NotePages({ pages, selId, folders, showFolder, onSelect, onAdd, searchE
       }, React.createElement("span", { className: "npg-t" + (m.title ? "" : " untitled") },
         m.pinned && React.createElement("span", { className: "pinmark sm" }, React.createElement(PinIcon, null)),
         React.createElement("span", { className: "npg-tt" }, m.title || "（無題）")),
+      preview && excerpts.get(m.id) && React.createElement("span", { className: "npg-x" }, excerpts.get(m.id)),
+      preview && memoMarks(m),
       React.createElement("span", { className: "npg-d" }, noteShortDate(m.createdAt),
         f && React.createElement("span", { className: "npg-f", style: { "--c": f.color } }, React.createElement("span", { className: "dot" }), f.name),
         m.srs && srsIsDue(m) && React.createElement("span", { className: "npg-due" }, "復習")));
@@ -6203,7 +6211,15 @@ function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpa
   const drag0 = useRef(0);
   const [lc, setLc] = useState(() => noteGet("lc", false) === true);
   const [zoom, setZoom] = useNoteZoom();
-  const [stage, setStage] = useState("pages");   // 狭い画面: sections → pages → page
+  // 狭い画面: sections → pages → page。開いたときは、いきなりページを出す（前に見ていたページ、
+  // 無ければ一覧のいちばん上）。一覧から始めていたため、ノート表示に切り替えても一覧しか出ず、
+  // 「ノートが出ない」ように見えていた。一覧・フォルダへは「‹ 一覧」で戻れる
+  const [stage, setStage] = useState(() => page ? "page" : "pages");
+  const navd = useRef(false);   // 利用者が自分で一覧・フォルダへ移ったら、勝手にページへは進めない
+  useEffect(() => {
+    // 読み込みが終わって初めてページが決まったとき（起動直後は memos が空）
+    if (!wide && !navd.current && page && stage === "pages") setStage("page");
+  }, [wide, page && page.id]);
   const counts = useMemo(() => {
     const by = new Map();
     let none = 0;
@@ -6216,6 +6232,7 @@ function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpa
   const folderSel = sel.f === "all" || sel.f === "none" || folders.some(f => f.id === sel.f) ? sel.f : "all";
   const sectionName = folderSel === "all" ? "すべて" : folderSel === "none" ? "フォルダなし" : (folders.find(f => f.id === folderSel) || {}).name || "";
   const pickSection = f => {
+    navd.current = true;
     onSel({ f, p: null });
     setStage("pages");
   };
@@ -6266,7 +6283,8 @@ function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpa
     searchEl,
     filtersEl,
     filterOn,
-    onBack: wide ? null : () => setStage("sections"),
+    onBack: wide ? null : () => { navd.current = true; setStage("sections"); },
+    preview: !wide,
     title: sectionName
   });
   const pageEl = page ? React.createElement(NotePage, {
@@ -6280,7 +6298,7 @@ function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpa
     onZoom: setZoom,
     flow: !wide,
     focusTitle: page.id === freshId,
-    onBack: wide ? null : () => setStage("pages")
+    onBack: wide ? null : () => { navd.current = true; setStage("pages"); }
   }) : React.createElement("div", { className: "np-none" }, loading ? "よみこみ中…" : "ページがありません。\n「＋ ページの追加」で作れます。");
   if (!wide) {
     return React.createElement("div", { className: "nv nv-narrow" }, head,
@@ -8514,9 +8532,9 @@ const CSS = `
 .ai-btn svg { width:15px; height:15px; fill:currentColor; }
 .filters { display:flex; gap:7px; overflow-x:auto; padding-bottom:2px; scrollbar-width:none; }
 .filters::-webkit-scrollbar { display:none; }
-.filters .f { white-space:nowrap; display:inline-flex; align-items:center; gap:5px; border:1px solid var(--line); background:#fff; color:var(--soft); border-radius:999px; padding:6px 13px; font-size:13px; cursor:pointer; font-family:inherit; transition:all .15s; }
+.filters .f, .review-bar .f { white-space:nowrap; display:inline-flex; align-items:center; gap:5px; border:1px solid var(--line); background:#fff; color:var(--soft); border-radius:999px; padding:6px 13px; font-size:13px; cursor:pointer; font-family:inherit; transition:all .15s; }
 .filters .f .dot { width:7px; height:7px; border-radius:50%; background:var(--c,var(--soft)); }
-.filters .f.on { background:var(--ink); border-color:var(--ink); color:#f6efdf; font-weight:600; }
+.filters .f.on, .review-bar .f.on { background:var(--ink); border-color:var(--ink); color:#f6efdf; font-weight:600; }
 .filters .f.on .dot { background:#f6efdf; }
 .tags-row .f.tag.on { background:#6b5f49; border-color:#6b5f49; color:#f6efdf; }
 .sub-controls { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
@@ -8980,6 +8998,8 @@ button.gcal { cursor:pointer; font-family:inherit; }
 .npg-f { display:inline-flex; align-items:center; gap:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .npg-f .dot { width:7px; height:7px; border-radius:50%; background:var(--c); flex:none; }
 .npg-due { color:#7c5aff; font-weight:700; }
+.npg-x { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; font-size:12.5px; line-height:1.55; color:var(--soft); }
+.npg-item .memo-marks { margin:1px 0 0; }
 .npg-empty { margin:0; padding:24px 14px; font-size:13px; line-height:1.8; color:var(--soft); text-align:center; white-space:pre-line; }
 /* 右: ページ */
 .np-area { flex:1; min-width:0; min-height:0; display:flex; background:#fffdf8; }
