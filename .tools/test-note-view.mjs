@@ -632,7 +632,8 @@ await section("7 narrow: 狭い画面は1枚ずつ・ページは読む順に縦
       { id: "n2", t: "text", x: 400, y: 40, w: 300, html: "二番目" },
       { id: "n1", t: "text", x: 24, y: 40, w: 300, html: "一番目" }
     ];
-    const m = { id: "nw1", title: "狭い画面のページ", category: "メモ", tags: [], links: [], notebookId: null, date: null, time: null, remind: null, srs: null, attachments: [], done: false, pinned: false, createdAt: Date.now(), updatedAt: Date.now() };
+    // 復習の期限が来ている（カード表示の「今日の復習」の見た目も確かめる）
+    const m = { id: "nw1", title: "狭い画面のページ", category: "メモ", tags: [], links: [], notebookId: null, date: null, time: null, remind: null, srs: { st: 1, d: Date.now() - 1000, i: 0 }, attachments: [], done: false, pinned: false, createdAt: Date.now(), updatedAt: Date.now() };
     Object.assign(m, notePatchOf(blocks, m));
     const d = JSON.parse(localStorage.getItem("kininari:data:v2"));
     d.memos.unshift(m);
@@ -640,11 +641,25 @@ await section("7 narrow: 狭い画面は1枚ずつ・ページは読む順に縦
   });
   await page.reload();
   await page.waitForSelector(".capture-input");
+  // カード表示の「今日の復習」「覚え中」は、絞り込みのボタンと同じ丸い形（以前は素のボタンの見た目だった）
+  const rr = await page.$eval(".review-bar .f.rev", (e) => getComputedStyle(e).borderTopLeftRadius).catch(() => null);
+  ok(rr && parseFloat(rr) >= 20, "カード表示の「今日の復習」は丸いボタン", rr);
   await toNote(page);
-  ok(await page.$(".nv-narrow .npg") && !(await page.$(".nv-narrow .ns")) && !(await page.$(".nv-narrow .np")), "はじめはページの一覧だけ");
+  // 一覧から始めると「ノート表示にしても一覧しか出ない」ように見えていた。開いたらページを出す
+  await page.waitForSelector(".nv-narrow .np", { timeout: 5000 }).catch(() => {});
+  const opened = (await page.$(".nv-narrow .np")) && !(await page.$(".nv-narrow .npg")) ? await page.inputValue(".np-title") : null;
+  await page.click(".np-back");
+  ok(await page.$(".nv-narrow .npg") && !(await page.$(".nv-narrow .np")), "‹ 一覧 でページの一覧");
+  const top = await page.textContent(".npg-item .npg-tt");
+  ok(opened != null && opened === top, "ノート表示にすると、いちばん上（前に見ていた）ページがすぐ出る", { opened, top });
+  const ex = await page.textContent('.npg-item:has(.npg-tt:text-is("会議のメモ")) .npg-x').catch(() => "");
+  ok(/議題は三つ/.test(ex || ""), "一覧には本文の書き出しも出る", ex);
+  await sleep(500);
+  ok(await page.$(".nv-narrow .npg") && !(await page.$(".nv-narrow .np")), "自分で一覧へ戻ったら、勝手にページへは進まない");
   await page.click('.nv-stackbar button:has-text("フォルダ")');
   ok(await page.$(".nv-narrow .ns") && !(await page.$(".nv-narrow .npg")), "戻るでフォルダの一覧");
   await page.click('.ns-row:has(.nm:text-is("すべて")) .ns-name');
+  ok(await page.$(".nv-narrow .npg"), "フォルダを選ぶとページの一覧");
   await page.click('.npg-item:has(.npg-tt:text-is("狭い画面のページ"))');
   await page.waitForSelector(".nv-narrow .np .nc-flow");
   const order = await page.$$eval(".nc-flow > .nb", (e) => e.map((x) => x.getAttribute("data-bid")));
