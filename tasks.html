@@ -53,6 +53,13 @@ input[type=date],input[type=time],select,.note-in{border:1px solid var(--line);b
 .item.over{border-color:color-mix(in srgb,var(--red) 45%,var(--line));background:color-mix(in srgb,var(--red) 4%,var(--card))}
 .item.done{opacity:.5}
 .irow{display:flex;gap:10px;align-items:flex-start}
+/* 並べ替えのつまみ。押したときだけページのスクロールを止める（touch-action:none） */
+.grip{width:22px;height:26px;flex:none;margin:0 -6px 0 -6px;border:none;background:none;color:var(--soft);cursor:grab;touch-action:none;font-size:15px;line-height:1;padding:0;border-radius:6px;opacity:.6;font-family:inherit}
+.grip:hover,.grip:focus-visible{opacity:1;color:var(--ink)}
+@media (pointer:coarse){.grip{width:30px;height:32px;font-size:18px;margin:-3px -6px 0 -8px}}
+.grip:focus-visible{outline:2px solid var(--red);outline-offset:1px}
+.item.dragging{position:relative;z-index:3;box-shadow:0 10px 26px rgba(60,40,20,.22);border-color:color-mix(in srgb,var(--red) 40%,var(--line))}
+body.task-dragging,body.task-dragging *{cursor:grabbing !important;user-select:none;-webkit-user-select:none}
 .ck{width:24px;height:24px;flex:none;border:2px solid var(--line);border-radius:7px;background:#fff;cursor:pointer;margin-top:1px;font-size:14px;line-height:1;color:var(--green);padding:0}
 .ck:hover{border-color:var(--green)}
 .ck.on{background:var(--green);border-color:var(--green);color:#fff}
@@ -256,6 +263,8 @@ function normalize(){
                       :(typeof x.gtPulledAt==="number"?x.gtPulledAt:0),
             gcalEventId:x.gcalEventId||"", createdAt:x.createdAt||now,
             updatedAt:typeof x.updatedAt==="number"?x.updatedAt:(x.createdAt||now)};
+    // 手で並べ替えた順番（同じまとまりの中での位置）。数でなければ持たない＝並べ替えたことが無い
+    if(typeof x.ord==="number"&&isFinite(x.ord))o.ord=x.ord;
     // id を作り直したものは Drive にはまだ無いので、「同期済み」の印は持ち越さない
     if(id===String(x.id)) SYNC_FIELDS.forEach(function(k){ if(x[k]!==undefined)o[k]=x[k]; });
     return o;
@@ -938,8 +947,15 @@ function visible(){
   else if(filter==="none")l=l.filter(function(t){return !t.done&&!t.date;});
   else if(filter==="done")l=l.filter(function(t){return t.done;});
   if(filter==="done")return l.sort(function(a,b){return (b.doneAt||0)-(a.doneAt||0);});
-  // 期限順。期限なしは末尾へ
+  // まとまり（期限切れ→今日→…→期限なし。期限で決まる）の順に並べ、同じまとまりの中は
+  // 手で並べ替えた順（ord）。並べ替えたことの無いもの（新しく足したものなど）はそのまとまりの上に、
+  // これまでどおり期限順（期限なしは新しい順）で並べる
   return l.sort(function(a,b){
+    var ga=GROUP_RANK[groupOf(a)], gb=GROUP_RANK[groupOf(b)];
+    if(ga!==gb)return ga-gb;
+    var oa=typeof a.ord==="number", ob=typeof b.ord==="number";
+    if(oa&&ob&&a.ord!==b.ord)return a.ord-b.ord;
+    if(oa!==ob)return oa?1:-1;
     var x=dueTs(a),y=dueTs(b);
     if(x===null&&y===null)return (b.createdAt||0)-(a.createdAt||0);
     if(x===null)return 1;
@@ -947,6 +963,7 @@ function visible(){
     return x-y;
   });
 }
+var GROUP_RANK={"期限切れ":0,"今日":1,"明日":2,"今週":3,"この先":4,"期限なし":5,"完了":6};
 function groupOf(t){
   if(t.done)return "完了";
   if(!t.date)return "期限なし";
@@ -986,7 +1003,12 @@ function restoreEdit(g){
   var el=$(g.focus); if(!el)return;
   try{ el.focus(); if(g.s!==null&&el.setSelectionRange)el.setSelectionRange(g.s,g.e); }catch(err){}
 }
+var renderLater=false;
 function render(){
+  // 並べ替えの途中で描き直すと、つかんでいる行が消えて手から離れる（同期は数秒おきに描き直す）。
+  // 離すまで待ってから描く
+  if(drag){ renderLater=true; return; }
+  renderLater=false;
   var keep=grabEdit();
   var c=counts();
   $("cOpen").textContent=c.open; $("cToday").textContent=c.today;
@@ -1001,7 +1023,10 @@ function render(){
       var g=groupOf(t);
       if(g!==lastG){ h+='<div class="gh'+(g==="期限切れ"?" over":"")+'">'+g+'</div>'; lastG=g; }
       var over=isOver(t);
-      h+='<div class="item'+(over?" over":"")+(t.done?" done":"")+'"><div class="irow">'
+      // 完了の一覧は終わった順に並べるので、並べ替えのつまみは出さない
+      var canMove=filter!=="done"&&!t.done;
+      h+='<div class="item'+(over?" over":"")+(t.done?" done":"")+'" data-id="'+esc(t.id)+'" data-g="'+esc(g)+'"><div class="irow">'
+       + (canMove?'<button class="grip" data-grip="'+esc(t.id)+'" title="ドラッグで順番を変える（↑↓キーでも動かせます）" aria-label="「'+esc(t.title)+'」の順番を変える（↑↓キー）">⠿</button>':'')
        // id も必ず esc() を通す（取り込んだファイルや Drive から来た id で属性を突き破られないように）
        + '<button class="ck'+(t.done?" on":"")+'" data-ck="'+esc(t.id)+'" aria-label="完了">'+(t.done?"✓":"")+'</button>'
        + '<div class="ib"><div class="it">'+esc(t.title)+'</div><div class="im">';
@@ -1074,6 +1099,101 @@ $("list").addEventListener("click",function(e){
     }
     return;
   }
+});
+/* ══════ 並べ替え（左のつまみをドラッグ・つまみを選んで ↑↓ キー）══════
+   動かせるのは同じまとまり（期限切れ・今日・明日・今週・この先・期限なし）の中だけ。
+   まとまりは期限で決まるので、ほかのまとまりへ動かしたいときは期限を直す。
+   マウス・指・ペンのどれでも動くよう pointer イベントで受ける（つまみは touch-action:none で、
+   つまみを押したときだけページがスクロールしない）。動かしている間は画面の要素だけを入れ替え、
+   離したときにその並びを ord として保存する（描き直しは保存のときに1回だけ）。 */
+var drag=null;
+function groupEls(g){
+  return Array.prototype.filter.call(document.querySelectorAll("#list .item"),function(el){ return el.getAttribute("data-g")===g; });
+}
+/* 並びを保存する。並べた順に 1000, 2000, … を振り直す（間を空けるのは、あとで足す余地のため）。
+   並べ替えだけでは Googleタスクへ送り直さない（Googleタスクの並びとは別に持つ）。
+   そのため save() ではなく persistOnly() を使い、Googleタスクとそろっていた印（gtSyncedAt）も
+   いっしょに進めて、「こちらで直した」と誤解させない */
+function applyOrder(ids){
+  var now=Date.now(), changed=false;
+  ids.forEach(function(id,i){
+    var t=byId(id); if(!t)return;
+    var o=(i+1)*1000;
+    if(t.ord===o)return;
+    var wasSynced=t.gtSyncedAt&&(t.updatedAt||0)<=t.gtSyncedAt;
+    t.ord=o; t.updatedAt=now; changed=true;
+    if(wasSynced)t.gtSyncedAt=now;
+  });
+  if(changed)persistOnly(); else render();
+  return changed;
+}
+function endDrag(cancel){
+  var d=drag; if(!d)return;
+  drag=null;
+  d.item.classList.remove("dragging");
+  document.body.classList.remove("task-dragging");
+  if(d.scrollT){ clearInterval(d.scrollT); d.scrollT=null; }
+  if(cancel||!d.moved){ if(d.moved||renderLater)render(); return; }
+  applyOrder(groupEls(d.g).map(function(el){ return el.getAttribute("data-id"); }));
+}
+function dragTo(y){
+  var d=drag; if(!d)return;
+  var others=groupEls(d.g).filter(function(el){ return el!==d.item; });
+  if(!others.length)return;
+  var before=null;
+  for(var i=0;i<others.length;i++){
+    var r=others[i].getBoundingClientRect();
+    if(y<r.top+r.height/2){ before=others[i]; break; }
+  }
+  var parent=d.item.parentNode;
+  if(before){ if(d.item.nextSibling!==before)parent.insertBefore(d.item,before); }
+  else{ var last=others[others.length-1]; if(last.nextSibling!==d.item)parent.insertBefore(d.item,last.nextSibling); }
+}
+$("list").addEventListener("pointerdown",function(e){
+  var b=e.target.closest(".grip"); if(!b)return;
+  if(e.pointerType==="mouse"&&e.button!==0)return;
+  e.preventDefault();
+  var item=b.closest(".item"); if(!item)return;
+  if(drag)endDrag(true);
+  drag={item:item, g:item.getAttribute("data-g"), y0:e.clientY, y:e.clientY, pid:e.pointerId, grip:b, moved:false, scrollT:null};
+  try{ b.setPointerCapture(e.pointerId); }catch(x){}
+  // 端に近づけたら少しずつスクロールする（長い一覧の下の方へ運べるように）
+  drag.scrollT=setInterval(function(){
+    if(!drag||!drag.moved)return;
+    var edge=60, h=window.innerHeight, dy=0;
+    if(drag.y<edge)dy=-Math.ceil((edge-drag.y)/4);
+    else if(drag.y>h-edge)dy=Math.ceil((drag.y-(h-edge))/4);
+    if(dy){ window.scrollBy(0,dy); dragTo(drag.y); }
+  },30);
+});
+$("list").addEventListener("pointermove",function(e){
+  if(!drag||e.pointerId!==drag.pid)return;
+  drag.y=e.clientY;
+  if(!drag.moved){
+    if(Math.abs(e.clientY-drag.y0)<5)return;   // 押しただけ・少し震えただけでは動かさない
+    drag.moved=true;
+    drag.item.classList.add("dragging");
+    document.body.classList.add("task-dragging");
+  }
+  e.preventDefault();
+  dragTo(e.clientY);
+});
+$("list").addEventListener("pointerup",function(e){ if(drag&&e.pointerId===drag.pid)endDrag(false); });
+$("list").addEventListener("pointercancel",function(e){ if(drag&&e.pointerId===drag.pid)endDrag(true); });
+// キーボード: つまみを選んで ↑↓ で1つずつ動かす（Home/End で、そのまとまりの先頭・最後へ）
+$("list").addEventListener("keydown",function(e){
+  var b=e.target.closest&&e.target.closest(".grip"); if(!b)return;
+  var k=e.key;
+  if(k!=="ArrowUp"&&k!=="ArrowDown"&&k!=="Home"&&k!=="End")return;
+  e.preventDefault();
+  var item=b.closest(".item"), g=item.getAttribute("data-g"), id=b.getAttribute("data-grip");
+  var ids=groupEls(g).map(function(el){ return el.getAttribute("data-id"); });
+  var i=ids.indexOf(id), j=k==="ArrowUp"?i-1:k==="ArrowDown"?i+1:k==="Home"?0:ids.length-1;
+  if(i<0||j<0||j>=ids.length||j===i)return;
+  ids.splice(i,1); ids.splice(j,0,id);
+  applyOrder(ids);
+  var nb=document.querySelector('#list .grip[data-grip="'+(window.CSS&&CSS.escape?CSS.escape(id):id)+'"]');
+  if(nb)try{ nb.focus(); }catch(x){}
 });
 Array.prototype.forEach.call(document.querySelectorAll("#filters .f"),function(b){
   b.addEventListener("click",function(){filter=b.getAttribute("data-f");editId=null;render();});
