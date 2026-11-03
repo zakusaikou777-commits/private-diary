@@ -703,6 +703,9 @@ function normalizeMemo(m) {
   // ノート表示の箱の並び。壊れた・他端末から来た形でも描画で落ちないようにそろえる（無ければ持たない）
   const cv = normalizeCanvas(m.canvas);
   if (cv) o.canvas = cv;else delete o.canvas;
+  // Recall と最後に合わせた分類の名前（"" は未分類）。無い＝まだ一度も合わせていない。
+  // 文字列でないもの（他端末から来た変な値）は「無い」として扱う（recallPlan の判断が狂わないように）
+  if (typeof m.rc === "string") o.rc = m.rc.trim().slice(0, 100);else delete o.rc;
   return o;
 }
 function normalizeFolder(f, i) {
@@ -718,6 +721,111 @@ function normalizeFolder(f, i) {
   };
   if (typeof o.color !== "string") o.color = NB_COLORS[(i || 0) % NB_COLORS.length];
   return o;
+}
+/** 名前でフォルダを探す（前後の空白と大文字小文字は区別しない・入れ子の中も探す）。
+ *  クリップの取り込み（f）と Recall との分類合わせで同じものを使う（片方だけ別のフォルダを作らないように） */
+function findFolderByName(list, name) {
+  const key = String(name == null ? "" : name).trim().toLowerCase();
+  if (!key) return null;
+  return (list || []).find(x => x && (x.name || "").trim().toLowerCase() === key) || null;
+}
+/* ── Recall（Chrome拡張）とフォルダを合わせる（protocol v1）──────────────
+   分類は Recall が正。Recall で分類を替えたら、同じページのメモをその名前のフォルダへ移す。
+   気になり帳で移しても Recall は変えない。フォルダの一覧は両方向に足すだけ（消す・名前の変更は伝えない）。
+   Recall の「未分類」＝気になり帳の「フォルダなし」。memo.rc は「最後に合わせた Recall の分類名」で、
+   rc が前と同じあいだは、気になり帳で移したままにしておく（Recall で分類を替えたときだけ動かす）。
+   ------------------------------------------------------------ */
+const RECALL_UNSORTED = "未分類";
+// 古い Recall は「未分類」を名前として f に入れて送ってくる。フォルダの名前ではなく「フォルダなし」の意味
+const recallTarget = v => {
+  const s = typeof v === "string" ? v.trim().slice(0, 100) : "";
+  return s === RECALL_UNSORTED ? "" : s;
+};
+const isUnsortedFolder = f => !!f && (f.name || "").trim() === RECALL_UNSORTED;
+const RECALL_HEX = /^#[0-9a-f]{6}$/i;
+/** Recall から届いた分類と項目に合わせた、次のメモとフォルダを作る（保存はしない・元の配列は変えない）。
+ *  届いた値は型を確かめ、合わないもの（文字列でない名前・URL など）は黙って飛ばす。 */
+function recallPlan(memos, folders, payload) {
+  const cats = Array.isArray(payload.cats) ? payload.cats : [];
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  const obj = x => x && typeof x === "object" && !Array.isArray(x);
+  const nextFolders = folders.slice();
+  const created = [];
+  const now = Date.now();
+  // 無いフォルダは一番上に作る（「未分類」と空の名前は作らない）
+  const ensure = (name, color) => {
+    if (!name) return null;
+    const hit = findFolderByName(nextFolders, name);
+    if (hit) return hit;
+    const f = normalizeFolder({
+      id: uid(),
+      name,
+      color: RECALL_HEX.test(color) ? color : NB_COLORS[nextFolders.length % NB_COLORS.length],
+      parentId: null,
+      pinned: false,
+      createdAt: now
+    }, nextFolders.length);
+    nextFolders.push(f);
+    created.push(name);
+    return f;
+  };
+  cats.forEach(c => {
+    if (obj(c)) ensure(recallTarget(c.name), typeof c.color === "string" ? c.color.trim() : "");
+  });
+  // URL（クリップの重複判定と同じ形）→ Recall の分類名。同じURLが二度あれば先の方
+  const byUrl = new Map();
+  items.forEach(it => {
+    if (!obj(it) || typeof it.u !== "string" || typeof it.f !== "string" || !/^https?:\/\//i.test(it.u.trim())) return;
+    const key = clipUrlKey(it.u);
+    if (!key || byUrl.has(key)) return;
+    const target = recallTarget(it.f);
+    ensure(target, "");
+    byUrl.set(key, target);
+  });
+  const fById = new Map(nextFolders.map(f => [f.id, f]));
+  const sameName = (f, name) => !!f && (f.name || "").trim().toLowerCase() === name.toLowerCase();
+  let moved = 0, changed = created.length > 0;
+  const nextMemos = memos.map(m => {
+    let target = null;
+    for (const l of m.links || []) {
+      const k = clipUrlKey(l);
+      if (k && byUrl.has(k)) { target = byUrl.get(k); break; }
+    }
+    if (target === null) return m;   // Recall に無いページのメモは触らない
+    const curId = m.notebookId || null;
+    const cur = curId ? fById.get(curId) : null;
+    // まだ合わせたことが無い（rc が無い）メモは、フォルダなし・「未分類」フォルダにあるときだけ移す
+    // （気になり帳で自分で分けたメモはそのまま。消えたフォルダを指しているメモはフォルダなしと同じ）。
+    // 合わせたことがあれば、Recall の分類が替わったときだけ移す
+    const move = m.rc === undefined ? !cur || isUnsortedFolder(cur) : m.rc !== target;
+    let nb = curId;
+    if (move) {
+      if (!target) nb = null;
+      else if (!sameName(cur, target)) nb = findFolderByName(nextFolders, target).id;
+    }
+    if (nb === curId && m.rc === target) return m;
+    changed = true;
+    if (nb !== curId) moved++;
+    return { ...m, notebookId: nb, rc: target };
+  });
+  // 空になった「未分類」フォルダ（メモもサブフォルダも無いもの）は片付ける
+  const used = new Set(nextMemos.map(m => m.notebookId).filter(Boolean));
+  const parents = new Set(nextFolders.map(f => f.parentId).filter(Boolean));
+  const removed = [];
+  const keptFolders = nextFolders.filter(f => {
+    if (!isUnsortedFolder(f) || used.has(f.id) || parents.has(f.id)) return true;
+    removed.push(f);
+    return false;
+  });
+  if (removed.length) changed = true;
+  const keptById = new Map(keptFolders.map(f => [f.id, f]));
+  const list = keptFolders.filter(f => !isUnsortedFolder(f) && (f.name || "").trim())
+    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+    .map(f => {
+      const p = f.parentId ? keptById.get(f.parentId) : null;
+      return { name: f.name.trim(), color: RECALL_HEX.test(f.color) ? f.color : "", parent: p && (p.name || "").trim() || null };
+    });
+  return { memos: nextMemos, folders: keptFolders, changed, moved, created, removed, list };
 }
 const PinIcon = () => React.createElement("svg", {
   viewBox: "0 0 24 24"
@@ -3998,7 +4106,7 @@ function ReviewFocus({ memo, index, total, onAnswer, onClose }) {
      画像・PDF・ファイルの箱は位置ごと残し、文字の箱を新しい本文1つに置き換える（中身は失わない）。
    ★見るだけでは canvas を書かない。ノート表示で触ったときだけ書く。
    ------------------------------------------------------------ */
-const NOTE_KEY = "kininari:note:";        // 端末ごとの設定（同期しない）: view / w / lc / zoom / sel
+const NOTE_KEY = "kininari:note:";        // 端末ごとの設定（同期しない）: view / viewV45 / w / lc / zoom / sel
 function noteGet(k, def) {
   try {
     const v = localStorage.getItem(NOTE_KEY + k);
@@ -4007,6 +4115,17 @@ function noteGet(k, def) {
 }
 function noteSet(k, v) {
   try { localStorage.setItem(NOTE_KEY + k, JSON.stringify(v)); } catch (e) {}
+}
+/** フォルダの場所（ノートブック → セクション → …）。上から順のフォルダの配列。輪になった壊れたデータでも止まる */
+function noteFolderPath(folders, id) {
+  const byId = new Map((folders || []).map(f => [f.id, f]));
+  const path = [];
+  const seen = new Set();
+  for (let f = id ? byId.get(id) : null; f && !seen.has(f.id); f = f.parentId ? byId.get(f.parentId) : null) {
+    seen.add(f.id);
+    path.unshift(f);
+  }
+  return path;
 }
 const NOTE_WIDE_Q = "(min-width: 860px)";  // これより狭いと、フォルダ→ページ一覧→ページの順に1枚ずつ出す
 const NOTE_W_DEF = { l: 240, m: 280 };
@@ -5820,7 +5939,10 @@ const NotePage = React.memo(function NotePage({ memo, folders, flatFolders, allT
   }, [moving]);
   const canvasSave = useCallback(p => h.save(id, p), [id]);
   const gc = useGcalActions(memo, (mid, eid) => h.save(mid, { gcalEventId: eid }), h.toast);
-  const folder = folders.find(f => f.id === memo.notebookId);
+  // このページの場所（ノートブック › セクション）。押すとフォルダへ移せる
+  const where = useMemo(() => noteFolderPath(folders, memo.notebookId), [folders, memo.notebookId]);
+  const folder = where.length ? where[where.length - 1] : null;
+  const whereText = where.length ? where.map(f => f.name || "（名前なし）").join(" › ") : "フォルダなし";
   const due = srsIsDue(memo);
   const act = fn => () => {
     setMenu(false);
@@ -5906,8 +6028,14 @@ const NotePage = React.memo(function NotePage({ memo, folders, flatFolders, allT
         React.createElement("div", { className: "np-mhr", role: "separator" }),
         mi("削除", act(() => h.del(id)), { danger: true })))),
     React.createElement("div", { className: "np-info" },
-      folder && React.createElement("span", { className: "np-chip flat", style: { "--c": folder.color }, title: "フォルダ" },
-        React.createElement("span", { className: "dot" }), folder.name),
+      React.createElement("button", {
+        type: "button",
+        className: "np-chip np-path" + (folder ? "" : " ghost"),
+        style: folder ? { "--c": folder.color } : undefined,
+        title: "このページの場所（押すと別のフォルダへ移せます）",
+        "aria-label": "場所: " + whereText + "（押すと別のフォルダへ移せます）",
+        onClick: () => setMoving(true)
+      }, React.createElement("span", { className: "dot" }), React.createElement("span", { className: "np-path-t" }, whereText)),
       React.createElement("button", {
         type: "button",
         className: "np-chip",
@@ -5978,16 +6106,26 @@ const NotePage = React.memo(function NotePage({ memo, folders, flatFolders, allT
       React.createElement("div", { className: "kn-dlg-f" },
         React.createElement("button", { type: "button", className: "kn-dlg-b ghost", onClick: () => setMoving(false) }, "やめる")))));
 });
-/* ── 左: フォルダ（ノートの見出し）──────────────────────────── */
+/* ── 左: ノートブックとセクション（OneNote の形）────────────────────────
+   一番上のフォルダ＝ノートブック、その中のフォルダ＝セクション。さらに中のフォルダは、セクションの下に
+   入れ子のまま出す。データはこれまでどおりのフォルダ（parentId の入れ子）で、見せ方だけを OneNote に合わせる。
+   件数は中のフォルダの分も足した数（ノートブックを選ぶと、中のセクションのページもまとめて並ぶので）。 */
 const KN_PAGE_DND = "application/x-kn-page";   // 中の一覧から左のフォルダへページを運ぶとき
-function NoteSections({ folders, counts, sel, expanded, onToggle, onSelect, onActions, onAddFolder, onMovePage, onCollapse }) {
-  const [adding, setAdding] = useState(false);
+function NoteSections({ folders, counts, sel, expanded, onToggle, onSelect, onActions, onAddFolder, onAddSection, onMovePage, onCollapse }) {
+  // 名前を入れている欄: null / "root"（＋ 新しいノートブック）/ ノートブックの id（＋ セクション）
+  const [adding, setAdding] = useState(null);
   const [val, setVal] = useState("");
   const [over, setOver] = useState(null);
-  const commit = () => {
-    if (val.trim()) onAddFolder(val.trim());
+  const stop = () => {
+    setAdding(null);
     setVal("");
-    setAdding(false);
+  };
+  const commit = () => {
+    const name = val.trim();
+    if (name) {
+      if (adding === "root") onAddFolder(name);else if (adding) onAddSection(adding, name);
+    }
+    stop();
   };
   const dropKey = fid => fid == null ? "none" : fid;
   const drop = fid => ({
@@ -6012,13 +6150,25 @@ function NoteSections({ folders, counts, sel, expanded, onToggle, onSelect, onAc
       onMovePage(pid, fid);
     }
   });
-  const roots = folders.filter(f => (f.parentId || null) === null).sort((a, b) => a.createdAt - b.createdAt);
-  const kidsOf = pid => folders.filter(f => (f.parentId || null) === pid).sort((a, b) => a.createdAt - b.createdAt);
+  // 親ごとの子の並び（フォルダが変わったときだけ作る）
+  const kidsMap = useMemo(() => {
+    const m = new Map();
+    folders.forEach(f => {
+      const k = f.parentId || null;
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(f);
+    });
+    m.forEach(list => list.sort((a, b) => a.createdAt - b.createdAt));
+    return m;
+  }, [folders]);
+  const kidsOf = pid => kidsMap.get(pid) || [];
+  const roots = kidsOf(null);
+  // kind: "nb"（ノートブック）/ "sec"（セクション）/ "sub"（セクションの中）/ 無し（すべて・フォルダなし）
   const row = (key, label, opts) => React.createElement("div", _extends({
     key,
-    className: "ns-row" + (sel === key ? " on" : "") + (over === key ? " over" : ""),
-    style: { "--c": opts.color || "var(--red)", paddingLeft: 8 + (opts.depth || 0) * 14 }
-  }, opts.drop || {}), opts.color && React.createElement("span", { className: "ns-tab", "aria-hidden": "true" }),
+    className: "ns-row" + (opts.kind ? " ns-" + opts.kind : "") + (sel === key ? " on" : "") + (over === key ? " over" : ""),
+    style: { "--c": opts.color || "var(--red)", "--ind": (opts.ind || 0) + "px" }
+  }, opts.drop || {}), opts.kind && opts.kind !== "nb" && React.createElement("span", { className: "ns-tab", "aria-hidden": "true" }),
     opts.tw || React.createElement("span", { className: "tw-spacer" }),
     React.createElement("button", {
       type: "button",
@@ -6027,17 +6177,46 @@ function NoteSections({ folders, counts, sel, expanded, onToggle, onSelect, onAc
       title: opts.title || label,
       onClick: () => onSelect(key)
     }, opts.icon && React.createElement("span", { className: "ns-ic", "aria-hidden": "true" }, opts.icon),
+      opts.kind === "nb" && React.createElement("span", { className: "ns-book", "aria-hidden": "true" }),
       React.createElement("span", { className: "nm" }, label),
       opts.pinned && React.createElement("span", { className: "pinmark sm" }, React.createElement(PinIcon, null)),
-      React.createElement("span", { className: "cnt" + (opts.count ? "" : " zero"), "aria-label": opts.count + "件" }, opts.count)),
+      React.createElement("span", { className: "cnt" + (opts.count ? "" : " zero"), "aria-label": opts.count + "件" + (opts.sum ? "（中のセクションも含む）" : "") }, opts.count)),
     opts.more);
+  const form = (cls, ph, label) => React.createElement("div", { className: "ns-form" + (cls ? " " + cls : "") },
+    React.createElement("input", {
+      autoFocus: true,
+      value: val,
+      placeholder: ph,
+      "aria-label": label,
+      onChange: e => setVal(e.target.value),
+      onKeyDown: e => {
+        if (isImeEnter(e)) return;   // 変換の確定で作成まで走らせない
+        if (e.key === "Enter") commit();
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          stop();
+        }
+      }
+    }),
+    React.createElement("button", { type: "button", className: "btn solid small", onClick: commit }, "追加"),
+    React.createElement("button", { type: "button", className: "btn ghost small", "aria-label": "やめる", onClick: stop }, "×"));
+  const more = f => React.createElement("button", {
+    type: "button",
+    className: "ns-more",
+    title: "フォルダの操作（名前の変更・移動・削除など）",
+    "aria-label": "「" + f.name + "」の操作",
+    onClick: () => onActions(f.id)
+  }, "⋯");
+  // セクションと、その中のフォルダ（depth は 1 から。深いほど右へ）
   const node = (f, depth, guard) => {
     const kids = guard > 50 ? [] : kidsOf(f.id);
     const open = expanded.has(f.id);
     return React.createElement(React.Fragment, { key: f.id }, row(f.id, f.name || "（名前なし）", {
+      kind: depth === 1 ? "sec" : "sub",
+      ind: (depth - 1) * 14,
       color: f.color,
-      depth,
       count: counts.by.get(f.id) || 0,
+      sum: kids.length > 0,
       pinned: f.pinned,
       drop: drop(f.id),
       tw: kids.length > 0 ? React.createElement("button", {
@@ -6048,54 +6227,68 @@ function NoteSections({ folders, counts, sel, expanded, onToggle, onSelect, onAc
         "aria-label": open ? "「" + f.name + "」をたたむ" : "「" + f.name + "」の中のフォルダを出す",
         "aria-expanded": open ? "true" : "false"
       }, React.createElement(ChevIcon, null)) : null,
-      more: React.createElement("button", {
-        type: "button",
-        className: "ns-more",
-        title: "フォルダの操作（名前の変更・移動・削除など）",
-        "aria-label": "「" + f.name + "」の操作",
-        onClick: () => onActions(f.id)
-      }, "⋯")
+      more: more(f)
     }), open && kids.map(k => node(k, depth + 1, guard + 1)));
   };
-  return React.createElement("section", { className: "ns", "aria-label": "フォルダ" },
+  const notebook = f => {
+    const open = expanded.has(f.id);
+    const secs = kidsOf(f.id);
+    return React.createElement("div", { key: f.id, className: "ns-nbk" + (open ? " open" : "") },
+      row(f.id, f.name || "（名前なし）", {
+        kind: "nb",
+        color: f.color,
+        count: counts.by.get(f.id) || 0,
+        sum: secs.length > 0,
+        pinned: f.pinned,
+        drop: drop(f.id),
+        title: (f.name || "") + "（ノートブック。押すと中のセクションのページもまとめて並べます）",
+        tw: React.createElement("button", {
+          type: "button",
+          className: "tw" + (open ? " open" : ""),
+          onClick: () => onToggle(f.id),
+          title: open ? "たたむ" : "セクションを出す",
+          "aria-label": open ? "「" + f.name + "」をたたむ" : "「" + f.name + "」のセクションを出す",
+          "aria-expanded": open ? "true" : "false"
+        }, React.createElement(ChevIcon, null)),
+        more: more(f)
+      }),
+      open && React.createElement("div", { className: "ns-secs", role: "group", "aria-label": "「" + f.name + "」のセクション" },
+        secs.map(s => node(s, 1, 1)),
+        adding === f.id ? form("ns-secform", "セクション名", "新しいセクションの名前") : React.createElement("button", {
+          type: "button",
+          className: "ns-addsec",
+          title: "「" + f.name + "」の中にセクション（フォルダ）を作る",
+          onClick: () => {
+            setVal("");
+            setAdding(f.id);
+          }
+        }, "＋ セクション")));
+  };
+  return React.createElement("section", { className: "ns", "aria-label": "ノートブック" },
     React.createElement("div", { className: "ns-head" },
       onCollapse && React.createElement("button", {
         type: "button",
         className: "ns-ham",
-        title: "フォルダの一覧をたたむ",
-        "aria-label": "フォルダの一覧をたたむ",
+        title: "ノートブックの一覧をたたむ",
+        "aria-label": "ノートブックの一覧をたたむ",
         onClick: onCollapse
       }, "≡"),
-      React.createElement("span", null, "フォルダ")),
+      React.createElement("span", null, "ノートブック")),
     React.createElement("div", { className: "ns-body" },
       row("all", "すべて", { icon: "✦", count: counts.all, title: "すべてのページ" }),
       row("none", "フォルダなし", { icon: "○", count: counts.none, drop: drop(null), title: "どのフォルダにも入っていないページ" }),
       React.createElement("div", { className: "ns-sep", role: "separator" }),
-      roots.length === 0 && React.createElement("p", { className: "drawer-empty" }, "まだフォルダがありません。下のボタンから作れます。"),
-      roots.map(f => node(f, 0, 0)),
-      adding ? React.createElement("div", { className: "ns-form" },
-        React.createElement("input", {
-          autoFocus: true,
-          value: val,
-          placeholder: "フォルダ名",
-          "aria-label": "新しいフォルダの名前",
-          onChange: e => setVal(e.target.value),
-          onKeyDown: e => {
-            if (isImeEnter(e)) return;   // 変換の確定で作成まで走らせない
-            if (e.key === "Enter") commit();
-            if (e.key === "Escape") {
-              e.stopPropagation();
-              setAdding(false);
-              setVal("");
-            }
-          }
-        }),
-        React.createElement("button", { type: "button", className: "btn solid small", onClick: commit }, "追加"),
-        React.createElement("button", { type: "button", className: "btn ghost small", "aria-label": "やめる", onClick: () => { setAdding(false); setVal(""); } }, "×")) : React.createElement("button", {
+      roots.length === 0 && React.createElement("p", { className: "drawer-empty" }, "まだノートブックがありません。下のボタンから作れます。"),
+      roots.map(notebook),
+      adding === "root" ? form("", "ノートブック名", "新しいノートブックの名前") : React.createElement("button", {
         type: "button",
         className: "ns-add",
-        onClick: () => setAdding(true)
-      }, "＋ 新しいフォルダ")));
+        title: "一番上のフォルダ（ノートブック）を作る",
+        onClick: () => {
+          setVal("");
+          setAdding("root");
+        }
+      }, "＋ 新しいノートブック")));
 }
 /* ── 中: ページの一覧 ─────────────────────────────────────── */
 function NotePages({ pages, selId, folders, showFolder, onSelect, onAdd, searchEl, filtersEl, filterOn }) {
@@ -6249,7 +6442,7 @@ function ViewSwitch({ mode, onChange }) {
     b("note", "ノート表示", "フォルダ・ページの一覧・ページの中身を並べて見る（OneNote のような表示）"));
 }
 /* ── ノート表示の全体（3つの面）──────────────────────────────── */
-function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpand, sel, onSel, pages, page, freshId, searching, h, head, searchEl, filtersEl, filterOn, wide, loading }) {
+function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpand, onExpand, sel, onSel, pages, page, freshId, searching, h, head, searchEl, filtersEl, filterOn, wide, loading }) {
   const [w, setW] = useState(noteWidthsGet);
   const drag0 = useRef(0);
   const [lc, setLc] = useState(() => noteGet("lc", false) === true);
@@ -6262,17 +6455,40 @@ function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpa
   const [sw, setSw] = useState(() => noteClampN(noteGet("sw", NOTE_SW_DEF), NOTE_SW_LIM, NOTE_SW_DEF));
   const [tc, setTc] = useState(() => noteGet("tc", false) === true);
   const th0 = useRef(0), sw0 = useRef(0);
+  // 左の件数。ノートブック（中にフォルダのあるフォルダ）は、中のフォルダの分も足す（選ぶとまとめて並ぶ数と同じ）。
+  // メモかフォルダが変わったときだけ数える（メモごとに上へたどるだけなので、描くたびには数えない）
   const counts = useMemo(() => {
+    const byId = new Map(folders.map(f => [f.id, f]));
     const by = new Map();
     let none = 0;
     memos.forEach(m => {
       const k = m.notebookId || null;
-      if (!k) none++;else by.set(k, (by.get(k) || 0) + 1);
+      if (!k) {
+        none++;
+        return;
+      }
+      const seen = new Set();   // 親が輪になっている壊れたデータでも止まるように
+      for (let f = byId.get(k); f && !seen.has(f.id); f = f.parentId ? byId.get(f.parentId) : null) {
+        seen.add(f.id);
+        by.set(f.id, (by.get(f.id) || 0) + 1);
+      }
     });
     return { all: memos.length, none, by };
-  }, [memos]);
+  }, [memos, folders]);
   const folderSel = sel.f === "all" || sel.f === "none" || folders.some(f => f.id === sel.f) ? sel.f : "all";
-  const sectionName = folderSel === "all" ? "すべて" : folderSel === "none" ? "フォルダなし" : (folders.find(f => f.id === folderSel) || {}).name || "";
+  const selPath = folderSel === "all" || folderSel === "none" ? [] : noteFolderPath(folders, folderSel);
+  const sectionName = folderSel === "all" ? "すべて" : folderSel === "none" ? "フォルダなし" : selPath.map(f => f.name || "（名前なし）").join(" › ");
+  // ノートブック（中にフォルダのあるもの）を選んでいるときは、中のセクションのページもまとめて並ぶので、各ページにセクション名を出す
+  const selHasKids = folders.some(f => f.parentId === folderSel);
+  // 選んでいるフォルダが見えるように、上の階層を開く。ノートブックを選んだときは、それ自身も開いてセクションを出す
+  useEffect(() => {
+    if (!selPath.length) return;
+    const want = selPath.slice(0, -1).map(f => f.id);
+    const last = selPath[selPath.length - 1];
+    if (selPath.length === 1 || selHasKids) want.push(last.id);
+    const need = want.filter(id => !expanded.has(id));
+    if (need.length) onExpand(need);
+  }, [folderSel, selPath.length]);
   const pickSection = f => onSel({ f, p: null });
   const pickPage = pid => onSel({ f: folderSel, p: pid });
   const setLcSaved = v => {
@@ -6298,6 +6514,7 @@ function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpa
     onSelect: pickSection,
     onActions: h.folderActions,
     onAddFolder: name => h.addFolder(name),
+    onAddSection: (pid, name) => h.addSection(pid, name),
     onMovePage: h.move,
     onCollapse: wide ? () => setLcSaved(true) : null
   });
@@ -6305,7 +6522,7 @@ function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpa
     pages,
     selId: page && page.id,
     folders,
-    showFolder: searching || folderSel === "all",
+    showFolder: searching || folderSel === "all" || selHasKids,
     onSelect: pickPage,
     onAdd: h.addPage,
     searchEl,
@@ -6480,8 +6697,22 @@ function App() {
   const [aiOpen, setAiOpen] = useState(false);
   const [dataOpen, setDataOpen] = useState(false);
   const [calOpen, setCalOpen] = useState(false);
-  // ノート表示（端末ごとの設定。同期しない）。既定はカード表示のまま
-  const [viewMode, setViewModeState] = useState(() => noteGet("view", "card") === "note" ? "note" : "card");
+  // ノート表示（端末ごとの設定。同期しない）。v45 から既定はノート表示。
+  // 前の版で「カード表示」を覚えていた端末も、一度だけノート表示に切り替える（ノート表示を標準に、
+  // という希望のため）。切り替えた印（viewV45）を残すので、そのあと自分でカード表示を選べばそのまま
+  const [viewMode, setViewModeState] = useState(() => {
+    let mode = noteGet("view", "note") === "card" ? "card" : "note";
+    try {
+      if (localStorage.getItem(NOTE_KEY + "viewV45") == null) {
+        localStorage.setItem(NOTE_KEY + "viewV45", "1");
+        if (mode === "card") {
+          mode = "note";
+          noteSet("view", "note");
+        }
+      }
+    } catch (e) {}
+    return mode;
+  });
   const setViewMode = v => {
     setViewModeState(v);
     noteSet("view", v);
@@ -6802,7 +7033,9 @@ function App() {
       }
       const url = str(clip.u).trim();
       let nbId = null;
-      const fname = str(clip.f).trim().slice(0, 100);
+      // 「未分類」は Recall の「分類なし」（古い Recall は名前として送ってくる）。どこから来ても
+      // 同じ名前のフォルダは作らず、フォルダなしに入れる
+      const fname = recallTarget(str(clip.f));
       const esc = s => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
       const escA = s => esc(s).replace(/"/g, "&quot;");
       const cats = ["メモ", "アイデア", "調べる", "やること", "行きたい"];
@@ -6846,7 +7079,7 @@ function App() {
         }
       }
       if (fname) {
-        let found = curFolders.find(x => (x.name || "").trim().toLowerCase() === fname.toLowerCase());
+        let found = findFolderByName(curFolders, fname);
         if (!found) {
           found = normalizeFolder({
             id: uid(),
@@ -6876,6 +7109,9 @@ function App() {
         pinned: false,
         createdAt: Date.now()
       };
+      // Recall から届いたクリップは、Recall の分類名を覚えておく（"" は未分類）。あとで Recall の
+      // 分類が替わったとき（__kininariRecall.apply）に、このメモを動かしてよいかの目印にする
+      if (clip.src === "recall") memo.rc = fname;
       // 復習の予定つきで届いたら、そのまま復習に入れる
       //   clip.srs … {b,d,rv,st,iv} をそのまま引き継ぐ（拡張ですでに何回か復習した項目）
       //   clip.rv  … 「今日から復習を始める」ときの間隔（0=自動 / 7=毎週 など）。数値か数字の文字列だけ受け取る
@@ -6932,6 +7168,71 @@ function App() {
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
+  /* ── Recall からの分類合わせ（window.__kininariRecall.apply）──────────────
+     Recall（Chrome拡張）が、開いている気になり帳のタブ（index.html の中の iframe でも）に
+     スクリプトを差し込んで呼ぶ。中身は recallPlan。★土台は画面の state ではなく、いま保存されている
+     内容（readLive）。ノート表示の自動保存（updateLive）も保存済みの内容に当てるので、ここで移した
+     フォルダを古い state で巻き戻さない。保存はふだんの編集と同じ persist で1回だけ（updatedAt・
+     Driveへの送信・画面の描き直し）。 */
+  const recallRef = useRef(null);
+  recallRef.current = payload => {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload) || !(Array.isArray(payload.cats) || Array.isArray(payload.items))) {
+      return { res: { ok: false, error: "受け取った内容の形式が正しくありません" } };
+    }
+    const live = readLive();
+    if (!live.ok) return { res: { ok: false, error: "保存データを読めませんでした" } };
+    const plan = recallPlan(live.memos, live.folders, payload);
+    const res = { ok: true, v: 1, folders: plan.list, moved: plan.moved, created: plan.created, removed: plan.removed.map(f => (f.name || "").trim()) };
+    if (!plan.changed) return { res };   // 同じ内容が二度届いても、何も書かない
+    // atomic: 保存できなかったときは画面にも載せない（クリップの取り込みと同じ）
+    if (!persistRef.current(plan.memos, plan.folders, { atomic: true })) {
+      return { res: { ok: false, error: "保存できませんでした（保存容量の上限に達した可能性があります）" } };
+    }
+    if (plan.removed.length) {
+      // 墓標を残す（残さないと、ほかの端末からの同期で「未分類」フォルダが戻ってくる）
+      const gone = new Set(plan.removed.map(f => f.id));
+      tombstonesAdd([...gone]);
+      setActiveFolder(a => gone.has(a) ? null : a);
+    }
+    const parts = [];
+    if (plan.moved) parts.push(plan.moved + "件を移しました");
+    if (plan.created.length) parts.push("フォルダ「" + plan.created.join("」「") + "」を作りました");
+    if (plan.removed.length) parts.push("空になった「未分類」フォルダを片付けました");
+    if (parts.length) setToast({ title: "Recall の分類に合わせました", body: parts.join("。") });
+    // Recall は裏で開いたタブをすぐ閉じることがある。3秒待ってから送る予約だと、タブと一緒に
+    // 消えて Drive に載らないので、クリップの取り込みと同じくここで直接送り、終わるまで返事を待たせる
+    let sync = null;
+    if (gdAuto && gdCid && gdLinked && gdPushRef.current) {
+      skipPush.current = true;
+      seenRev.current = localRev.current;   // この変更は下で直接送るので、予約で二重に送らない
+      sync = gdPushRef.current().catch(() => {});
+    }
+    return { res, sync };
+  };
+  const recallChain = useRef(Promise.resolve());
+  useEffect(() => {
+    // データを読み込む前に呼ばれると、空のデータで判断してしまう。読み込んでから出す
+    if (loading) return;
+    const api = Object.freeze({
+      v: 1,
+      apply(payload) {
+        // 1回ずつ順番に（前の呼び出しが保存し終えた内容を、次の呼び出しが土台にする）
+        const run = recallChain.current.then(() => {
+          try {
+            return recallRef.current(payload);
+          } catch (e) {
+            return { res: { ok: false, error: String(e && e.message || e) } };
+          }
+        });
+        recallChain.current = run.then(() => {}, () => {});
+        return run.then(o => o.sync ? Promise.race([o.sync, new Promise(r => setTimeout(r, 10000))]).then(() => o.res) : o.res);
+      }
+    });
+    try { window.__kininariRecall = api; } catch (e) {}
+    return () => {
+      try { if (window.__kininariRecall === api) delete window.__kininariRecall; } catch (e) {}
+    };
+  }, [loading]);
   const saveKey = k => {
     setApiKey(k);
     try {
@@ -7679,15 +7980,18 @@ function App() {
     tags: [...new Set([...(m.tags || []), ...map[m.id]])]
   } : m));
   const createFolder = (name, parentId) => {
+    // 土台は保存されている内容（Recall からの分類合わせなど、画面の描き直しより先に保存された変更を消さない）
+    const live = readLive();
+    const curM = live.ok ? live.memos : memos, curF = live.ok ? live.folders : folders;
     const f = {
       id: uid(),
       name: (name || "新しいフォルダ").trim() || "新しいフォルダ",
-      color: NB_COLORS[folders.length % NB_COLORS.length],
+      color: NB_COLORS[curF.length % NB_COLORS.length],
       parentId: parentId ?? null,
       pinned: false,
       createdAt: Date.now()
     };
-    persist(memos, [...folders, f]);
+    persist(curM, [...curF, f]);
     return f;
   };
   const addRoot = name => {
@@ -7913,8 +8217,9 @@ function App() {
     if (!noteMode) return [];
     const f = noteSel.f;
     const nowMs = reviewTick;
+    // ノートブック（中にフォルダのあるフォルダ）を選んだときは、中のセクション（とその中）のページもまとめて並べる
     let list = revFilter || searching || f === "all" || !(f === "none" || folders.some(x => x.id === f)) ? memos
-      : f === "none" ? memos.filter(m => !m.notebookId) : memos.filter(m => m.notebookId === f);
+      : f === "none" ? memos.filter(m => !m.notebookId) : (ids => memos.filter(m => ids.has(m.notebookId)))(new Set([f, ...descendantsOf(f)]));
     list = list.filter(m => {
       if (revFilter === "due" && !srsIsDue(m, nowMs)) return false;
       if (revFilter === "learning" && !isLearning(m)) return false;
@@ -7968,11 +8273,22 @@ function App() {
       const f = createFolder(name, null);
       setNoteSel({ f: f.id, p: null });
     },
+    // ＋ セクション: ノートブックの中にフォルダを作って開く（作り方は「サブフォルダを追加」と同じ）
+    addSection: (pid, name) => {
+      const f = createFolder(name, pid);
+      setExpanded(s => new Set(s).add(pid));
+      setNoteSel({ f: f.id, p: null });
+    },
+    expand: ids => setExpanded(s => {
+      const n = new Set(s);
+      ids.forEach(id => n.add(id));
+      return n;
+    }),
     folderActions: id => setActionsId(id)
   };
   const noteH = useMemo(() => {
     const o = {};
-    ["save", "pin", "done", "move", "review", "startReview", "stopReview", "del", "toast", "addPage", "addFolder", "folderActions"].forEach(k => {
+    ["save", "pin", "done", "move", "review", "startReview", "stopReview", "del", "toast", "addPage", "addFolder", "addSection", "expand", "folderActions"].forEach(k => {
       o[k] = (...a) => noteHRef.current[k](...a);
     });
     return o;
@@ -8058,6 +8374,7 @@ function App() {
     allTags,
     expanded,
     onToggleExpand: toggleExpand,
+    onExpand: noteH.expand,
     sel: noteSel,
     onSel: setNoteSel,
     pages: notePages,
@@ -8996,7 +9313,7 @@ button.gcal { cursor:pointer; font-family:inherit; }
 .ns-ham:hover { background:rgba(120,95,55,.1); border-color:var(--line); }
 .ns-mini { flex:none; width:44px; display:flex; flex-direction:column; align-items:center; padding-top:8px; background:var(--paper); border-right:1px solid var(--line); }
 .ns-body { flex:1; min-height:0; overflow-y:auto; padding:2px 0 28px; }
-.ns-row { position:relative; display:flex; align-items:center; gap:2px; margin:1px 6px; border-radius:7px; min-height:34px; }
+.ns-row { position:relative; display:flex; align-items:center; gap:2px; margin:1px 6px; padding-left:8px; border-radius:7px; min-height:34px; }
 .ns-row:hover { background:rgba(120,95,55,.07); }
 .ns-row.on { background:color-mix(in srgb,var(--c) 15%,#fff); box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 32%,transparent); }
 .ns-row.over { background:color-mix(in srgb,var(--blue) 16%,#fff); box-shadow:inset 0 0 0 2px var(--blue); }
@@ -9017,6 +9334,22 @@ button.gcal { cursor:pointer; font-family:inherit; }
 .ns-form { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:12px 10px 0; }
 .ns-form input { flex:1; min-width:100px; border:1px solid var(--red); border-radius:9px; padding:7px 9px; font:inherit; font-size:13.5px; }
 .ns-form input:focus { outline:none; }
+/* ノートブック（一番上のフォルダ）: 色の付いたノートの印と、たたむ矢印 */
+.ns-row.ns-nb { padding-left:2px; margin-top:3px; }
+.ns-nb .ns-name { font-weight:600; }
+.ns-book { position:relative; flex:none; width:14px; height:17px; border-radius:2px 4px 4px 2px; background:var(--c); box-shadow:inset 3px 0 0 rgba(0,0,0,.24), 0 1px 1px rgba(60,45,25,.18); }
+.ns-book:after { content:""; position:absolute; left:6px; right:3px; top:4px; height:2px; border-radius:1px; background:rgba(255,255,255,.78); }
+/* セクション（ノートブックの中のフォルダ）: 字下げして、左に色の帯（OneNote のセクションの見出し）。さらに中は、もう一段下げる */
+.ns-row.ns-sec, .ns-row.ns-sub { margin-left:calc(30px + var(--ind,0px)); padding-left:9px; min-height:31px; }
+.ns-sec .tw, .ns-sec .tw-spacer, .ns-sub .tw, .ns-sub .tw-spacer { width:14px; }
+.ns-sec .ns-name, .ns-sub .ns-name { font-size:13.5px; padding:6px 2px; }
+.ns-sub .ns-tab { top:7px; bottom:7px; width:3px; opacity:.75; }
+.ns-row.ns-sec:not(.on), .ns-row.ns-sub:not(.on) { background:linear-gradient(90deg, color-mix(in srgb,var(--c) 9%,transparent), transparent 70%); }
+.ns-row.ns-sec:not(.on):hover, .ns-row.ns-sub:not(.on):hover { background:color-mix(in srgb,var(--c) 10%,rgba(120,95,55,.06)); }
+.ns-secs { padding-bottom:4px; }
+.ns-addsec { display:block; margin:2px 6px 4px 30px; border:none; background:none; color:var(--red-d); border-radius:7px; padding:5px 9px; font:inherit; font-size:12.5px; cursor:pointer; text-align:left; opacity:.8; }
+.ns-addsec:hover, .ns-addsec:focus-visible { opacity:1; background:color-mix(in srgb,var(--red) 7%,transparent); }
+.ns-form.ns-secform { margin:4px 6px 6px 30px; }
 /* 区切り */
 .nsplit { flex:none; position:relative; z-index:4; width:7px; margin:0 -3px; cursor:col-resize; touch-action:none; }
 .nsplit:after { content:""; position:absolute; top:0; bottom:0; left:3px; width:1px; background:var(--line); transition:background .15s, width .15s, left .15s; }
@@ -9073,6 +9406,10 @@ button.gcal { cursor:pointer; font-family:inherit; }
 .np-chip.flat { cursor:default; }
 .np-chip.flat:hover { color:var(--soft); border-color:var(--line); }
 .np-chip.ghost { border-style:dashed; }
+/* ページの場所（ノートブック › セクション）。押すとフォルダへ移す画面が出る */
+.np-chip.np-path { max-width:100%; min-width:0; color:var(--ink); }
+.np-chip.np-path.ghost { color:var(--soft); }
+.np-path-t { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .np-info .linkchip { margin-top:0; padding:3px 9px; font-size:12px; }
 .np-info .tag-chip { cursor:default; padding:3px 9px; }
 .np-det { flex:none; display:flex; flex-direction:column; gap:6px; max-height:46vh; overflow:auto; margin:0 22px 10px; padding:10px 12px; border:1px solid var(--line); border-radius:12px; background:var(--card); }
@@ -9188,6 +9525,15 @@ button.gcal { cursor:pointer; font-family:inherit; }
 .nv-split .ns-row { min-height:30px; margin:0 4px; }
 .nv-split .ns-name { font-size:13px; padding:5px 2px; gap:5px; }
 .nv-split .ns-row .tw, .nv-split .ns-row .tw-spacer { width:14px; }
+/* ノートブックとセクションも、細い列に合わせて詰める（字下げを浅く・印を小さく） */
+.nv-split .ns-row.ns-nb { padding-left:0; margin-top:2px; }
+.nv-split .ns-book { width:11px; height:14px; }
+.nv-split .ns-book:after { left:5px; top:3px; }
+.nv-split .ns-row.ns-sec, .nv-split .ns-row.ns-sub { margin-left:calc(14px + var(--ind,0px) * .6); padding-left:7px; min-height:28px; }
+.nv-split .ns-sec .ns-name, .nv-split .ns-sub .ns-name { font-size:12.5px; padding:4px 2px; }
+.nv-split .ns-addsec { margin:1px 4px 3px 14px; padding:4px 6px; font-size:11.5px; }
+.nv-split .ns-form.ns-secform { margin:4px 4px 6px 14px; }
+.nv-split .ns-form input { min-width:0; font-size:13px; padding:6px 7px; }
 /* フォルダの「…」は選んでいるフォルダにだけ出す（列が細いので、名前に場所を回す） */
 .nv-split .ns-more { display:none; padding:4px 5px; }
 .nv-split .ns-row.on .ns-more { display:block; opacity:1; }

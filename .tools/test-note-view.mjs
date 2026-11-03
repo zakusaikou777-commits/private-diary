@@ -175,8 +175,9 @@ const baseMemos = () => [
 await section("1 toggle: カード表示とノート表示の切り替え（端末に覚える）", async () => {
   const ctx = await device();
   const { page, errors } = await openApp(ctx);
-  ok(await page.$(".capture-input") && !(await page.$(".nv")), "はじめはカード表示（今までどおり）");
-  ok((await page.getAttribute('.vs-b:has-text("カード表示")', "aria-pressed")) === "true", "切り替えのボタンがカード表示を指している");
+  // v45 から既定はノート表示（以前は「はじめはカード表示」。一度だけの切り替えは test-recall-sync.mjs で確かめる）
+  ok(await page.$(".nv") && !(await page.$(".capture-input")), "はじめはノート表示（v45 から標準）");
+  ok((await page.getAttribute('.vs-b:has-text("ノート表示")', "aria-pressed")) === "true", "切り替えのボタンがノート表示を指している");
   await toNote(page);
   ok(await page.$(".nv .ns") && await page.$(".nv .npg") && await page.$(".nv .np-area"), "ノート表示で3つの面が出る");
   ok((await page.evaluate(() => localStorage.getItem("kininari:note:view"))) === "\"note\"", "表示の種類を端末に覚える（kininari:note:view）");
@@ -200,8 +201,9 @@ await section("2 panes: フォルダ・ページ一覧・区切りの幅", async
   await page.waitForSelector(".ns-row");
   const rows = await page.$$eval(".ns-row .nm", (els) => els.map((e) => e.textContent));
   ok(rows[0] === "すべて" && rows[1] === "フォルダなし" && rows.includes("仕事") && rows.includes("読書") && !rows.includes("小説"), "左に すべて・フォルダなし・フォルダ（入れ子は閉じたまま）", rows);
-  const tab = await page.$eval('.ns-row:has(.nm:text-is("仕事")) .ns-tab', (e) => getComputedStyle(e).backgroundColor);
-  ok(tab === "rgb(62, 108, 163)", "フォルダの色が見出しの帯になる", tab);
+  // 一番上のフォルダはノートブック（色はノートの印）。中のフォルダ（セクション）の色の帯は test-recall-sync.mjs で確かめる
+  const tab = await page.$eval('.ns-row:has(.nm:text-is("仕事")) .ns-book', (e) => getComputedStyle(e).backgroundColor);
+  ok(tab === "rgb(62, 108, 163)", "フォルダ（ノートブック）の色が見出しの印になる", tab);
   await page.click('.ns-row:has(.nm:text-is("読書")) .tw');
   ok(await page.$('.ns-row:has(.nm:text-is("小説"))'), "矢印で入れ子のフォルダが開く");
   const cnt = await page.$eval('.ns-row:has(.nm:text-is("仕事")) .cnt', (e) => e.textContent);
@@ -622,9 +624,10 @@ await section("6 sync: 箱・画像・PDF が別の端末に届いて描ける",
 /* ── 12. 狭い画面 ────────────────────────────────────────── */
 await section("7 narrow: 狭い画面は上にフォルダとページ一覧・下にページ（PCの3列を縦に組み替えた形）", async () => {
   const ctx = await device({ viewport: NARROW });
-  await preset(ctx, { [DATA_KEY]: { memos: baseMemos(), notebooks: FOLDERS } });
+  // カード表示を選んでいる端末（v45 からの既定はノート表示。一度だけの切り替えは済んだ印も入れる）
+  await preset(ctx, { [DATA_KEY]: { memos: baseMemos(), notebooks: FOLDERS }, "kininari:note:view": "\"card\"", "kininari:note:viewV45": "1" });
   const { page, errors } = await openApp(ctx);
-  ok(await page.$(".capture-input"), "狭い画面でも、はじめはカード表示");
+  ok(await page.$(".capture-input"), "狭い画面でも、カード表示を選んでいればカード表示");
   // 箱がばらばらの位置にあるページを入れる
   await page.evaluate(() => {
     const blocks = [
@@ -715,7 +718,8 @@ await section("7 narrow: 狭い画面は上にフォルダとページ一覧・�
 /* ── 13. カード表示との行き来 ─────────────────────────────── */
 await section("8 card: カード表示は今までどおり・箱のあるメモの編集はノートの全画面で", async () => {
   const ctx = await device();
-  await preset(ctx, { [DATA_KEY]: { memos: baseMemos(), notebooks: FOLDERS } });
+  // カード表示を選んでいる端末（v45 からの既定はノート表示）
+  await preset(ctx, { [DATA_KEY]: { memos: baseMemos(), notebooks: FOLDERS }, "kininari:note:view": "\"card\"", "kininari:note:viewV45": "1" });
   const { page, errors } = await openApp(ctx);
   await page.evaluate(() => {
     const blocks = [{ id: "k1", t: "text", x: 24, y: 24, w: 400, html: "ノートで書いた<b>本文</b>" }];

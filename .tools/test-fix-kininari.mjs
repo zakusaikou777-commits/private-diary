@@ -51,6 +51,17 @@ const linkedLS = ({ file = "", sync = "", auto = false } = {}) => ({
 async function device({ drive = null, contextOptions = {}, wrapDrive = null } = {}) {
   const d = wrapDrive ? { handle: wrapDrive } : drive;
   const ctx = await newDevice(browser, { drive: d, contextOptions });
+  // この検証はカード表示の画面（.capture-input など）を使う。v45 から既定はノート表示になったので、
+  // カード表示を選んだ端末にしておく（一度だけノート表示へ切り替える処理も済んだ印を入れる）。
+  // まだ何も選んでいないときだけ入れる（検証の中で選び直した分は上書きしない）
+  await ctx.addInitScript(() => {
+    try {
+      if (localStorage.getItem("kininari:note:view") == null) {
+        localStorage.setItem("kininari:note:view", "\"card\"");
+        localStorage.setItem("kininari:note:viewV45", "1");
+      }
+    } catch (e) {}
+  });
   await ctx.route(/\/__blank\.html$/, (r) => r.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>blank</title>" }));
   await ctx.route(/\/__host\.html$/, (r) => r.fulfill({ status: 200, contentType: "text/html", body:
     `<!doctype html><title>host</title><iframe id="f" src="kininari.html" style="width:1000px;height:700px"></iframe>
@@ -920,7 +931,9 @@ await section("P2 gc: Drive 上の使われていない添付の片付け（30�
     return x;
   };
   const OLD = "2026-08-01T00:00:00.000Z";
-  const old1 = mk("old1", OLD), new1 = mk("new1"), ref1 = mk("ref1", OLD);   // new1 は偽Driveの時計で10日ほど前
+  // new1 は今から10日前。偽Driveの時計（2026-10-01 から進む）に任せると、日がたつと30日より前になって消され、
+  // 検証を流す日によって落ちていた
+  const old1 = mk("old1", OLD), new1 = mk("new1", new Date(Date.now() - 10 * 86400000).toISOString()), ref1 = mk("ref1", OLD);
   const other = drive.put("diary-something.json", "{}", { parents: ["appDataFolder"] });   // ほかのアプリのファイル
   other.modifiedTime = OLD;
   const ctx = await device({ drive });
