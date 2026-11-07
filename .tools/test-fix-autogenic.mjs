@@ -102,7 +102,13 @@ function INIT(arg) {
   };
   Object.defineProperty(window, "speechSynthesis", { configurable: true, value: ss });
   // ---- 記録の問いかけ（finish の目印） ----
+  // v47 から、記録は window.prompt ではなく画面の中のカード（#recCard）で聞く。
+  // カードが新しい記録のために開いた（data-ts が入った）ときも「問いかけ」として数える
+  // （--root で v46 までの版と比べるときのために、window.prompt も数えたままにする）
   window.__prompts = [];
+  new MutationObserver((ms) => {
+    if (ms.some((m) => m.target.id === "recCard" && m.target.getAttribute("data-ts"))) window.__prompts.push({ at: Date.now(), vis });
+  }).observe(document, { subtree: true, attributes: true, attributeFilter: ["data-ts"] });
   window.prompt = function () { window.__prompts.push({ at: Date.now(), vis }); return "1"; };
   window.confirm = function () { return false; };
 }
