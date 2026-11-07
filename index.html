@@ -489,6 +489,17 @@ body.nk-dark .knnew{opacity:.12}
   /* ── 就寝用の音（実体はここ。音タブは指示を出すだけ）────────── */
   var nkSnd=document.getElementById('nkSound');
   var nkSndId=null, nkSndName='', nkVolOk=null;
+  /* いま<audio>に入っているものの種類。'sc'＝就寝用の音のファイル（くつろぎもこれ）、
+     'mix'＝ここで作った音（重ねた音・端末で作る音）、'track'＝音源。
+     ロック画面の「次・前」を出すか、iPhone でタイマーが絞れるかが、これで変わる。 */
+  var nkSndKind=null;
+  /* 音量は「頼まれた音量」×「スリープタイマーのフェード」×「集中タイマーの区切りで下げるぶん」。
+     分けて持たないと、フェードの途中で音量を変えられたときや、区切りのあとに戻す先が分からなくなる。 */
+  var nkBaseVol=1, nkFadeK=1, nkDuckK=1;
+  /* 鳴らす頼みの通し番号。音源の読み出しや音づくりを待つあいだに、次の頼み（または停止）が来たら
+     古い方は鳴らさない（タイマーで止めた直後に、読み出し終わった音源が鳴り出さないように）。 */
+  var nkSeq=0;
+  var nkSwapping=false;   // 作り直した音へ差し替えている最中（そのあいだの pause は知らせない）
   function nkVolSupported(){
     // iOSでは audio.volume への代入が無視される（本体ボタンのみ）
     if(nkVolOk!==null) return nkVolOk;
@@ -496,47 +507,98 @@ body.nk-dark .knnew{opacity:.12}
     catch(e){ nkVolOk=false; }
     return nkVolOk;
   }
+  function nkApplyVol(){
+    if(!nkVolSupported()) return;
+    try{ nkSnd.volume=Math.max(0,Math.min(1,nkBaseVol*nkFadeK*nkDuckK)); }catch(e){}
+  }
+  function nkSetVol(v){
+    if(typeof v!=='number'||!isFinite(v)) return;
+    nkBaseVol=Math.max(0,Math.min(1,v)); nkApplyVol();
+  }
   function nkPost(msg){
     var fr=document.querySelectorAll('.appframe');
     for(var i=0;i<fr.length;i++){ try{ fr[i].contentWindow.postMessage(msg, location.origin); }catch(e){} }
   }
   function nkSndState(err, ended){
-    nkPost({nkSoundState:{id:(nkSnd.paused?null:nkSndId), playing:!nkSnd.paused,
-                          volOk:nkVolSupported(), err:err||'', ended:!!ended}});
+    var on=!nkSnd.paused;
+    nkPost({nkSoundState:{id:(on?nkSndId:null), playing:on,
+                          volOk:nkVolSupported(), err:err||'', ended:!!ended,
+                          // v:2 … 重ねた音・タイマーをここで持つ版。音タブはこれを見て新しい操作を使う
+                          v:2, kind:(on?nkSndKind:null), parts:(on&&nkSndKind==='mix'?nkMixParts:null), vol:nkBaseVol}});
   }
+  /* ── ロック画面（Media Session）──
+     いま鳴っているものの名前・「気になり帳 — 音」・アプリのアイコンを出す。タイマーが動いていれば
+     残り時間も添える（1分ごとに書き直す）。ここの<audio>が空で、音タブの YouTube が選ばれているときは
+     そちらを出し、操作は音タブへ回す。 */
+  var NK_ART=[{src:'icon-192.png',sizes:'192x192',type:'image/png'},{src:'icon-512.png',sizes:'512x512',type:'image/png'}];
+  var nkYt=null;       // 音タブの YouTube（{title, playing}）
+  var nkMsText='';     // ロック画面に出している残り時間（変わったときだけ書き直す）
+  function nkSetAct(a,f){ try{ navigator.mediaSession.setActionHandler(a,f); }catch(e){} }
+  function nkFwd(act,src){ knSendTo('bgm',{nkMediaAct:{act:act,src:src}}); }
   function nkMedia(name){
+    if(typeof name==='string' && name) nkSndName=name;
+    nkMediaRefresh();
+  }
+  function nkMediaRefresh(){
     try{
       if(!('mediaSession' in navigator)) return;
-      navigator.mediaSession.metadata=new MediaMetadata({title:name||'就寝用の音',artist:'音 — BGM',album:'日記帳 & 気になり帳'});
-      // ▶は「いま鳴らしているもの」がある時だけ効かせる。停止後も効くままだと、
-      // ロック画面から nkSndId=null のまま再生が始まり、音タブ側はどのカードも
-      // 選ばれていない状態になって、アプリからは止められなくなる。
-      navigator.mediaSession.setActionHandler('play', function(){
-        if(!nkSndId || !nkSnd.src) return;
-        nkSnd.play().then(function(){ nkSndState(); }).catch(function(){});
-      });
-      navigator.mediaSession.setActionHandler('pause', function(){ nkSnd.pause(); nkSndState(); });
-      navigator.mediaSession.setActionHandler('stop', nkSndStop);
+      var ms=navigator.mediaSession;
+      var mine=!!(nkSndId && nkSnd.src), yt=!mine && !!(nkYt && nkYt.title);
+      if(!mine && !yt){ nkMediaClear(); return; }
+      nkMsText=nkStatusText();
+      ms.metadata=new MediaMetadata({title:(mine?(nkSndName||'就寝用の音'):nkYt.title),
+        artist:'気になり帳 — 音'+(nkMsText?' ・ '+nkMsText:''), album:(mine?'日記帳 & 気になり帳':'YouTube'), artwork:NK_ART});
+      if(mine){
+        // ▶は「いま鳴らしているもの」がある時だけ効かせる。停止後も効くままだと、
+        // ロック画面から nkSndId=null のまま再生が始まり、音タブ側はどのカードも
+        // 選ばれていない状態になって、アプリからは止められなくなる。
+        nkSetAct('play', function(){
+          if(!nkSndId || !nkSnd.src) return;
+          nkSnd.play().then(function(){ nkSndState(); }).catch(function(){});
+        });
+        nkSetAct('pause', function(){ nkSnd.pause(); nkSndState(); });
+        nkSetAct('stop', nkSndStop);
+        // 音源のときだけ「次・前」を出す。並び順・シャッフルは音タブが持っているので、音タブへ回す
+        var step=(nkSndKind==='track');
+        nkSetAct('nexttrack', step?function(){ nkFwd('next','track'); }:null);
+        nkSetAct('previoustrack', step?function(){ nkFwd('prev','track'); }:null);
+      } else {
+        // YouTube は音タブの中で鳴っている。操作はすべて音タブへ回す
+        nkSetAct('play', function(){ nkFwd('play','yt'); });
+        nkSetAct('pause', function(){ nkFwd('pause','yt'); });
+        nkSetAct('stop', null);
+        nkSetAct('nexttrack', function(){ nkFwd('next','yt'); });
+        nkSetAct('previoustrack', function(){ nkFwd('prev','yt'); });
+      }
+      nkMsPlayback();
+    }catch(e){}
+  }
+  function nkMsPlayback(){
+    try{
+      if(!('mediaSession' in navigator) || !('playbackState' in navigator.mediaSession)) return;
+      var mine=!!(nkSndId && nkSnd.src);
+      if(!mine && !(nkYt && nkYt.title)) return;
+      navigator.mediaSession.playbackState=(mine?!nkSnd.paused:!!nkYt.playing)?'playing':'paused';
     }catch(e){}
   }
   function nkMediaClear(){
     try{
       if(!('mediaSession' in navigator)) return;
-      ['play','pause','stop'].forEach(function(a){
-        try{ navigator.mediaSession.setActionHandler(a, null); }catch(e){}
-      });
+      ['play','pause','stop','nexttrack','previoustrack'].forEach(function(a){ nkSetAct(a, null); });
       navigator.mediaSession.metadata = null;
       if('playbackState' in navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
     }catch(e){}
+    nkMsText='';
   }
   /** 完全に止める。src も消さないと、ロック画面に操作パネルが残り続ける。 */
   function nkSndStop(){
+    nkSeq++;            // 読み出し・音づくりの途中のものも、もう鳴らさない
     try{ nkSnd.pause(); }catch(e){}
-    nkFreeTrackUrl();
+    nkFreeTrackUrl(); nkFreeMixUrl();
     try{ nkSnd.loop=true; }catch(e){}
-    nkSndId=null; nkSndName='';
+    nkSndId=null; nkSndName=''; nkSndKind=null; nkMixParts=null; nkMixSig='';
     try{ nkSnd.removeAttribute('src'); nkSnd.load(); }catch(e){}
-    nkMediaClear();
+    nkMediaRefresh();   // YouTube が選ばれていればそちらを出す。無ければ消す
     nkSndState();
   }
   /* 音源（音タブの「音源」）。実体は BgmAudioDB にあり、ここで読み出して鳴らす。
@@ -560,25 +622,407 @@ body.nk-dark .knnew{opacity:.12}
   }
   var nkTrackUrl=null;   // いま鳴らしている音源の blob: URL
   function nkFreeTrackUrl(){ if(nkTrackUrl){ try{ URL.revokeObjectURL(nkTrackUrl); }catch(e){} nkTrackUrl=null; } }
-  function nkPlaySrc(src, id, name, vol, isBlob){
-    nkFreeTrackUrl();
+  function nkPlaySrc(src, id, name, vol, isBlob, loop){
+    nkFreeTrackUrl(); nkFreeMixUrl();
     if(isBlob) nkTrackUrl=src;
-    nkSnd.loop=false;                 // 曲は繰り返さない（就寝音だけ loop）
-    nkSnd.src=src; nkSndId=id; nkSndName=name||'';
-    if(nkVolSupported() && typeof vol==='number') nkSnd.volume=Math.max(0,Math.min(1,vol));
+    // 曲は繰り返さない（就寝音だけ loop）。ただし音源が1曲しか無いときは、その曲をくり返す
+    // （<audio>のくり返しに任せる。終わるたびに音タブへ知らせて鳴らし直すと、画面を消しているあいだに途切れる）
+    nkSnd.loop=!!loop;
+    nkSnd.src=src; nkSndId=id; nkSndName=name||''; nkSndKind='track'; nkMixParts=null; nkMixSig='';
+    nkSetVol(vol);
     nkSnd.play().then(function(){ nkMedia(name); nkSndState(); })
                 .catch(function(){ nkSndId=null; nkSndState('tap'); });
   }
+
+  /* ── 重ねた音・端末で作る音 ──────────────────────────
+     就寝用の音のファイル（16kHz・モノラル・16bit・20秒のループ。音の大きさはそろえてある）と、
+     ここで作る音（ホワイトノイズなど）を足し合わせて1本のWAVにし、同じ<audio loop>で鳴らす。
+     Web Audio で重ねると、画面を消したときやほかのタブにいるときに止まる端末があるため
+     （<audio>なら、これまでどおり裏でも鳴り、ロック画面からも操作できる）。
+     音量は作るときに焼き込むので、<audio>の音量を変えられない iPhone でも、つまみが効く。
+     作った音は保存しない（メモリに置くだけ。使わなくなった blob: URL はすぐ捨てる）。 */
+  var NK_SR=16000;
+  var NK_FILES={brown:'audio/brown.wav', pink:'audio/pink.wav', rain:'audio/rain.wav'};
+  var nkPcmC={};        // id → Promise<Int16Array>。ファイルは読み直さない。作る音は使っているあいだだけ持つ
+  var nkMixUrl=null, nkMixParts=null, nkMixSig='', nkMixT=null;
+  var nkFadeQ=1;        // iPhone のフェードで焼き込む大きさ（段階）
+  function nkFreeMixUrl(){ if(nkMixUrl){ try{ URL.revokeObjectURL(nkMixUrl); }catch(e){} nkMixUrl=null; } }
+  function nkWavPcm(buf){
+    var dv=new DataView(buf), p=12, fmt=null;
+    if(dv.byteLength<44||dv.getUint32(0,false)!==0x52494646||dv.getUint32(8,false)!==0x57415645) throw new Error('WAV');
+    while(p+8<=dv.byteLength){
+      var id=dv.getUint32(p,false), n=dv.getUint32(p+4,true), b=p+8;
+      if(id===0x666d7420){ fmt={tag:dv.getUint16(b,true), ch:dv.getUint16(b+2,true), sr:dv.getUint32(b+4,true), bits:dv.getUint16(b+14,true)}; }
+      else if(id===0x64617461){
+        // 足し合わせは同じ形どうしでしかできない（作り直しはしない）
+        if(!fmt||fmt.tag!==1||fmt.ch!==1||fmt.sr!==NK_SR||fmt.bits!==16) throw new Error('WAV_FMT');
+        n=Math.min(n,dv.byteLength-b)&~1;
+        return new Int16Array(buf.slice(b,b+n));
+      }
+      p=b+n+(n&1);
+    }
+    throw new Error('WAV_DATA');
+  }
+  function nkWavBlob(pcm){
+    var n=pcm.length*2, h=new DataView(new ArrayBuffer(44));
+    var w=function(o,s){ for(var i=0;i<4;i++) h.setUint8(o+i,s.charCodeAt(i)); };
+    w(0,'RIFF'); h.setUint32(4,36+n,true); w(8,'WAVE'); w(12,'fmt '); h.setUint32(16,16,true);
+    h.setUint16(20,1,true); h.setUint16(22,1,true); h.setUint32(24,NK_SR,true); h.setUint32(28,NK_SR*2,true);
+    h.setUint16(32,2,true); h.setUint16(34,16,true); w(36,'data'); h.setUint32(40,n,true);
+    return new Blob([h.buffer, pcm.buffer], {type:'audio/wav'});
+  }
+  /* 足して大きくなった山は、なめらかに丸める（そのまま切ると「バリッ」と割れて聞こえる） */
+  function nkSoft(x){
+    var a=x<0?-x:x, T=0.7;
+    if(a<=T) return x;
+    var y=T+(1-T)*Math.tanh((a-T)/(1-T));
+    return x<0?-y:y;
+  }
+  /* 毎回同じ音になるよう、種から作る乱数（-1〜1） */
+  function nkRng(seed){
+    var s=seed>>>0;
+    return function(){
+      s=(s+0x6D2B79F5)>>>0; var t=s;
+      t=Math.imul(t^(t>>>15),t|1); t^=t+Math.imul(t^(t>>>7),t|61);
+      return (((t^(t>>>14))>>>0)/4294967296)*2-1;
+    };
+  }
+  /* ピンクノイズのもと（Paul Kellet の近似）。呼ぶたびに1サンプル */
+  function nkPinkF(){
+    var b0=0,b1=0,b2=0,b3=0,b4=0,b5=0,b6=0;
+    return function(w){
+      b0=0.99886*b0+w*0.0555179; b1=0.99332*b1+w*0.0750759; b2=0.96900*b2+w*0.1538520;
+      b3=0.86650*b3+w*0.3104856; b4=0.55000*b4+w*0.5329522; b5=-0.7616*b5-w*0.0168980;
+      var p=(b0+b1+b2+b3+b4+b5+b6+w*0.5362)*0.11; b6=w*0.115926;
+      return p;
+    };
+  }
+  /* 端末で作る音。どれも60秒（20秒のファイルとつなぎ目がそろう長さ）。
+     うねりや波の間隔は、60秒でちょうど元に戻る長さにしてある（ループの継ぎ目でずれない）。
+     大きさは就寝用のファイルにそろえる（ホワイトノイズだけは耳につきやすいので少し小さめ）。 */
+  var NK_GEN={
+    white:{seed:11, rms:0.11, init:function(){ return function(r){ return r(); }; }},
+    // ブラウンより低い、遠くの地鳴りのような音（ブラウンをさらに低い方へ寄せる）
+    deep:{seed:23, rms:0.183, init:function(){
+      var b=0, l=0, a=Math.exp(-2*Math.PI*140/NK_SR);
+      return function(r){ b=(b+0.02*r())/1.02; l=a*l+(1-a)*b; return l; };
+    }},
+    // 扇風機: やわらかい風の音に、羽根の回るかすかなうなり（24Hz）と、12秒のゆるい揺らぎ
+    fan:{seed:37, rms:0.17, init:function(){
+      var pk=nkPinkF(), br=0, l=0, a=Math.exp(-2*Math.PI*1200/NK_SR);
+      return function(r,n){
+        var w=r(), t=n/NK_SR;
+        br=(br+0.02*w)/1.02;
+        l=a*l+(1-a)*(pk(w)+br*1.2);
+        return l*(1+0.06*Math.sin(2*Math.PI*24*t)+0.05*Math.sin(2*Math.PI*t/12));
+      };
+    }},
+    // 波: 8.5〜11.5秒の間隔で寄せては返す。寄せるときは明るく、引くと低くこもる
+    waves:{seed:41, rms:0.17, init:function(N){
+      var W=[[0,1,2.2,4.6],[10.5,0.8,1.8,4.0],[19,0.95,2.6,5.2],[30.5,0.75,2.0,3.8],[40,1,2.4,5.0],[50.5,0.85,1.9,4.2]];
+      var L=60, env=new Float32Array(Math.ceil(N/32)+1);
+      for(var q=0;q<env.length;q++){
+        var t=((q*32)%N)/NK_SR, e=0.12;
+        for(var k=0;k<W.length;k++){
+          var u=t-W[k][0]; u=((u%L)+L)%L;
+          e+=W[k][1]*(u<W[k][2]?Math.pow(Math.sin(Math.PI/2*u/W[k][2]),2):Math.exp(-(u-W[k][2])/W[k][3]));
+        }
+        env[q]=Math.min(1.1,e);
+      }
+      var pk=nkPinkF(), br=0, l=0;
+      return function(r,n){
+        var q=n>>5, e=env[q]+(env[q+1]-env[q])*((n&31)/32), w=r();
+        var a=Math.exp(-2*Math.PI*(220+1800*e*e)/NK_SR);
+        br=(br+0.02*w)/1.02;
+        l=a*l+(1-a)*(pk(w)*0.7+br*1.5);
+        return l*e;
+      };
+    }}
+  };
+  function nkGenerate(id){
+    var g=NK_GEN[id], N=NK_SR*60, F=NK_SR, W=4000, i, s=0, e=0;
+    var r=nkRng(g.seed), step=g.init(N), x=new Float32Array(N+F);
+    // 頭の4000サンプルは捨てる（フィルタが落ち着くまで）。そのあと1秒ぶん余分に作る
+    for(var j=-W;j<N+F;j++){ var v=step(r,((j%N)+N)%N); if(j>=0) x[j]=v; }
+    // つなぎ目: 余分に作った「続き」を頭に重ねる。等パワーで混ぜるので、つなぎ目で音が痩せない
+    for(i=0;i<F;i++){ var a=Math.PI/2*i/F; x[i]=x[i]*Math.sin(a)+x[N+i]*Math.cos(a); }
+    for(i=0;i<N;i++) s+=x[i];
+    var mean=s/N;
+    for(i=0;i<N;i++){ x[i]-=mean; e+=x[i]*x[i]; }
+    var k=g.rms/Math.sqrt(e/N||1), out=new Int16Array(N);
+    for(i=0;i<N;i++) out[i]=Math.round(nkSoft(x[i]*k)*32767);
+    return out;
+  }
+  function nkPcm(id){
+    if(nkPcmC[id]) return nkPcmC[id];
+    var p;
+    if(NK_FILES[id]) p=fetch(NK_FILES[id]).then(function(r){ if(!r.ok) throw new Error('HTTP'); return r.arrayBuffer(); }).then(nkWavPcm);
+    else if(NK_GEN[id]) p=new Promise(function(res){ res(nkGenerate(id)); });
+    else return Promise.reject(new Error('NO_SOUND'));
+    nkPcmC[id]=p;
+    p.catch(function(){ if(nkPcmC[id]===p) delete nkPcmC[id]; });   // 次にまた試せるように
+    return p;
+  }
+  /* 作る音は1つで2MBほどある。鳴らしていないものは持たない（また要るときは作り直す。0.1秒もかからない） */
+  function nkPcmGc(parts){
+    var use={}; parts.forEach(function(p){ use[p.id]=1; });
+    for(var k in nkPcmC){ if(NK_GEN[k] && !use[k]) delete nkPcmC[k]; }
+  }
+  function nkMixNorm(l){
+    var out=[], seen={};
+    (Array.isArray(l)?l:[]).forEach(function(p){
+      var id=p&&String(p.id||'');
+      if(!id||seen[id]||!(NK_FILES[id]||NK_GEN[id])||out.length>=4) return;
+      seen[id]=1;
+      var v=+p.vol; out.push({id:id, vol:(isFinite(v)?Math.max(0,Math.min(1,v)):1)});
+    });
+    return out;
+  }
+  /* 足し合わせ。音の大きさはそろえてあるので、そのまま足す。合わせた大きさが1つぶんを超えたときだけ、
+     超えたぶん全体を下げる（それぞれのつまみは、そのまま「その音の大きさ」として効く）。
+     短い音（20秒）は、長い音（60秒）に合わせて繰り返して足す。 */
+  function nkMixBuild(parts, bake){
+    return Promise.all(parts.map(function(p){ return nkPcm(p.id); })).then(function(pcm){
+      var N=0, pw=0, i, k;
+      pcm.forEach(function(a){ if(a.length>N) N=a.length; });
+      if(!N) throw new Error('EMPTY');
+      parts.forEach(function(p){ pw+=p.vol*p.vol; });
+      var norm=1/Math.max(1,Math.sqrt(pw)), acc=new Float32Array(N);
+      for(k=0;k<pcm.length;k++){
+        var a=pcm[k], L=a.length, g=parts[k].vol*norm*bake/32768, j=0;
+        if(!g||!L) continue;
+        for(i=0;i<N;i++){ acc[i]+=a[j]*g; if(++j===L) j=0; }
+      }
+      var out=new Int16Array(N);
+      for(i=0;i<N;i++) out[i]=Math.round(nkSoft(acc[i])*32767);
+      return {blob:nkWavBlob(out), len:N};
+    });
+  }
+  function nkMixPlay(c){
+    var parts=nkMixNorm(c.parts);
+    if(!parts.length){ nkSndStop(); return; }
+    // 1つだけのときは、その音の名前（くつろぎが「同じ音が鳴っている」と分かるように）
+    var id=parts.length===1?parts[0].id:'mix:'+parts.map(function(p){ return p.id; }).join('+');
+    nkMixLoad(parts, id, String(c.name||'').slice(0,120)||'就寝用の音', c.vol, ++nkSeq);
+  }
+  function nkMixLoad(parts, id, name, vol, seq){
+    // iPhone では全体の音量とフェードも焼き込む（<audio>の音量が効かないため）
+    var bake=nkVolSupported()?1:Math.max(0,Math.min(1,(typeof vol==='number'&&isFinite(vol))?vol:nkBaseVol))*nkFadeQ;
+    var sig=JSON.stringify([parts,Math.round(bake*1000)]);
+    if(nkSndKind==='mix' && nkMixSig===sig && nkSnd.src){
+      // 同じ中身がもう入っている。作り直さず、音量だけ合わせる
+      nkSndId=id; nkSndName=name; nkSetVol(vol);
+      if(nkSnd.paused) nkSnd.play().then(function(){ nkMedia(name); nkSndState(); }).catch(function(){ nkSndId=null; nkSndState('tap'); });
+      else { nkMedia(name); nkSndState(); }
+      return;
+    }
+    nkMixBuild(parts, bake).then(function(r){
+      if(seq!==nkSeq) return;     // 作っているあいだに、別のものが頼まれた・止められた
+      // 重ね直したときは続きから鳴らす（どの音も20秒の倍数でそろっているので、同じ位置なら途切れて聞こえない）
+      var pos=(nkSndKind==='mix' && !nkSnd.paused)?(nkSnd.currentTime||0)%(r.len/NK_SR):0;
+      var url=URL.createObjectURL(r.blob), old=nkMixUrl;
+      nkFreeTrackUrl();
+      nkMixUrl=url; nkMixParts=parts; nkMixSig=sig;
+      nkSwapping=true;
+      try{ nkSnd.loop=true; }catch(e){}
+      nkSnd.src=url; nkSndId=id; nkSndName=name; nkSndKind='mix';
+      if(pos>0){
+        try{ nkSnd.currentTime=pos; }
+        catch(e){ var seek=function(){ nkSnd.removeEventListener('loadedmetadata',seek); try{ nkSnd.currentTime=pos; }catch(e2){} }; nkSnd.addEventListener('loadedmetadata',seek); }
+      }
+      if(old){ try{ URL.revokeObjectURL(old); }catch(e){} }
+      nkSetVol(vol);
+      nkPcmGc(parts);
+      nkSnd.play().then(function(){ nkSwapping=false; if(seq!==nkSeq) return; nkMedia(name); nkSndState(); })
+                  .catch(function(){ nkSwapping=false; if(seq!==nkSeq) return; nkSndId=null; nkSndState('tap'); });
+    }).catch(function(){ if(seq===nkSeq) nkSndState('mix'); });
+  }
+  /* いま鳴らしている重ねた音を、いまの音量・フェードで作り直す（iPhone 用） */
+  function nkMixRebuild(){
+    if(nkSndKind!=='mix'||!nkMixParts||nkSnd.paused){ nkMixSig=''; return; }   // 止まっていれば、次に鳴らすときに作り直す
+    nkMixLoad(nkMixParts, nkSndId, nkSndName, nkBaseVol, ++nkSeq);
+  }
+  function nkMixRebakeSoon(){ clearTimeout(nkMixT); nkMixT=setTimeout(function(){ nkMixT=null; nkMixRebuild(); },500); }
+
+  /* ── スリープタイマー（ここで持つ）──────────────────────
+     以前は音タブの中で数えていたが、音タブが読み込み直されたり空にされたりすると（取り込みのときなど）、
+     止める役がいなくなって鳴り続けた。止める時刻はここで持ち、端末にも書いておく（入口ごと読み込み直しても続く）。
+     YouTube は音タブの中で鳴っているので、絞るのは音タブに任せる（始まり・終わりを知らせる）。 */
+  var NK_SL_KEY='nk:sleepTimer';
+  var nkSl={end:0, fade:20, set:0, ext:false};   // set: 選んだ分（ボタンの点灯用）、ext: 「+10分」で延ばした
+  var nkSlPh='idle', nkSlT0=0, nkSlLen=0, nkSlSteps=2;
+  var nkTickT=null, nkTickAt=0;
+  function nkFadeOk(s){ s=+s; return (s===300||s===600)?s:20; }
+  (function(){
+    try{
+      var o=JSON.parse(localStorage.getItem(NK_SL_KEY)||'null');
+      if(o && typeof o.end==='number' && o.end>Date.now()){ nkSl={end:o.end, fade:nkFadeOk(o.fade), set:(+o.set||0), ext:!!o.ext}; nkSlPh='run'; }
+      else if(o) localStorage.removeItem(NK_SL_KEY);   // 止める時刻を過ぎていた（アプリは閉じていて、もう鳴っていない）
+    }catch(e){}
+  })();
+  function nkSlSave(){
+    try{ if(nkSlPh==='run' && nkSl.end) localStorage.setItem(NK_SL_KEY, JSON.stringify(nkSl)); else localStorage.removeItem(NK_SL_KEY); }catch(e){}
+  }
+  function nkSlPost(done){
+    knSendTo('bgm',{nkSleep:{end:nkSl.end, fade:nkSl.fade, set:nkSl.set, ext:nkSl.ext, phase:nkSlPh,
+                             t0:nkSlT0, len:nkSlLen, done:!!done}});
+  }
+  /* フェードをやめて、音量を元に戻す（「+10分」・タイマーの付け直し） */
+  function nkSlUnfade(){
+    nkSlT0=0; nkSlLen=0;
+    if(nkFadeK!==1){ nkFadeK=1; nkApplyVol(); }
+    if(nkFadeQ!==1){ nkFadeQ=1; nkMixRebuild(); }
+  }
+  function nkSlSet(min, fade){
+    if(fade!=null) nkSl.fade=nkFadeOk(fade);
+    nkSlUnfade();
+    if(min>0){ nkSl.end=Date.now()+min*60000; nkSl.set=min; nkSl.ext=false; nkSlPh='run'; }
+    else { nkSl.end=0; nkSl.set=0; nkSl.ext=false; nkSlPh='idle'; }
+    nkSlChanged();
+  }
+  /* 寝落ちしそこねたとき用。動いていれば延ばし、絞っている途中・止めたあとなら音量を戻してから数え直す */
+  function nkSlAdd(min){
+    var now=Date.now();
+    if(nkSlPh==='run' && nkSl.end>now){ nkSl.end+=min*60000; nkSl.set+=min; nkSl.ext=true; }
+    else { nkSlUnfade(); nkSl.end=now+min*60000; nkSl.set=min; nkSl.ext=false; nkSlPh='run'; }
+    nkSlChanged();
+  }
+  // 絞っている途中に変えても、その回の長さは変えない（音量が跳ねるため）。次の回から
+  function nkSlFadeSet(f){ nkSl.fade=nkFadeOk(f); nkSlSave(); nkSlPost(); }
+  function nkSlChanged(){ nkSlSave(); nkTickRun(); nkSlPost(); if(nkSndId||nkYt) nkMediaRefresh(); }
+  function nkSlStep(){
+    var now=Date.now();
+    if(nkSlPh==='run' && now>=nkSl.end){
+      nkSlPh='fade'; nkSlT0=nkSl.end;
+      /* 音量を変えられない端末（iPhone）では、ここで作った音だけ、段階的に作り直して小さくする
+         （20秒なら2段、5分なら7段、10分なら8段）。音源・ファイルの音・YouTube は絞れないので、
+         時間が来たらそのまま止める（絞れないまま延長しても、聞こえ方は変わらないため）。 */
+      nkSlLen=(nkVolSupported()||nkSndKind==='mix')?nkSl.fade*1000:0;
+      nkSlSteps=Math.max(2,Math.min(8,Math.round(nkSl.fade/60)+2));
+      nkSlSave(); nkTickRun(); nkSlPost();
+    }
+    if(nkSlPh!=='fade') return;
+    var k=nkSlLen>0?1-(now-nkSlT0)/nkSlLen:0;
+    // 予定の時刻をフェードの長さより過ぎてから気づいたとき（画面を消して時計が止まっていた）は、絞らずにその場で止める
+    if(k<=0){ nkSlFinish(); return; }
+    // 耳には音量の「割合」で聞こえるので、二乗で下げる（直線だと、終わりぎわに急に消えたように聞こえる）
+    if(nkVolSupported()){ nkFadeK=k*k; nkApplyVol(); }
+    else if(nkSndKind==='mix'){
+      var q=Math.ceil(k*nkSlSteps)/nkSlSteps; q=q*q;
+      if(q!==nkFadeQ){ nkFadeQ=q; nkMixRebuild(); }
+    }
+  }
+  function nkSlFinish(){
+    nkSlPh='idle'; nkSl.end=0; nkSl.set=0; nkSl.ext=false; nkSlT0=0; nkSlLen=0;
+    nkSndStop();
+    nkFadeK=1; nkFadeQ=1; nkApplyVol();   // 次に鳴らすときは、元の音量で
+    nkSlSave(); nkTickRun();
+    nkSlPost(true);   // 音タブは YouTube を止め、画面の消灯を元に戻して「おやすみなさい」と出す
+  }
+
+  /* ── 集中タイマー（25分集中・5分休憩など）──────────────
+     区切りで音楽を少し下げ、小さなチャイムを鳴らしてから戻す。チャイムは Web Audio で作る（ファイルは持たない）。
+     音源・就寝用の音はここで鳴っているので、画面を消しても区切りは知らせられる（端末がタイマーを止めない限り）。 */
+  var nkFo={on:false, phase:'work', end:0, work:25, brk:5, round:1}, nkAc=null;
+  function nkFoPost(){ knSendTo('bgm',{nkFocus:{on:nkFo.on, phase:nkFo.phase, end:nkFo.end, work:nkFo.work, brk:nkFo.brk, round:nkFo.round}}); }
+  function nkFoSet(c){
+    var w=+c.work, b=+c.brk;
+    if([15,25,50].indexOf(w)>=0) nkFo.work=w;
+    if([5,10].indexOf(b)>=0) nkFo.brk=b;
+    if(!c.on){ nkFo.on=false; nkFo.end=0; nkAcClose(); }
+    else if(!(c.keep && nkFo.on)){   // keep: 動いている途中に長さを変えた（いまの区切りはそのまま、次から）
+      nkFo.on=true; nkFo.phase='work'; nkFo.round=1; nkFo.end=Date.now()+nkFo.work*60000;
+      nkAcWake();   // 押された流れのうちに音の出口を起こしておく（あとからでは鳴らせない端末がある）
+    }
+    nkTickRun(); nkFoPost(); if(nkSndId||nkYt) nkMediaRefresh();
+  }
+  function nkFoStep(){
+    if(!nkFo.on) return;
+    var now=Date.now(); if(now<nkFo.end) return;
+    var nx=(nkFo.phase==='work')?'break':'work', dur=(nx==='work'?nkFo.work:nkFo.brk)*60000;
+    // 画面を消していて大きく遅れたときは、いまから数え直す（何回ぶんもまとめて鳴らさない）
+    nkFo.end=(now-nkFo.end>60000)?now+dur:nkFo.end+dur;
+    nkFo.phase=nx; if(nx==='work') nkFo.round++;
+    nkCue(nx);
+    nkFoPost();
+  }
+  /* 区切りの合図。iPhone は<audio>の音量を下げられないので、チャイムだけになる */
+  function nkCue(phase){
+    nkDuck(0.3, 3400);
+    knSendTo('bgm',{nkDuck:{k:0.3, ms:3400}});   // YouTube は音タブが下げる
+    nkChime(phase);
+  }
+  var nkDuckT=null, nkDuckS=0, nkDuckMs=0, nkDuckTo=1;
+  function nkDuck(k, ms){ nkDuckS=Date.now(); nkDuckMs=ms; nkDuckTo=k; if(!nkDuckT) nkDuckT=setInterval(nkDuckStep,50); nkDuckStep(); }
+  function nkDuckStep(){
+    var t=Date.now()-nkDuckS, A=400, R=1500, k;
+    if(t<A) k=1-(1-nkDuckTo)*t/A;
+    else if(t<nkDuckMs) k=nkDuckTo;
+    else if(t<nkDuckMs+R) k=nkDuckTo+(1-nkDuckTo)*(t-nkDuckMs)/R;
+    else { k=1; clearInterval(nkDuckT); nkDuckT=null; }
+    nkDuckK=k; nkApplyVol();
+  }
+  function nkAcWake(){
+    try{
+      var A=window.AudioContext||window.webkitAudioContext; if(!A) return null;
+      if(!nkAc) nkAc=new A();
+      if(nkAc.state==='suspended' && nkAc.resume){ var p=nkAc.resume(); if(p&&p.catch) p.catch(function(){}); }
+    }catch(e){ return null; }
+    return nkAc;
+  }
+  function nkAcClose(){ try{ if(nkAc&&nkAc.close) nkAc.close(); }catch(e){} nkAc=null; }
+  function nkChime(phase){
+    var ac=nkAcWake(); if(!ac) return;
+    try{
+      var t0=ac.currentTime+0.45;   // 音楽が下がりきってから
+      // 休憩へ: 下がる2音。集中へ: 上がる3音。少しだけ倍音を足して、鈴のように
+      var ns=(phase==='break')?[[659.25,0],[523.25,0.45]]:[[523.25,0],[659.25,0.3],[783.99,0.6]];
+      ns.forEach(function(n){
+        [[n[0],0.12],[n[0]*2,0.025]].forEach(function(h){
+          var o=ac.createOscillator(), g=ac.createGain(), t=t0+n[1];
+          o.type='sine'; o.frequency.value=h[0];
+          g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(h[1],t+0.02); g.gain.exponentialRampToValueAtTime(0.0001,t+2.4);
+          o.connect(g); g.connect(ac.destination); o.start(t); o.stop(t+2.5);
+        });
+      });
+    }catch(e){}
+  }
+
+  /* 1秒ごとに数える（スリープタイマー・集中タイマー・ロック画面の残り時間）。
+     画面を消しているあいだは間引かれるので、鳴っているあいだの timeupdate と、戻ってきたときにも数える。 */
+  function nkMin(ms){ return Math.max(1,Math.ceil(ms/60000)); }
+  function nkStatusText(){
+    var now=Date.now(), b=[];
+    if(nkFo.on) b.push((nkFo.phase==='work'?'集中':'休憩')+' あと'+nkMin(nkFo.end-now)+'分');
+    if(nkSlPh==='run') b.push('あと'+nkMin(nkSl.end-now)+'分で停止');
+    else if(nkSlPh==='fade') b.push('音を小さくしています');
+    return b.join(' ・ ');
+  }
+  var nkTickMs=1000;
+  function nkTickRun(){
+    // 絞っているあいだは細かく（1秒ごとだと、音量が段々に下がって聞こえる）
+    var need=(nkSlPh!=='idle')||nkFo.on, ms=(nkSlPh==='fade')?250:1000;
+    if(nkTickT && (!need || ms!==nkTickMs)){ clearInterval(nkTickT); nkTickT=null; }
+    if(need && !nkTickT){ nkTickMs=ms; nkTickT=setInterval(nkTick,ms); }
+  }
+  function nkTick(){
+    nkTickAt=Date.now();
+    nkSlStep(); nkFoStep();
+    if((nkSndId||nkYt) && nkStatusText()!==nkMsText) nkMediaRefresh();   // 「あと○分」は変わったときだけ書き直す
+  }
+
   function nkSoundCmd(c){
     if(!c||!c.cmd) return;
     try{
-      if(c.cmd==='state'){ nkSndState(); return; }
+      if(c.cmd==='state'){ nkSndState(); nkSlPost(); nkFoPost(); return; }
       if(c.cmd==='stop'){ nkSndStop(); return; }
       if(c.cmd==='playTrack'){
-        if(nkSndId===c.id && !nkSnd.paused){ nkSndStop(); return; }
+        // 同じ音源をもう一度押されたら止める。force（次・前・くり返し）は止めずに頭から鳴らし直す
+        if(nkSndId===c.id && !nkSnd.paused && !c.force){ nkSndStop(); return; }
+        var seq=++nkSeq;
         if(c.kind==='stream'){
           if(!/^https?:\/\//i.test(c.url||'')){ nkSndState('track'); return; }
-          nkPlaySrc(c.url, c.id, c.name, c.vol, false);
+          nkPlaySrc(c.url, c.id, c.name, c.vol, false, false);
           return;
         }
         nkOpenAuDb().then(function(db){
@@ -588,29 +1032,54 @@ body.nk-dark .knnew{opacity:.12}
             }catch(e){ res(null); }
           });
         }).then(function(rec){
+          if(seq!==nkSeq) return;   // 読み出すあいだに、別のものが頼まれた・止められた
           if(!rec||!rec.blob){ nkSndState('missing'); return; }
-          nkPlaySrc(URL.createObjectURL(rec.blob), c.id, c.name, c.vol, true);
-        }).catch(function(){ nkSndState('track'); });
+          nkPlaySrc(URL.createObjectURL(rec.blob), c.id, c.name, c.vol, true, !!c.loop);
+        }).catch(function(){ if(seq===nkSeq) nkSndState('track'); });
         return;
       }
+      if(c.cmd==='trackLoop'){ if(nkSndKind==='track'){ try{ nkSnd.loop=!!c.loop; }catch(e){} } return; }
       if(c.cmd==='vol'){
-        if(nkVolSupported() && typeof c.vol==='number') nkSnd.volume=Math.max(0,Math.min(1,c.vol));
+        nkSetVol(c.vol);
+        // iPhone では<audio>の音量を変えられない。ここで作った音なら、音量ごと作り直す（つまみを止めるまで待つ）
+        if(!nkVolSupported() && nkSndKind==='mix') nkMixRebakeSoon();
         return;
       }
       if(c.cmd==='play'){
-        if(nkSndId!==c.id || !nkSnd.src){ nkFreeTrackUrl(); nkSnd.loop=true; nkSnd.src=c.file; nkSndId=c.id; nkSndName=c.name||''; }
-        if(nkVolSupported() && typeof c.vol==='number') nkSnd.volume=Math.max(0,Math.min(1,c.vol));
+        nkSeq++;
+        if(nkSndId!==c.id || !nkSnd.src){ nkFreeTrackUrl(); nkFreeMixUrl(); nkSnd.loop=true; nkSnd.src=c.file; nkSndId=c.id; nkSndName=c.name||''; nkSndKind='sc'; nkMixParts=null; nkMixSig=''; }
+        nkSetVol(c.vol);
         nkSnd.play().then(function(){ nkMedia(c.name); nkSndState(); })
                     .catch(function(){ nkSndId=null; nkSndState('tap'); });
         return;
       }
+      // ここから v2 で足した命令（くつろぎが使う state / play / vol / stop の振る舞いは変えていない）
+      if(c.cmd==='mix'){ nkMixPlay(c); return; }
+      if(c.cmd==='sleep'){ nkSlSet(Math.max(0,Math.min(600,+c.min||0)), c.fade); return; }
+      if(c.cmd==='sleepAdd'){ nkSlAdd(Math.max(1,Math.min(120,+c.min||10))); return; }
+      if(c.cmd==='sleepFade'){ nkSlFadeSet(c.fade); return; }
+      if(c.cmd==='focus'){ nkFoSet(c); return; }
+      if(c.cmd==='ytMedia'){
+        nkYt=c.title?{title:String(c.title).slice(0,200), playing:!!c.playing}:null;
+        if(!nkSndId) nkMediaRefresh();   // ここで鳴らしているものがあれば、そちらを出したまま
+        return;
+      }
     }catch(e){ nkSndState('err'); }
   }
-  nkSnd.addEventListener('play', function(){ nkSndState(); });
-  nkSnd.addEventListener('pause', function(){ nkSndState(); });
+  nkSnd.addEventListener('play', function(){ nkSndState(); nkMsPlayback(); });
+  nkSnd.addEventListener('pause', function(){ if(nkSwapping) return; nkSndState(); nkMsPlayback(); });
   // 曲が終わったら音タブへ知らせる（次の曲へ進めてもらう）
   nkSnd.addEventListener('ended', function(){ nkSndState('', true); });
   nkSnd.addEventListener('error', function(){ if(nkSndId) nkSndState('track'); });
+  nkSnd.addEventListener('timeupdate', function(){ if(nkTickT && Date.now()-nkTickAt>=nkTickMs) nkTick(); });
+  document.addEventListener('visibilitychange', function(){ if(nkTickT && document.visibilityState!=='hidden') nkTick(); });
+  document.addEventListener('resume', function(){ if(nkTickT) nkTick(); });   // 凍結からの復帰
+  nkTickRun();   // 端末に残っていたスリープタイマー（入口ごと読み込み直したとき）
+  // 音タブが読み込み直された・空にされたら、そこで鳴っていた YouTube はもう無い。ロック画面に残さない
+  (function(){
+    var fb=document.getElementById('frame-bgm');
+    if(fb) fb.addEventListener('load', function(){ if(nkYt){ nkYt=null; if(!nkSndId) nkMediaRefresh(); } });
+  })();
 
   function knSend(msg){
     var fr=document.querySelectorAll('.appframe');
