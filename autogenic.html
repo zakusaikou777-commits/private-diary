@@ -77,7 +77,47 @@ header{margin-bottom:16px}
 .dots{display:flex;flex-wrap:wrap;gap:3px;margin-bottom:10px}
 .dot{width:9px;height:9px;border-radius:50%;background:var(--line)}
 .dot.on{background:var(--leaf-d)}
+/* 1日の回数で濃くする（1回・2回・3回以上）。同じ色の濃さだけで表す */
+.dot.c1{background:rgba(127,168,124,.38)}
+.dot.c2{background:rgba(127,168,124,.68)}
+.dot.c3{background:var(--leaf)}
+.dleg{display:flex;flex-wrap:wrap;align-items:center;gap:5px 6px;font-size:11px;color:var(--dim);margin:-3px 0 12px}
+.dleg .dot{display:inline-block}
+.dleg .sp{flex:1}
 .empty{color:var(--dim);font-size:12.5px;text-align:center;padding:14px 0;line-height:1.8}
+.rec .ce{font-size:10.5px;color:var(--dim);margin-top:2px}
+.rec .tiny{flex:none;padding:5px 9px}
+.tiny.warn{border-color:var(--warn);color:var(--warn)}
+
+/* ── 練習のあとの記録カード ── */
+#recCard{border-color:var(--leaf-d)}
+.rcm{font-size:12px;color:var(--dim);line-height:1.7;margin:0 0 2px}
+.rfn{font-size:13.5px;margin:13px 0 6px}
+.lvrow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.lvrow button{min-height:54px;border:1px solid var(--line);background:none;color:var(--ink);border-radius:11px;padding:8px 3px;font-family:inherit;font-size:13px;line-height:1.35;cursor:pointer;word-break:keep-all;overflow-wrap:anywhere}
+.lvrow button.on{border-color:var(--leaf);background:rgba(127,168,124,.16);color:var(--leaf);font-weight:700}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border:1px solid var(--line);background:none;color:var(--ink);border-radius:999px;padding:8px 13px;font-family:inherit;font-size:12.5px;cursor:pointer}
+.chip.on{border-color:var(--leaf);background:rgba(127,168,124,.16);color:var(--leaf)}
+.rnote{width:100%;margin-top:10px;border:1px solid var(--line);background:rgba(0,0,0,.25);color:var(--ink);border-radius:9px;padding:10px;font-family:inherit;font-size:13px}
+.rcbtns{margin-top:12px}
+
+/* ── 公式の目安・公式ごとの様子 ── */
+.guide{font-size:12px;color:var(--dim);line-height:1.85;margin:0 0 10px;padding-top:9px;border-top:1px solid var(--line)}
+.guide b{color:var(--ink);font-weight:500}
+.sugg{margin-top:8px;border:1px solid var(--leaf-d);border-radius:10px;padding:10px 12px;color:var(--ink)}
+.sugg .btn{margin-top:8px;padding:10px 12px;font-size:13.5px}
+.fst{margin:0 0 12px;max-width:380px}
+.fst .fn{font-size:12px;color:var(--ink);margin:0 0 2px}
+.fst svg{display:block;width:100%;height:auto}
+.fst .gl{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke}
+.fst .ln{fill:none;stroke:var(--leaf);stroke-opacity:.55;stroke-width:2;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
+.fst .pt{fill:var(--leaf);stroke:var(--card);stroke-width:2}
+.fst .hit{fill:transparent}
+.fst text{fill:var(--dim);font-size:9px;font-family:var(--fb)}
+.fst .fx{display:flex;justify-content:space-between;font-size:10px;color:var(--dim);padding-left:12.7%}
+.ftr{font-size:12px;color:var(--ink);margin:5px 0 0;line-height:1.7}
+.ftr .dim{color:var(--dim);font-size:11px}
 
 #editor{position:fixed;inset:0;background:var(--bg);z-index:55;overflow:auto;padding:18px 15px 40px;display:none}
 #editor .in{max-width:640px;margin:0 auto}
@@ -164,11 +204,17 @@ header{margin-bottom:16px}
   </div>
 
   <div id="home">
+    <!-- 練習を終えたあと（消去動作が最後まで済んでから）だけ出す。記録を直すときにも使う -->
+    <div class="card" id="recCard" style="display:none" data-ts=""></div>
+
     <div class="card">
       <p class="ttl">きょうの練習</p>
       <div id="planNote" class="note" style="margin:0 0 10px"></div>
+      <div id="guide" class="guide" style="display:none"></div>
       <button class="btn go" id="startBtn">はじめる</button>
-      <button class="btn" id="tryBtn">台本を少しだけ試聴する</button>
+      <button class="btn" id="quickBtn">みじかく（約2〜3分）</button>
+      <p class="note" id="quickNote" style="margin:6px 0 0"></p>
+      <button class="btn" id="tryBtn" style="margin-top:8px">台本を少しだけ試聴する</button>
     </div>
 
     <div class="card">
@@ -184,6 +230,17 @@ header{margin-bottom:16px}
         <button type="button" data-h="L">左利き</button>
       </div>
       <p class="note">重さ・温かさは、利き手の側から感じやすいとされます。</p>
+    </div>
+
+    <div class="card">
+      <p class="ttl">姿勢</p>
+      <div class="seg" id="postSeg">
+        <button type="button" data-po="">指定しない</button>
+        <button type="button" data-po="supine">あお向け</button>
+        <button type="button" data-po="chair">椅子</button>
+        <button type="button" data-po="armchair">安楽椅子</button>
+      </div>
+      <p class="note">選んだ姿勢に合わせて、導入の案内を変えます。誘導文の導入を書き換えているときは、書き換えた文はそのままにして、前に姿勢の案内を1行足します。</p>
     </div>
 
     <div class="card">
@@ -257,7 +314,10 @@ header{margin-bottom:16px}
     <div class="card">
       <p class="ttl">記録</p>
       <div class="dots" id="dots"></div>
+      <div class="dleg" id="dleg"></div>
+      <div id="fstats"></div>
       <div id="recs"></div>
+      <div id="recMore" style="margin-top:8px;text-align:center"></div>
       <div id="syncWrap">
         <button id="bSync" class="tiny" type="button">☁ 同期</button>
         <div id="syncPanel" style="display:none;margin-top:9px;font-size:12px;line-height:1.7;color:var(--dim)">
@@ -390,6 +450,15 @@ var BASE_CANCEL=[
   {say:"深く息を吸って、ゆっくり吐きます。",hold:8,g:"🌬"},
   {say:"ゆっくり、目を開けてください。おつかれさまでした。",hold:2,g:"👁"}
 ];
+/* 姿勢（端末ごとの設定）。選んだときは、導入の1行目（椅子とあお向けを両方言う行）を
+   その姿勢の案内にする。導入を自分で書き換えているときは、書き換えた文を残して前に足す */
+var POSTURE={
+  supine:{name:"あお向け",line:"あお向けに寝て、楽な姿勢をとってください。腕は体の横に、少し離して置きます。"},
+  chair:{name:"椅子",line:"椅子に浅く腰かけて、楽な姿勢をとってください。足を軽くひらき、手は太ももの上に置いて、頭を少し前に傾けます。"},
+  armchair:{name:"安楽椅子",line:"背もたれのある椅子に深く腰かけて、楽な姿勢をとってください。背中と頭を背もたれにあずけ、腕はひじかけか、太ももの上に置きます。"}
+};
+function hasOwn(o,k){ return !!o&&Object.prototype.hasOwnProperty.call(o,k); }
+function postureOf(p){ return (typeof p==="string"&&hasOwn(POSTURE,p))?POSTURE[p]:null; }
 
 /* ══════ 誘導文の編集 ══════
    既定(BASE_*)はコードに持ち、編集ぶんだけを SCRIPT_KEY に保存する。
@@ -452,6 +521,9 @@ function shortCancel(){
   if(a.length>3)s.push(a[a.length-1]);
   return s.length?s:cloneLines(BASE_CANCEL);
 }
+/* 中断・復帰・異常時に流す消去動作。「みじかく」の練習では短縮版を使わず、いつも全部を流す
+   （練習を短くしたぶん、消去動作まで短くすると、ゆるんだまま終わりやすい） */
+function cancelLines(full){ return full?safeCancel(CANCEL):shortCancel(); }
 function baseStepsCopy(){
   return BASE_STEPS.map(function(s){
     return {id:s.id,name:s.name,always:!!s.always,def:!!s.def,hand:!!s.hand,
@@ -500,7 +572,7 @@ loadScript();
 
 /* ══════ 設定 ══════ */
 var C={steps:{heavy:true},hand:"R",pace:1,bg:"",bgVol:18,wake:true,gateSeen:false,vPitch:1,vRate:0.9,
-       advance:"tap",stageMin:3};
+       advance:"tap",stageMin:3,posture:""};
 var rateSaved=false;
 try{
   var o=JSON.parse(store.get(CFG_KEY)||"null");
@@ -513,6 +585,7 @@ try{
     if(typeof o.wake==="boolean")C.wake=o.wake;
     if(typeof o.gateSeen==="boolean")C.gateSeen=o.gateSeen;
     if(o.advance==="tap"||o.advance==="time")C.advance=o.advance;
+    if(o.posture===""||postureOf(o.posture))C.posture=o.posture;
     if(typeof o.stageMin==="number"&&isFinite(o.stageMin))C.stageMin=Math.min(30,Math.max(0,Math.round(o.stageMin)));
     if(typeof o.vPitch==="number"&&isFinite(o.vPitch))C.vPitch=Math.min(1.2,Math.max(0.8,o.vPitch));
     if(typeof o.vRate==="number"&&isFinite(o.vRate)){ C.vRate=Math.min(1.1,Math.max(0.7,o.vRate)); rateSaved=true; }
@@ -534,6 +607,50 @@ function saveCfg(){try{store.set(CFG_KEY,JSON.stringify(C));}catch(e){}}
    増えすぎたときは、捨てずに一度だけ知らせる。 */
 var HIST_MAX=20000;   // 目安。毎日続けても50年ぶん。超えても消さない
 var histWarned=false;
+/* 記録の中身（新しい版で足したもの）。level は以前からの 0〜3 のまま残す
+   （古い版の端末は 3 より大きい level を捨てる）。新しいことは別の項目に入れる:
+     stepIds  … 使った段階の id（steps は表示名のまま）
+     feel     … 公式ごとの感じ方 {id: 0〜3}。level には、その平均を入れる（古い版の表示用）
+     react    … 出たこと（REACTS の記号）。odd は、あくび以外があったか（古い版の「反応あり」）
+     note     … ひとことメモ
+     cancelEnd… 消去動作の終わり方（CEND）。cancelWhy はそうなった理由（CWHY）
+     tap      … タッチで進んだとき、段階の始まりから触るまでの秒数 {id:{s, cap}}（cap＝上限で進んだ）
+     posture / quick … 姿勢・「みじかく」で行ったか
+     ed       … 記録を直した時刻（同期で、直した方を残すため） */
+var FEEL_BTN=["感じなかった","すこし","はっきり","とてもはっきり"];
+var FEEL_TXT=["感じなかった","すこし感じた","はっきり感じた","とてもはっきり"];
+var FEEL_BTN_H=["感じ<wbr>なかった","すこし","はっきり","とても<wbr>はっきり"];   // ボタンの中で折り返す位置
+/* 出たこと。ピクつきや涙などは、緊張がほどけるときに出ることがある（自律性発散）。
+   だるさ・ぼんやりが残るのは、消去動作が足りないときに出やすい */
+var REACTS=[["twitch","ピクつき"],["tears","涙"],["yawn","あくび"],["restless","落ち着かない"],
+            ["tired","だるさが残る"],["foggy","ぼんやりが残る"],["other","その他…"]];
+var CEND={full:"最後まで",short:"短縮",skip:"飛ばした",self:"自分で行った"};
+var CWHY={stop:"途中でやめた",stall:"止まっていた",resume:"復帰",error:"うまく進まなかった"};
+function primList(a){ return Array.isArray(a)?a.filter(function(s){ return s!=null&&typeof s!=="object"&&s!==""; }).map(String):[]; }
+function normFeel(f){
+  var o={};
+  if(!f||typeof f!=="object"||Array.isArray(f))return o;
+  for(var k in f){
+    if(!hasOwn(f,k)||k==="__proto__")continue;
+    var v=(f[k]===null||f[k]===undefined||f[k]==="")?NaN:+f[k];
+    if(isFinite(v)&&v>=0&&v<=3)o[k]=Math.round(v);
+  }
+  return o;
+}
+function normTap(t){
+  var o={};
+  if(!t||typeof t!=="object"||Array.isArray(t))return o;
+  for(var k in t){
+    if(!hasOwn(t,k)||k==="__proto__")continue;
+    var v=t[k], s=+((v&&typeof v==="object")?v.s:v);
+    if(!isFinite(s)||s<0)continue;
+    o[k]={s:Math.min(86400,Math.round(s))};
+    if(v&&typeof v==="object"&&v.cap)o[k].cap=true;
+  }
+  return o;
+}
+/* あくび以外の「出たこと」があったか（以前の「気になる反応」と同じ意味） */
+function oddOf(react){ return primList(react).some(function(c){ return c!=="yawn"; }); }
 function pad2(n){ return (n<10?"0":"")+n; }
 /* 端末の暦での日付（YYYY-MM-DD）。toISOString() は世界標準時なので、
    日本の朝9時前の練習が前の日の記録になってしまう */
@@ -553,7 +670,28 @@ function normRec(x){
   var lv=(x.level===null||x.level===undefined||x.level==="")?NaN:+x.level;
   o.level=(isFinite(lv)&&lv>=0&&lv<=3)?Math.round(lv):null;
   o.odd=!!x.odd;
+  // 新しい版で足した項目も形だけそろえる（崩れた値で描画が落ちないように）。無い項目は足さない
+  if("stepIds" in o)o.stepIds=primList(x.stepIds);
+  if("feel" in o)o.feel=normFeel(x.feel);
+  if("react" in o)o.react=primList(x.react).slice(0,20);
+  if("note" in o)o.note=String(x.note==null?"":x.note).slice(0,500);
+  if("cancelEnd" in o&&!hasOwn(CEND,String(x.cancelEnd)))delete o.cancelEnd;
+  if("cancelWhy" in o){ if(hasOwn(CWHY,String(x.cancelWhy)))o.cancelWhy=String(x.cancelWhy); else delete o.cancelWhy; }
+  if("tap" in o)o.tap=normTap(x.tap);
+  if("posture" in o&&!postureOf(x.posture))delete o.posture;
+  if("quick" in o)o.quick=!!x.quick;
+  if("ed" in o){ var ed=+x.ed; if(isFinite(ed)&&ed>0)o.ed=ed; else delete o.ed; }
   return o;
+}
+/* 空の項目は持ち回らない（同期のファイルを小さく保つ） */
+function trimRec(r){
+  if(!r)return r;
+  if(!r.note)delete r.note;
+  if(!r.cancelWhy)delete r.cancelWhy;
+  if(!r.posture)delete r.posture;
+  if(!r.quick)delete r.quick;
+  if(r.tap&&!Object.keys(r.tap).length)delete r.tap;
+  return r;
 }
 function guardHist(a){
   a=Array.isArray(a)?a:[];
@@ -565,9 +703,29 @@ function guardHist(a){
   }
   return out;
 }
-var H=[], clearedAt=0;
+/* 消した記録（1件ずつ）。消すだけだと、ほかの端末との同期で戻ってくるので、
+   消した記録の鍵（時刻）を持ち回る（暗室の clearedKeys と同じ考え方）。
+   以前からの clearedAt（その時刻より前をすべて消す）も、そのまま効かせる。
+   この端末では CLR_KEY に {at, keys} の形で置く（以前は時刻の数字だけ。入口のまとめて書き出しは
+   文字列のまま運ぶので、消した記録の鍵もバックアップに入る） */
+var H=[], clearedAt=0, CK=[];
+function recKey(x){ return String(+(x&&x.ts)); }
+function cleanKeys(a){
+  var out=[], seen=Object.create(null);
+  if(!Array.isArray(a))return out;
+  for(var i=0;i<a.length;i++){ var k=a[i]; if(typeof k==="number"&&isFinite(k))k=String(k); if(typeof k==="string"&&k&&!seen[k]){ seen[k]=1; out.push(k); } }
+  return out;
+}
+function loadCleared(){
+  var raw=store.get(CLR_KEY), o=null;
+  try{ o=JSON.parse(raw||"0"); }catch(e){ o=parseInt(raw,10)||0; }
+  if(typeof o==="number"){ clearedAt=isFinite(o)?o:0; CK=[]; return; }   // 以前の形（時刻だけ）
+  clearedAt=(o&&isFinite(+o.at))?(+o.at||0):0;
+  CK=cleanKeys(o&&o.keys);
+}
+function saveCleared(){ try{ store.set(CLR_KEY,JSON.stringify({at:clearedAt||0,keys:CK})); }catch(e){} }
 try{ var r=JSON.parse(store.get(KEY)||"[]"); if(Array.isArray(r))H=guardHist(r); }catch(e){}
-try{ clearedAt=parseInt(store.get(CLR_KEY)||"0",10)||0; }catch(e){}
+try{ loadCleared(); }catch(e){}
 function saveHist(){H=guardHist(H);try{store.set(KEY,JSON.stringify(H));}catch(e){} if(sync)sync.touch(true);}
 
 /* ══════ 声 ══════
@@ -947,14 +1105,44 @@ function expand(line, idx){
 function stageMs(){ var m=+C.stageMin; return (isFinite(m)&&m>0)?Math.min(30,m)*60000:0; }
 function tapMode(){ return C.advance==="tap"; }
 var TAP_MAX=300000;   // 「台本どおり」でタッチを待つときの上限（5分）
-function buildSeq(){
-  var seq=[], slowN=0, budget=stageMs(), tap=tapMode();
+/* 「みじかく」：その回だけ、導入を短くし、公式を1分ずつにする（保存してある設定は変えない）。
+   公式の1回りは途中で切らずに読み切る。消去動作は、いつもどおり全部流す */
+var QUICK_MS=60000;
+function quickIntro(){
+  var p=postureOf(C.posture);
+  var a=p?[{say:p.line,hold:4},{say:"目を、そっと閉じてください。",hold:4,g:"🌙"}]
+         :[{say:"楽な姿勢をとって、目を、そっと閉じてください。",hold:4,g:"🌙"}];
+  a.push({say:"何度か、ゆっくり息を吐きます。",hold:6,g:"🌬"});
+  return a;
+}
+/* 導入を自分で書き換えているか（読み上げる中身で比べる） */
+function introEdited(lines){ return JSON.stringify(normLines(lines))!==JSON.stringify(normLines(BASE_STEPS[0].lines)); }
+function postureIntro(lines){
+  var p=postureOf(C.posture);
+  if(!p)return lines;
+  var pl={say:p.line,hold:6};
+  // 書き換えた導入は上書きしない。前に姿勢の案内を1行足すだけにする
+  if(introEdited(lines))return [pl].concat(lines);
+  // 既定の導入は、1行目（椅子とあお向けを両方言う行）を、選んだ姿勢の案内に置き換える
+  return [pl].concat(lines.slice(1));
+}
+/* その段階で読む行 */
+function stepLines(s,quick){
+  var lines=s.lines||[];
+  if(s.id==="intro")return quick?quickIntro():postureIntro(lines);
+  if(s.id==="calm"&&quick)return lines.slice(0,1);
+  return lines;
+}
+function buildSeq(quick){
+  var seq=[], slowN=0, budget=quick?QUICK_MS:stageMs(), tap=tapMode();
   activeSteps().forEach(function(s){
-    seq.push({mark:s.name});
+    // sid は段階の id（タッチで進むときに、段階ごとの「触るまでの時間」を残すため）
+    seq.push({mark:s.name,sid:s.id,always:!!s.always});
+    var lines=stepLines(s,!!quick);
     // 導入・背景公式は、暗示のくり返しではないので増やさない
     var cap=s.always?0:budget, used=0, rounds=0;
     do{
-      (s.lines||[]).forEach(function(l){
+      lines.forEach(function(l){
         var t=expand(l);
         if(!t)return;                       // 編集中の書きかけ（空行）は読み上げない
         // 繰り返しの暗示ほど、ほんの少しずつゆっくりにする
@@ -968,7 +1156,9 @@ function buildSeq(){
     }while(cap&&used<cap&&rounds<30);
     /* タッチで進むときは、この段階が終わっても勝手に次へ行かず、合図を待つ。
        ただし待ちっぱなしにはしない（消去動作にたどり着けなくなるため）。 */
-    if(tap) seq.push({wait:true, ms:Math.max(0,Math.min(900000,(budget||TAP_MAX)-used)), step:s.name});
+    // 「みじかく」では、準備の段階（導入・背景公式）は待たずに進む（全体を2〜3分に収めるため。
+    // 触れば、ふだんどおり先へ進める）
+    if(tap&&!(quick&&s.always)) seq.push({wait:true, ms:Math.max(0,Math.min(900000,(budget||TAP_MAX)-used)), step:s.name, sid:s.id});
   });
   seq.push({mark:"消去動作",cancel:true});
   // 消去動作は必ず入れる。編集途中や壊れた台本でも既定に落として空にはしない。
@@ -1018,6 +1208,10 @@ function markPending(steps,pend,dead){
   pend=pend||{};
   var o={at:(+pend.at)||Date.now(),beat:Date.now(),tries:(+pend.tries)||0,
          steps:steps||[],id:String(pend.id||"")};
+  // 復帰したときの記録と、「みじかく」の練習の消去動作（全部を流す）に使う
+  if(Array.isArray(pend.ids))o.ids=pend.ids;
+  if(postureOf(pend.posture))o.posture=pend.posture;
+  if(pend.quick)o.quick=true;
   // ここまでに練習した長さ（中断していた時間は除く）。落ちたあとの復帰で、記録の長さに使う
   try{ if(R&&!R.preview)o.sec=runSec(); }catch(e){}
   // ページを離れた印。開き直したとき（別のタブ・アプリの再起動でも）、
@@ -1153,13 +1347,17 @@ function restartRun(){
   try{clearTimeout(R.t);}catch(e){}
   stopSpeech();
   R.tok=++tokSeq;
-  R.seq=R.preview?previewSeq():buildSeq();
+  // 「みじかく」で始めた練習は、やり直しても「みじかく」のまま
+  R.seq=R.preview?previewSeq():buildSeq(R.quick);
   R.i=-1; R.elapsed=0; R.total=totalSec(R.seq);
   R.startedAt=Date.now(); R.pausedMs=0; R.fails=0; R.phase="run";
+  R.tapLog={}; R.stg=null; R.cend=""; R.cwhy="";
   if(!R.preview){
     R.steps=activeSteps().map(function(s){return s.name;});
+    R.ids=activeSteps().map(function(s){return s.id;});
     // 目印も押し直す（始めた時刻は、復帰したときの記録の長さに使う）
-    R.pend={at:Date.now(),tries:((R.pend&&+R.pend.tries)||0),id:(R.pend&&R.pend.id)||newPendId()};
+    R.pend={at:Date.now(),tries:((R.pend&&+R.pend.tries)||0),id:(R.pend&&R.pend.id)||newPendId(),
+            ids:R.ids,posture:R.posture,quick:!!R.quick};
     markPending(R.steps,R.pend); beatOn(); wakeOn(); bgStart();
   }
   try{ $("glyph").textContent=""; $("line").textContent=""; $("barIn").style.width="0"; $("left").textContent=""; }catch(e){}
@@ -1167,17 +1365,26 @@ function restartRun(){
   ensureAudio(); softTone();
   step();
 }
-function begin(preview){
+function begin(preview,quick){
   if(R)return;
+  if(!preview){
+    // 答えていない記録カードは、新しい練習の前に、そのときの中身で記録しておく
+    // （以前の版と同じく、終えた練習の記録は必ず残る）。直している途中のカードは閉じる
+    try{ commitDraft(true); }catch(e){}
+    try{ if(CARD&&CARD.mode==="edit")hideCard(); }catch(e){}
+  }
+  quick=!preview&&!!quick;
   ensureAudio(); loadVoice(); pickVoice();
-  var seq = preview ? previewSeq() : buildSeq();
-  var names=activeSteps().map(function(s){return s.name;});
-  R={seq:seq,i:-1,total:totalSec(seq),elapsed:0,preview:!!preview,startedAt:Date.now(),steps:names,tok:++tokSeq,phase:"run"};
+  var seq = preview ? previewSeq() : buildSeq(quick);
+  var act=activeSteps();
+  var names=act.map(function(s){return s.name;}), ids=act.map(function(s){return s.id;});
+  R={seq:seq,i:-1,total:totalSec(seq),elapsed:0,preview:!!preview,startedAt:Date.now(),steps:names,tok:++tokSeq,phase:"run",
+     ids:ids,quick:quick,posture:preview?"":(C.posture||""),tapLog:{},stg:null,cend:"",cwhy:""};
   $("resume").style.display="none"; resumeP=null;
   $("home").style.display="none"; $("run").style.display="block";
   $("glyph").textContent=""; $("barIn").style.width="0";
   restartArm=0; restartGuard=0; skipArm=0; stopGuard=0; paintStop(); paintRunCtl();
-  if(!preview){ R.pend={at:Date.now(),tries:0,id:newPendId()}; markPending(names,R.pend); beatOn(); wakeOn(); bgStart(); }
+  if(!preview){ R.pend={at:Date.now(),tries:0,id:newPendId(),ids:ids,posture:R.posture,quick:quick}; markPending(names,R.pend); beatOn(); wakeOn(); bgStart(); }
   softTone();
   step();
 }
@@ -1206,7 +1413,7 @@ function stepFail(){
   R.fails=(R.fails||0)+1;
   if(R.fails>3){
     if(R.phase==="cancel"){ try{bareCancel();}catch(e){ try{finish();}catch(e2){} } return; }
-    try{ toCancel("うまく進められませんでした。消去動作をして終わります。"); }
+    try{ toCancel("うまく進められませんでした。消去動作をして終わります。","error"); }
     catch(e){ try{bareCancel();}catch(e2){ try{finish();}catch(e3){} } }
     return;
   }
@@ -1220,12 +1427,16 @@ function stepFail(){
    （ここが無いと、まさに守るべき消去動作が黙って落ちる） */
 function bareCancel(){
   var steps=(R&&R.steps)||[], pend=R&&R.pend, dur=runSec();
+  // 記録に残す中身は引き継ぐ（「みじかく」なら、ここでも消去動作は全部流す）
+  var keep=R?{ids:R.ids,quick:!!R.quick,posture:R.posture||"",tap:R.tapLog||{}}:{quick:!!(pend&&pend.quick)};
   clearPause();
   try{clearTimeout(R&&R.t);}catch(e){}
   try{stopSpeech();}catch(e){}
-  var list=[]; try{ list=shortCancel(); }catch(e){ list=cloneLines(BASE_CANCEL); }
+  var list=[]; try{ list=cancelLines(keep.quick); }catch(e){ list=cloneLines(BASE_CANCEL); }
   R={seq:[],i:0,total:0,elapsed:0,preview:false,startedAt:Date.now()-(isFinite(dur)?dur:0)*1000,
-     steps:steps,tok:++tokSeq,phase:"cancel",bare:true,pend:pend};
+     steps:steps,tok:++tokSeq,phase:"cancel",bare:true,pend:pend,
+     ids:keep.ids,quick:keep.quick,posture:keep.posture,tapLog:keep.tap||{},stg:null,
+     cend:keep.quick?"full":"short",cwhy:"error"};
   skipArm=0;
   try{ wakeEnsure(); }catch(e){}   // 消去動作の途中で画面が消えると、読み上げが止まる
   var i=0;
@@ -1262,10 +1473,22 @@ function paintProgress(){
    目を閉じたまま進められるよう、画面のどこを触ってもいい（ボタンの上だけは別）。
    いまの段階の残りは飛ばす。消去動作の中では効かない（飛ばしてはいけないので）。 */
 var lastJump=0;
+/* 段階の始まりから触るまでの秒数を残す（中断していた時間は除く）。cap＝触らずに上限で進んだ。
+   準備の段階（導入・背景公式）は残さない。点数ではなく、本人が様子を見るための控え */
+function noteTap(cap){
+  var g=R&&R.stg;
+  if(!g||R.preview||!tapMode())return;
+  R.stg=null;
+  if(!g.f)return;
+  var s=Math.max(0,Math.round((Date.now()-g.at-Math.max(0,pausedMsNow()-g.p0))/1000));
+  if(!R.tapLog)R.tapLog={};
+  R.tapLog[g.sid]=cap?{s:s,cap:true}:{s:s};
+}
 function nextStage(){
   if(!R||R.paused||R.preview||R.bare||R.phase==="cancel")return false;
   if(Date.now()-lastJump<800)return false;      // 二度押し・手が触れただけ、を拾わない
   lastJump=Date.now();
+  try{ noteTap(false); }catch(e){}
   var sq=R.seq||[], i=R.i+1;
   while(i<sq.length&&!(sq[i]&&sq[i].mark))i++;
   try{clearTimeout(R.t);}catch(e){}
@@ -1290,6 +1513,8 @@ function runStep(){
   var it=R.seq[R.i]||{};
   if(it.mark){
     $("stage").textContent=it.mark;
+    // 段階の始まり（タッチで進むとき、触るまでの時間を記録に残すため）
+    R.stg=(it.sid&&!R.preview)?{sid:String(it.sid),at:Date.now(),p0:pausedMsNow(),f:!it.always}:null;
     // 消去動作に入ったら、一時停止・やり直し・タッチでの読み飛ばしは引っ込める
     if(it.cancel){
       R.phase="cancel"; skipArm=0; paintStop(); paintRunCtl(); chime();
@@ -1311,7 +1536,12 @@ function runStep(){
     // 読み上げそのものは止めない（言いかけの文は最後まで言わせる）。
     R.tok=++tokSeq; speakGen++;
     clearTimeout(R.t);
-    R.t=setTimeout(step,wms);
+    var wsid=String(it.sid||"");
+    R.t=setTimeout(function(){
+      // 触らないまま上限で進んだ段階には、その印を付けて残す
+      try{ if(R&&R.stg&&R.stg.sid===wsid)noteTap(true); }catch(e){}
+      step();
+    },wms);
     return;
   }
   var say=String(it.say==null?"":it.say);
@@ -1352,7 +1582,7 @@ function runStep(){
       if(late>HIDE_MS){
         if(pageHidden()){ R.held=true; return; }
         // 練習の段階で長く止まっていたときは、見えたときの見張りと同じく消去動作へ
-        if(!isC&&!R.preview&&late>STALL_MS){ toCancel(STALL_MSG); return; }
+        if(!isC&&!R.preview&&late>STALL_MS){ toCancel(STALL_MSG,"stall"); return; }
         rereadLine(); return;
       }
       if(spoken&&speechBusy()){
@@ -1373,6 +1603,8 @@ function finish(){
   // 続きは見えたときに backFromHidden が運ぶ（長く見えていなければ、最後の行を読み直してから）
   if(R&&!R.preview&&pageHidden()){ R.held=true; try{clearTimeout(R.t);}catch(e){} return; }
   var wasPreview=R&&R.preview, dur=runSec(), steps=(R&&R.steps)||[], pid=R&&R.pend&&R.pend.id;
+  // 記録カードに渡す中身（消去動作の終わり方・触るまでの時間・姿勢など）
+  var info=R?{ids:R.ids,cend:R.cend||"full",cwhy:R.cwhy||"",posture:R.posture||"",quick:!!R.quick,tap:R.tapLog||{}}:null;
   clearTimeout(pauseWarnT); pauseWarnT=0;
   try{clearTimeout(R&&R.t);}catch(e){}
   R=null; skipArm=0;
@@ -1387,18 +1619,26 @@ function finish(){
     $("run").style.display="none"; $("resume").style.display="none"; $("home").style.display="block";
     $("barIn").style.width="0"; $("glyph").textContent=""; $("line").textContent=""; $("left").textContent="";
   }catch(e){}
-  if(wasPreview)return;
-  try{ askRecord(dur,steps); }catch(e){}
+  if(wasPreview||!info)return;
+  // 記録カードは、消去動作が最後まで済んだここでだけ出す（練習の途中や消去動作の前には出さない）
+  try{ openDraft(dur,steps,info); }catch(e){}
 }
-/* 消去動作（短縮版）だけを流す。中断・復帰・異常時の共通の出口。
-   目印はここでも張り直す。消去動作の最中にもう一度落ちても拾い直せるように。 */
-function runCancelOnly(steps,dur,pend){
+/* 消去動作だけを流す。中断・復帰・異常時の共通の出口（ふだんは短縮版。「みじかく」の練習は全部）。
+   目印はここでも張り直す。消去動作の最中にもう一度落ちても拾い直せるように。
+   info: {why, ids, posture, quick, tap}（記録に残す中身。why は CWHY の記号） */
+function runCancelOnly(steps,dur,pend,info){
+  info=info||{};
+  pend=pend||{at:Date.now(),tries:0,id:newPendId()};
+  var full=!!(info.quick||pend.quick);
   var seq=[{mark:"消去動作",cancel:true}];
-  shortCancel().forEach(function(l){ seq.push({say:expand(l),hold:l.hold,g:l.g,step:"消去動作",cancel:true}); });
+  cancelLines(full).forEach(function(l){ seq.push({say:expand(l),hold:l.hold,g:l.g,step:"消去動作",cancel:true}); });
   R={seq:seq,i:-1,total:totalSec(seq),elapsed:0,preview:false,
      startedAt:Date.now()-(isFinite(dur)?dur:0)*1000,steps:steps||[],tok:++tokSeq,phase:"cancel",
-     pend:pend||{at:Date.now(),tries:0,id:newPendId()}};
+     pend:pend,ids:Array.isArray(info.ids)?info.ids:(Array.isArray(pend.ids)?pend.ids:null),
+     quick:full,posture:info.posture||pend.posture||"",tapLog:info.tap||{},stg:null,
+     cend:full?"full":"short",cwhy:info.why||""};
   if(!R.pend.id)R.pend.id=newPendId();
+  if(full)R.pend.quick=true;
   skipArm=0;
   markPending(R.steps,R.pend); beatOn(); paintStop(); paintRunCtl();
   // 画面が消えていて止まった練習から来たときは、画面ロックが外れている。取り直さないと、
@@ -1409,14 +1649,16 @@ function runCancelOnly(steps,dur,pend){
   $("barIn").style.width="0";
   step();
 }
-function toCancel(msg){
+/* why: やめた(stop)・止まっていた(stall)・うまく進まなかった(error)。記録の「消去動作の終わり方」に残す */
+function toCancel(msg,why){
   if(!R||R.preview)return;
   var dur=runSec(), steps=R.steps, pend=R.pend;
+  var info={why:why||"",ids:R.ids,posture:R.posture,quick:!!R.quick,tap:R.tapLog};
   clearPause();
   try{clearTimeout(R.t);}catch(e){}
   stopSpeech();
   if(msg)toast(msg,9000);
-  runCancelOnly(steps,dur,pend);
+  runCancelOnly(steps,dur,pend,info);
   // 「やめる」のダブルタップの2回目で、すぐに飛ばす構えにならないように
   stopGuard=Date.now()+ARM_MIN;
 }
@@ -1424,6 +1666,7 @@ function toCancel(msg){
    最後の1行まで飛ばして、そこで終える。 */
 function skipCancelEnd(){
   if(!R)return;
+  R.cend="skip";   // 記録に「飛ばした」と残す（責める言い方はしない。本人が振り返るための控え）
   try{clearTimeout(R.t);}catch(e){}
   stopSpeech();
   toast("消去動作の最後だけ流します。手足は、しっかり動かしてください。",7000);
@@ -1457,7 +1700,7 @@ function abort(){
     setTimeout(function(){ if(!skipArmed())paintStop(); },ARM_MS+200);
     return;
   }
-  toCancel(null);
+  toCancel(null,"stop");
 }
 /* マウス・指で押したボタンからは焦点を外す。残っていると、次のスペース／エンター
    （タッチで進むの合図）がそのボタンを押してしまい、一時停止や「最後まで飛ばす」が勝手に動く。
@@ -1564,7 +1807,7 @@ document.addEventListener("visibilitychange",function(){
   // 何事もなかったように続けず、消去動作に移って必ず終わらせる。
   if(R&&!R.preview&&!R.paused&&R.phase!=="cancel"&&R.stepAt&&
      (Date.now()-R.stepAt-(R.stepWait||0))>STALL_MS){
-    toCancel(STALL_MSG);
+    toCancel(STALL_MSG,"stall");
     return;
   }
   try{ backFromHidden(gap>HIDE_MS); }catch(e){ step(); }
@@ -1596,20 +1839,322 @@ window.addEventListener("pageshow",function(e){
     try{ markPending(R.steps,R.pend); }catch(e){}   // 離れた印を消して「まだ生きている」に戻す
     beatOn(); toast("中断したままです。「再開する」で続けられます。終わるときは「やめる」を押してください。",8000); return;
   }
-  toCancel("練習が止まっていました。このまま消去動作をして終わります。");
+  toCancel("練習が止まっていました。このまま消去動作をして終わります。","stall");
 });
 
-/* ══════ 記録 ══════ */
-function askRecord(dur,steps){
-  var f=window.prompt("感じ方はいかがでしたか。\n0=感じなかった / 1=すこし / 2=はっきり / 3=とてもはっきり\n（空欄で記録だけ残します）","1");
-  if(f===null)f="";
-  var lvl=parseInt(f,10); if(isNaN(lvl)||lvl<0||lvl>3)lvl=null;
-  var odd=window.confirm("気になる反応（ピクつき・涙・落ち着かなさなど）はありましたか？\nOK=あった / キャンセル=なかった");
+/* ══════ 記録 ══════
+   練習を終えたら（消去動作が最後まで済んでから）、画面の中のカードで聞く。
+   以前は window.prompt で「1」が入ったまま出していたため、OK だけで「すこし」になり、
+   確認の「キャンセル」が「反応なし」の意味になっていた。公式が2つでも感じ方は1つしか残せなかった。
+   答える前のカードは DRAFT_KEY に置き、開き直しても消えないようにする（同期はしない）。 */
+var DRAFT_KEY="autogenic:recDraft";
+var DRAFT=null;   // 終えたばかりで、まだ記録していない練習
+var CARD=null;    // いま出しているカード {mode:"new"|"edit", rec, react, feelT, reactT, delArm}
+var recShow=12;   // 一覧に出す件数（「もっと見る」で増やす）
+var LIMB_AGAIN="手をぎゅっと握ってひらく・腕を曲げて伸ばす・大きく伸びをする、をもう一度ゆっくり行ってください。";
+function stepById(id){ for(var i=0;i<STEPS.length;i++){ if(STEPS[i].id===id)return STEPS[i]; } return null; }
+function baseById(id){ for(var i=0;i<BASE_STEPS.length;i++){ if(BASE_STEPS[i].id===id)return BASE_STEPS[i]; } return null; }
+/* 以前の版の記録は段階の表示名しか持っていない。いまの台本と既定の台本の名前から id を引く */
+function namesToIds(names){
+  var map={};
+  BASE_STEPS.forEach(function(s){ map[s.name]=s.id; });
+  STEPS.forEach(function(s){ map[s.name]=s.id; });
+  return primList(names).map(function(n){ return hasOwn(map,n)?map[n]:"n:"+n; });
+}
+function recIds(r){ return (r&&Array.isArray(r.stepIds)&&r.stepIds.length)?r.stepIds:namesToIds(r&&r.steps); }
+function isFormulaId(id){
+  if(id==="intro"||id==="calm"||id==="n:導入"||id==="n:背景公式")return false;
+  var s=stepById(id)||baseById(id);
+  return !(s&&s.always);
+}
+function recFormulas(r){ return recIds(r).filter(isFormulaId); }
+function fullName(id,r){
+  var s=stepById(id)||baseById(id); if(s)return s.name;
+  if(r&&Array.isArray(r.stepIds)&&Array.isArray(r.steps)){ var i=r.stepIds.indexOf(id); if(i>=0&&r.steps[i])return String(r.steps[i]); }
+  return String(id).indexOf("n:")===0?String(id).slice(2):String(id);
+}
+/* 「第1公式 — 重感」→「重感」 */
+function shortName(n){ var a=String(n||"").split(/\s*[—–]\s*/); return String(a[a.length-1]||n).trim()||String(n||""); }
+function fname(id,r){ return shortName(fullName(id,r)); }
+/* その記録での、その公式の感じ方（0〜3。無ければ null） */
+function feelOf(r,id){
+  if(r&&r.feel&&typeof r.feel==="object"&&!Array.isArray(r.feel)){
+    var v=r.feel[id]; return (typeof v==="number"&&v>=0&&v<=3)?v:null;
+  }
+  // 以前の版の記録（感じ方は1つだけ）。公式が1つの回だけ、その公式の感じ方として読む
+  if(r&&typeof r.level==="number"){ var fs=recFormulas(r); if(fs.length===1&&fs[0]===id)return r.level; }
+  return null;
+}
+function oddRec(r){ return (Array.isArray(r.react)&&r.react.length)?oddOf(r.react):!!r.odd; }
+function hasReact(r,c){ return Array.isArray(r.react)&&r.react.indexOf(c)>=0; }
+function reactSet(r){
+  var o={};
+  primList(r&&r.react).forEach(function(c){ o[c]=1; });
+  // 以前の版の「反応あり」は、中身が分からないので「その他」として出す（外せば消える）
+  if(r&&r.odd&&!(Array.isArray(r.react)&&r.react.length))o.other=1;
+  return o;
+}
+function hhmm(t){ var d=new Date(t); return pad2(d.getHours())+":"+pad2(d.getMinutes()); }
+function recIndex(ts){ var k=String(+ts); for(var i=0;i<H.length;i++){ if(recKey(H[i])===k)return i; } return -1; }
+function dayCount(day,skipTs){
+  var n=0; H.forEach(function(x){ if(x&&+x.ts!==+skipTs&&localDate(+x.ts)===day)n++; }); return n;
+}
+function cendText(x){
+  if(!x||!hasOwn(CEND,String(x.cancelEnd)))return "";
+  var t="消去動作 "+CEND[x.cancelEnd];
+  if(x.cancelEnd!=="self"&&hasOwn(CWHY,String(x.cancelWhy)))t+="（"+CWHY[x.cancelWhy]+"）";
+  return t;
+}
+/* 答えていない記録カード */
+function saveDraft(){ try{ if(DRAFT)store.set(DRAFT_KEY,JSON.stringify(DRAFT)); else store.del(DRAFT_KEY); }catch(e){} }
+function loadDraft(){
+  DRAFT=null;
+  try{ DRAFT=normRec(JSON.parse(store.get(DRAFT_KEY)||"null")); }catch(e){ DRAFT=null; }
+  if(DRAFT&&recIndex(DRAFT.ts)>=0){ DRAFT=null; saveDraft(); }   // もう記録してある（記録した直後に閉じた）
+  if(DRAFT&&!DRAFT.feel)DRAFT.feel={};
+}
+function openDraft(dur,steps,info){
+  if(DRAFT)commitDraft(true);           // 前の練習のカードが残っていたら、そのときの中身で記録しておく
   var ts=Date.now();
-  H.push({ts:ts,date:localDate(ts),sec:dur,steps:Array.isArray(steps)?steps:[],level:lvl,odd:!!odd});
-  saveHist(); renderRecs();
-  if(odd) toast("気になる反応が続くようなら、段階を減らすか、間を長めにしてみてください。強く不快なときは中止してください。",9000);
-  else toast("おつかれさまでした。記録しました。",4000);
+  DRAFT=trimRec(normRec({ts:ts,date:localDate(ts),sec:dur,steps:Array.isArray(steps)?steps:[],
+    stepIds:Array.isArray(info.ids)?info.ids:namesToIds(steps),level:null,odd:false,feel:{},react:[],note:"",
+    cancelEnd:info.cend||"full",cancelWhy:info.cwhy||"",posture:info.posture||"",quick:!!info.quick,tap:info.tap||{}}));
+  saveDraft();
+  showCard("new",DRAFT,true);
+}
+/* カードの中身から level・odd をそろえる（level は公式ごとの感じ方の平均。古い版の端末の表示用） */
+function settleFeel(r){
+  var f=normFeel(r.feel), ks=Object.keys(f), sum=0;
+  ks.forEach(function(k){ sum+=f[k]; });
+  r.feel=f; r.level=ks.length?Math.round(sum/ks.length):null;
+}
+function settleNote(r){
+  var nt=String(r.note==null?"":r.note).replace(/\s+/g," ").trim().slice(0,200);
+  if(nt)r.note=nt; else delete r.note;
+}
+function upsertRec(r){ var i=recIndex(r.ts); if(i>=0)H[i]=r; else H.push(r); }
+/* 答えていない練習を記録する。silent=新しい練習を始めたときなど（知らせない） */
+function commitDraft(silent){
+  if(!DRAFT)return null;
+  var r=DRAFT; DRAFT=null; saveDraft();
+  if(CARD&&CARD.mode==="new")hideCard();
+  settleFeel(r);
+  r.react=REACTS.map(function(x){ return x[0]; }).filter(function(c){ return hasReact(r,c); });
+  r.odd=oddOf(r.react);
+  settleNote(r);
+  r=trimRec(normRec(r));
+  if(!r)return null;
+  upsertRec(r); saveHist(); renderRecs();
+  if(!silent){
+    if(hasReact(r,"tired")||hasReact(r,"foggy")) toast("記録しました。だるさやぼんやりが残るときは、"+LIMB_AGAIN,10000);
+    else if(r.odd) toast("気になる反応が続くようなら、段階を減らすか、間を長めにしてみてください。強く不快なときは中止してください。",9000);
+    else toast("おつかれさまでした。記録しました。",4000);
+  }
+  return r;
+}
+function cardHtml(mode,r){
+  var fs=recFormulas(r), h="", meta=[], today=localDate(Date.now()), day=localDate(+r.ts);
+  h+='<p class="ttl">'+(mode==="edit"?"記録を直す":"練習の記録")+'</p>';
+  meta.push((day===today?"":day.slice(5).replace("-","/")+" ")+hhmm(+r.ts)+" · "+fmt(r.sec));
+  if(mode==="new"&&day===today)meta.push("きょう"+(dayCount(day,r.ts)+1)+"回目");
+  if(r.quick)meta.push("みじかく");
+  if(postureOf(r.posture))meta.push(POSTURE[r.posture].name);
+  h+='<p class="rcm">'+esc(meta.join(" · "))+'</p>';
+  if(mode==="new"&&(r.cancelEnd==="short"||r.cancelEnd==="skip"))
+    h+='<p class="note" style="margin:4px 0 0">消去動作が短めでした。だるさやぼんやりが残るときは、'+esc(LIMB_AGAIN)+'</p>';
+  else if(mode==="edit"&&cendText(r))h+='<p class="rcm">'+esc(cendText(r))+'</p>';
+  fs.forEach(function(id){
+    var v=feelOf(r,id);
+    h+='<p class="rfn">'+esc(fname(id,r))+'の感じ方</p><div class="lvrow" data-sid="'+esc(id)+'">';
+    for(var i=0;i<4;i++) h+='<button type="button" data-lv="'+i+'" aria-pressed="'+(v===i)+'"'+(v===i?' class="on"':'')+'>'+FEEL_BTN_H[i]+'</button>';
+    h+='</div>';
+  });
+  var on=reactSet(r);
+  h+='<p class="rfn">出たこと（あれば）</p><div class="chips">';
+  REACTS.forEach(function(x){ h+='<button type="button" class="chip'+(on[x[0]]?' on':'')+'" data-rc="'+x[0]+'" aria-pressed="'+!!on[x[0]]+'">'+esc(x[1])+'</button>'; });
+  h+='</div><p class="note" style="margin-top:7px">ピクつきや涙などは、練習中に出ることがあります（自律性発散）。多くは問題ありませんが、強く不快なときは中止してください。</p>';
+  h+='<input class="rnote" id="rcNote" type="text" maxlength="200" aria-label="ひとことメモ" placeholder="ひとことメモ（なくてもかまいません）" value="'+esc(r.note||"")+'">';
+  h+='<div class="row rcbtns">'+(mode==="edit"
+      ?'<button class="btn go" type="button" id="rcSave">保存する</button><button class="btn" type="button" id="rcCancel">やめる</button>'
+      :'<button class="btn go" type="button" id="rcSave">記録する</button><button class="btn" type="button" id="rcSkip">記録しない</button>')+'</div>';
+  if(mode==="edit")h+='<div style="margin-top:10px;text-align:right"><button class="tiny" type="button" id="rcDel">この記録を消す</button></div>';
+  return h;
+}
+function showCard(mode,r,scroll){
+  CARD={mode:mode,rec:r,react:reactSet(r),feelT:false,reactT:false,delArm:0};
+  var el=$("recCard");
+  el.innerHTML=cardHtml(mode,r);
+  el.style.display="block";
+  el.setAttribute("data-ts",String(+r.ts));
+  if(scroll){ try{ el.scrollIntoView({block:"start"}); }catch(e){} }
+}
+function hideCard(){
+  CARD=null;
+  var el=$("recCard"); if(!el)return;
+  el.style.display="none"; el.innerHTML=""; el.setAttribute("data-ts","");
+}
+function saveEdit(){
+  var c=CARD; if(!c||c.mode!=="edit")return;
+  var i=recIndex(c.rec.ts);
+  if(i<0){ hideCard(); toast("この記録は、ほかの端末で消されていました。",5000); return; }
+  var r=c.rec;
+  // 触らなかったところは、元のまま（以前の版の記録の level・反応ありを消さない）
+  if(c.feelT)settleFeel(r);
+  if(c.reactT){ r.react=REACTS.map(function(x){ return x[0]; }).filter(function(k){ return !!c.react[k]; }); r.odd=oddOf(r.react); }
+  settleNote(r);
+  r.ed=Date.now();
+  r=trimRec(normRec(r));
+  if(!r){ hideCard(); return; }
+  H[i]=r; hideCard(); saveHist(); renderRecs();
+  toast("記録を直しました。",3000);
+}
+/* 記録を1件消す。消した鍵は同期で持ち回り、ほかの端末でも消す */
+function delRec(ts){
+  var k=String(+ts);
+  H=H.filter(function(x){ return recKey(x)!==k; });
+  if(CK.indexOf(k)<0)CK.push(k);
+  saveCleared(); saveHist(); renderRecs();
+}
+$("recCard").addEventListener("click",function(e){
+  var b=e.target&&e.target.closest?e.target.closest("button"):null;
+  var c=CARD; if(!b||!c)return;
+  var r=c.rec;
+  if(b.hasAttribute("data-lv")){
+    var row=b.parentNode, sid=row.getAttribute("data-sid"), lv=+b.getAttribute("data-lv");
+    if(!r.feel||typeof r.feel!=="object"||Array.isArray(r.feel))r.feel={};
+    // 公式が1つの以前の記録は、level から読んでいた感じ方をここで feel に移す
+    if(!c.feelT&&c.mode==="edit")recFormulas(r).forEach(function(id){ var v=feelOf(r,id); if(v!=null&&!hasOwn(r.feel,id))r.feel[id]=v; });
+    c.feelT=true;
+    var was=(r.feel[sid]===lv);
+    if(was)delete r.feel[sid]; else r.feel[sid]=lv;   // 同じボタンをもう一度押すと、選んでいない状態に戻す
+    Array.prototype.forEach.call(row.children,function(x){ var on=!was&&x===b; x.classList.toggle("on",on); x.setAttribute("aria-pressed",String(on)); });
+    if(c.mode==="new")saveDraft();
+    return;
+  }
+  if(b.hasAttribute("data-rc")){
+    var k=b.getAttribute("data-rc"), on=!c.react[k];
+    if(on)c.react[k]=1; else delete c.react[k];
+    c.reactT=true;
+    b.classList.toggle("on",on); b.setAttribute("aria-pressed",String(on));
+    if(c.mode==="new"){ r.react=REACTS.map(function(x){ return x[0]; }).filter(function(q){ return !!c.react[q]; }); saveDraft(); }
+    if(k==="other"&&on){ try{ $("rcNote").focus(); }catch(x){} }
+    return;
+  }
+  if(b.id==="rcSave"){ if(c.mode==="new")commitDraft(false); else saveEdit(); return; }
+  if(b.id==="rcSkip"){ DRAFT=null; saveDraft(); hideCard(); toast("記録しませんでした。",3000); return; }
+  if(b.id==="rcCancel"){ hideCard(); return; }
+  if(b.id==="rcDel"){
+    // 押し間違いで消えないよう、少し間をおいた2回押しで消す
+    var now=Date.now();
+    if(c.delArm&&now-c.delArm<ARM_MIN)return;
+    if(c.delArm&&now-c.delArm<ARM_MS){ var ts=r.ts; hideCard(); delRec(ts); toast("記録を1件消しました。",3500); return; }
+    c.delArm=now; b.textContent="もう一度押すと消します"; b.classList.add("warn");
+    setTimeout(function(){ if(CARD===c&&Date.now()-c.delArm>=ARM_MS){ c.delArm=0; try{ b.textContent="この記録を消す"; b.classList.remove("warn"); }catch(x){} } },ARM_MS+200);
+  }
+});
+$("recCard").addEventListener("input",function(e){
+  if(!CARD||!e.target||e.target.id!=="rcNote")return;
+  CARD.rec.note=String(e.target.value||"").slice(0,200);
+  if(CARD.mode==="new")saveDraft();
+});
+$("recs").addEventListener("click",function(e){
+  var b=e.target&&e.target.closest?e.target.closest("[data-edit]"):null; if(!b)return;
+  if(DRAFT){ toast("先に、いま終えた練習の記録（上のカード）を済ませてください。",5000); try{ $("recCard").scrollIntoView({block:"start"}); }catch(x){} return; }
+  var i=recIndex(b.getAttribute("data-edit")); if(i<0)return;
+  showCard("edit",JSON.parse(JSON.stringify(H[i])),true);
+});
+$("recMore").addEventListener("click",function(e){
+  if(!e.target||e.target.id!=="recMoreBtn")return;
+  recShow+=30; renderRecs();
+});
+/* 消去動作を、案内に従って自分で行ったときの短い控え（感じ方は聞かない） */
+function addSelfRec(p){
+  if(!p)return;
+  var ts=Date.now();
+  var r=normRec({ts:ts,date:localDate(ts),sec:pendDur(p),steps:primList(p.steps),stepIds:pendIds(p),
+                 level:null,odd:false,cancelEnd:"self"});
+  if(!r)return;
+  if(postureOf(p.posture))r.posture=p.posture;
+  if(p.quick)r.quick=true;
+  H.push(r); saveHist(); renderRecs();
+}
+function pendIds(p){ return (p&&Array.isArray(p.ids)&&p.ids.length)?primList(p.ids):namesToIds(p&&p.steps); }
+
+function median(a){
+  var s=a.slice().sort(function(x,y){ return x-y; }), n=s.length;
+  return n?((n%2)?s[(n-1)/2]:(s[n/2-1]+s[n/2])/2):0;
+}
+/* タッチで進んだときの「触るまで」の移り変わり。はじめのころと最近の、まんなかの値を比べる
+   （上限まで触らずに進んだ回は入れない）。点数ではなく、様子を見るための目安 */
+function tapTrend(recs,id){
+  var a=recs.filter(function(r){ return r.tap&&r.tap[id]&&!r.tap[id].cap&&isFinite(+r.tap[id].s); })
+    .sort(function(x,y){ return x.ts-y.ts; }).map(function(r){ return +r.tap[id].s; });
+  if(a.length<4)return null;
+  var k=Math.min(5,Math.floor(a.length/2));
+  return {from:median(a.slice(0,k)),to:median(a.slice(-k)),k:k};
+}
+/* 4週間の感じ方（公式ごとに1つ）。線は一本だけ、点は練習した日。点に触れると、その日の中身が出る */
+function feelSvg(pts,label){
+  var x0=36,x1=294,yT=8,yB=50;
+  var X=function(i){ return (x0+(x1-x0)*i/27).toFixed(1); }, Y=function(v){ return (yB-(yB-yT)*v/3).toFixed(1); };
+  var g="";
+  for(var v=0;v<=3;v++) g+='<line class="gl" x1="'+x0+'" x2="'+x1+'" y1="'+Y(v)+'" y2="'+Y(v)+'"/>';
+  g+='<text x="0" y="'+(+Y(3)+3)+'">とても</text><text x="0" y="'+(+Y(0)+3)+'">なし</text>';
+  if(pts.length>1) g+='<polyline class="ln" points="'+pts.map(function(p){ return X(p.i)+","+Y(p.v); }).join(" ")+'"/>';
+  pts.forEach(function(p){
+    var t=p.day.slice(5).replace("-","/")+" "+FEEL_TXT[Math.round(p.v)]+(p.n>1?"（"+p.n+"回の平均）":"");
+    g+='<g><title>'+esc(t)+'</title><circle class="hit" cx="'+X(p.i)+'" cy="'+Y(p.v)+'" r="9"/><circle class="pt" cx="'+X(p.i)+'" cy="'+Y(p.v)+'" r="4"/></g>';
+  });
+  return '<svg viewBox="0 0 300 58" role="img" aria-label="'+esc(label+"の感じ方。この4週間で"+pts.length+"日の記録")+'">'+g+'</svg>';
+}
+function renderFStats(recs){
+  var el=$("fstats"); if(!el)return;
+  var n=new Date(), days=[], idx={};
+  for(var i=27;i>=0;i--){ var d=localDate(new Date(n.getFullYear(),n.getMonth(),n.getDate()-i).getTime()); idx[d]=days.length; days.push(d); }
+  var ids=[], seen={};
+  var add=function(id){ if(!seen[id]){ seen[id]=1; ids.push(id); } };
+  var recent=recs.filter(function(r){ return hasOwn(idx,localDate(+r.ts)); });
+  var fs=recent.concat(recs.filter(function(r){ return !!r.tap; }));
+  STD_ORDER.forEach(function(id){ if(fs.some(function(r){ return recFormulas(r).indexOf(id)>=0; }))add(id); });
+  fs.forEach(function(r){ recFormulas(r).forEach(add); });
+  var h="";
+  ids.forEach(function(id){
+    var by={};
+    recent.forEach(function(r){ var v=feelOf(r,id); if(v==null)return; var d=localDate(+r.ts); (by[d]=by[d]||[]).push(v); });
+    var pts=[];
+    days.forEach(function(d,i){ var a=by[d]; if(!a)return; var s=0; a.forEach(function(v){ s+=v; }); pts.push({i:i,v:s/a.length,n:a.length,day:d}); });
+    var tr=tapTrend(recs,id);
+    if(!pts.length&&!tr)return;
+    var nm=fname(id);
+    h+='<div class="fst"><p class="fn">'+esc(nm)+'の感じ方（4週間）</p>';
+    if(pts.length) h+=feelSvg(pts,nm)+'<div class="fx"><span>4週間前</span><span>きょう</span></div>';
+    else h+='<p class="note" style="margin:0">この4週間は、感じ方の記録がありません。</p>';
+    if(tr) h+='<p class="ftr">'+esc(nm)+'が出るまで <b>'+fmt(tr.from)+' → '+fmt(tr.to)+'</b> <span class="dim">（タッチまでの時間。はじめの'+tr.k+'回と最近の'+tr.k+'回の、まんなかの値）</span></p>';
+    h+='</div>';
+  });
+  el.innerHTML=h?'<p class="ttl" style="margin-top:2px">公式ごとの様子</p>'+h+'<p class="note" style="margin:-4px 0 12px">点数ではなく、様子を見るための目安です。日によって変わります。</p>':"";
+}
+function recRow(x){
+  var fs=recFormulas(x), a=[], newer=!!(x.feel&&typeof x.feel==="object");
+  if(newer) fs.forEach(function(id){ var v=feelOf(x,id); a.push(fname(id,x)+(v!=null?" "+FEEL_BTN[v]:"")); });
+  var m1=newer?a.join("・"):(Array.isArray(x.steps)?x.steps:[]).join("・");
+  var lv=(!newer&&typeof x.level==="number")?FEEL_TXT[x.level]:"";
+  var rs=[];
+  if(Array.isArray(x.react)&&x.react.length) REACTS.forEach(function(r){ if(hasReact(x,r[0]))rs.push(r[1].replace("…","")); });
+  else if(x.odd) rs.push("反応あり");
+  var tail=[];
+  if(lv)tail.push(lv);
+  if(rs.length)tail.push(rs.join("・"));
+  if(postureOf(x.posture))tail.push(POSTURE[x.posture].name);
+  var taps=[];
+  if(x.tap) fs.forEach(function(id){ var t=x.tap[id]; if(t)taps.push(fname(id,x)+" "+fmt(t.s)+(t.cap?"（上限）":"")); });
+  var h='<div class="rec"><div class="d">'+esc(localDate(+x.ts))+' '+hhmm(+x.ts)+' · '+fmt(x.sec)+(x.quick?' · みじかく':'')
+    +'<div class="m">'+esc(m1)+(tail.length?' · '+esc(tail.join(" · ")):'')+'</div>';
+  if(taps.length)h+='<div class="m">タッチまで '+esc(taps.join("・"))+'</div>';
+  if(x.note)h+='<div class="m">「'+esc(x.note)+'」</div>';
+  var ce=cendText(x);
+  if(ce)h+='<div class="ce">'+esc(ce)+'</div>';
+  return h+'</div><button class="tiny" type="button" data-edit="'+esc(recKey(x))+'" aria-label="この記録を直す">直す</button></div>';
 }
 function renderRecs(){
   // H は読み込み・同期のときに整えてあるが、描画でも崩れた記録は飛ばす
@@ -1617,24 +2162,83 @@ function renderRecs(){
   var recs=H.filter(function(x){ return !!(x&&typeof x==="object"&&isFinite(+x.ts)&&+x.ts>0); });
   var d="",list=recs.slice().sort(function(a,b){return b.ts-a.ts;});
   // 日付は記録した時刻から、この端末の暦で出す（以前の版は世界標準時の日付で保存していた）
-  var days={};
-  recs.forEach(function(x){ days[localDate(+x.ts)]=1; });
+  // 1日の回数で点を濃くする（1回・2回・3回以上）。続けた日数は数えない（追い立てないように）
+  var cnt={};
+  recs.forEach(function(x){ var k=localDate(+x.ts); cnt[k]=(cnt[k]||0)+1; });
   var n=new Date();
   for(var i=29;i>=0;i--){
     // 暦の上で1日ずつ戻る（24時間ずつ引くと、夏時間のある地域で日がずれる）
-    var day=localDate(new Date(n.getFullYear(),n.getMonth(),n.getDate()-i).getTime());
-    d+='<span class="dot'+(days[day]===1?" on":"")+'" title="'+day+'"></span>';
+    var day=localDate(new Date(n.getFullYear(),n.getMonth(),n.getDate()-i).getTime()), c=cnt[day]||0;
+    d+='<span class="dot'+(c?" on c"+Math.min(3,c):"")+'" title="'+day+(c?"・"+c+"回":"")+'"></span>';
   }
   $("dots").innerHTML=d;
-  if(!list.length){ $("recs").innerHTML='<div class="empty">まだ記録がありません。<br>まずは「重感」だけを、2週間ほど続けてみてください。</div>'; return; }
+  var today=localDate(n.getTime());
+  $("dleg").innerHTML=recs.length?'<span>きょう '+(cnt[today]||0)+'回</span><span class="sp"></span><span class="dot c1"></span>1回 <span class="dot c2"></span>2回 <span class="dot c3"></span>3回以上':"";
+  try{ renderFStats(recs); }catch(e){ try{ $("fstats").innerHTML=""; }catch(e2){} }
+  try{ renderGuide(); }catch(e){}
+  if(!list.length){ $("recs").innerHTML='<div class="empty">まだ記録がありません。<br>まずは「重感」だけを、2週間ほど続けてみてください。</div>'; $("recMore").innerHTML=""; return; }
   var h="";
-  list.slice(0,12).forEach(function(x){
-    var lv=(typeof x.level==="number")?["感じなかった","すこし感じた","はっきり感じた","とてもはっきり"][x.level]:"";
-    h+='<div class="rec"><div class="d">'+esc(localDate(+x.ts))+' · '+fmt(x.sec)
-      +'<div class="m">'+esc((Array.isArray(x.steps)?x.steps:[]).join("・"))+(lv?' · '+lv:'')+(x.odd?' · 反応あり':'')+'</div></div></div>';
-  });
+  list.slice(0,recShow).forEach(function(x){ try{ h+=recRow(x); }catch(e){} });
   $("recs").innerHTML=h;
+  $("recMore").innerHTML=list.length>recShow?'<button class="tiny" type="button" id="recMoreBtn">もっと見る（ほか'+(list.length-recShow)+'件）</button>':"";
 }
+
+/* ══════ 公式の進め方の目安 ══════
+   初めは重感を2週間ほど、が標準。日数と最近の感じ方から、次の公式を足すかどうかの目安を出す。
+   足すのは利用者がボタンを押したときだけ（勝手には足さない）。
+   心臓（第3）・お腹（第5）は不快感が出ることがあるため既定で外してある。自分で有効にした人にしか勧めない。
+   最近の記録に気になる反応があるときは、足すことを勧めず、減らす・間を長めにする方を伝える。 */
+var STD_ORDER=["heavy","warm","heart","breath","belly","brow"];
+var NO_SUGGEST={heart:1,belly:1};
+var GUIDE_DAYS=14;
+function guideState(){
+  var on=STD_ORDER.filter(function(id){ return !!C.steps[id]&&!!stepById(id); });
+  if(!on.length)return null;
+  var cur=on[on.length-1];
+  var recs=H.slice().sort(function(a,b){ return a.ts-b.ts; });
+  var days={}, feels=[];
+  recs.forEach(function(r){
+    if(recFormulas(r).indexOf(cur)<0)return;
+    days[localDate(+r.ts)]=1;
+    var v=feelOf(r,cur); if(v!=null)feels.push(v);
+  });
+  var last=recs.slice(-3), recent=feels.slice(-3);
+  var next=null;
+  for(var j=STD_ORDER.indexOf(cur)+1;j<STD_ORDER.length;j++){
+    var id=STD_ORDER[j];
+    if(NO_SUGGEST[id]||C.steps[id]||!stepById(id))continue;
+    next=id; break;
+  }
+  return {cur:cur,days:Object.keys(days).length,recent:recent,next:next,
+          stable:recent.length>=3&&recent.every(function(v){ return v>=1; }),
+          odd:last.some(oddRec),
+          tired:last.some(function(r){ return hasReact(r,"tired")||hasReact(r,"foggy"); })};
+}
+function renderGuide(){
+  var el=$("guide"); if(!el)return;
+  var g=guideState();
+  if(!g){ el.style.display="none"; el.innerHTML=""; return; }
+  var h='いまの公式：<b>'+esc(fname(g.cur))+'</b> · 練習した日 <b>'+g.days+'</b>／目安'+GUIDE_DAYS+'日 · 最近の感じ方 <b>'
+    +(g.recent.length?g.recent.map(function(v){ return FEEL_BTN[v]; }).join("・"):"—")+'</b>';
+  if(g.odd){
+    h+='<div class="warnbox">最近の記録に、気になる反応がありました。しばらくは段階を減らすか、間を長めにしてみてください。強く不快なときは中止してください。'
+      +(g.tired?'<br>だるさやぼんやりが残ったときは、消去動作の手足の動きを、ゆっくり大きく行ってください。':'')+'</div>';
+  } else if(g.next&&g.days>=GUIDE_DAYS&&g.stable){
+    h+='<div class="sugg"><b>'+esc(fname(g.next))+'を足してみますか</b>'
+      +'<div class="note" style="margin-top:4px">目安の'+GUIDE_DAYS+'日をこえて、最近は毎回感じられているようです。あくまで目安なので、足すかどうかはご自分のペースで決めてください。</div>'
+      +'<button class="btn" type="button" id="guideAdd" data-add="'+esc(g.next)+'">「'+esc(fullName(g.next))+'」を足す</button></div>';
+  } else if(g.next&&g.days>=GUIDE_DAYS){
+    h+='<div class="note" style="margin-top:2px">目安の日数になりました。感じ方がそろってきたら、次の公式を足すこともできます（目安です）。</div>';
+  }
+  el.innerHTML=h; el.style.display="block";
+}
+$("guide").addEventListener("click",function(e){
+  var b=e.target&&e.target.closest?e.target.closest("#guideAdd"):null; if(!b)return;
+  var id=b.getAttribute("data-add");
+  if(!stepById(id)||NO_SUGGEST[id])return;
+  C.steps[id]=true; saveCfg(); renderSteps();
+  toast("「"+fullName(id)+"」を足しました。合わないと感じたら、「使う段階」からいつでも外せます。",6000);
+});
 
 /* ══════ 設定UI ══════ */
 function renderSteps(){
@@ -1665,6 +2269,11 @@ function renderPlan(){
     ? esc(names.join(" → "))+' ＋ 消去動作<br>およそ '+fmt(sec)+(tapMode()?'（タッチで進めば、もっと早く終わります）':'')
     : '<span style="color:var(--warn)">段階が選ばれていません。まずは「第1公式 — 重感」だけをおすすめします。</span>';
   $("startBtn").disabled = !names.length;
+  $("quickBtn").disabled = !names.length;
+  $("quickNote").textContent = names.length
+    ? "この回だけ、導入を短くし、公式を1分ずつにします（設定は変えません）。消去動作は省かずに最後まで行います。いまの段階で およそ "+fmt(totalSec(buildSeq(true)))
+    : "";
+  try{ renderGuide(); }catch(e){}
 }
 function seg(id,key,attr,cast){
   var host=$(id);
@@ -1688,6 +2297,7 @@ function paintAdv(){
 }
 function paintSegs(){
   Array.prototype.forEach.call($("handSeg").children,function(b){b.classList.toggle("on",b.getAttribute("data-h")===C.hand);});
+  Array.prototype.forEach.call($("postSeg").children,function(b){b.classList.toggle("on",b.getAttribute("data-po")===(C.posture||""));});
   Array.prototype.forEach.call($("paceSeg").children,function(b){b.classList.toggle("on",parseFloat(b.getAttribute("data-p"))===C.pace);});
   Array.prototype.forEach.call($("bgSeg").children,function(b){b.classList.toggle("on",b.getAttribute("data-b")===C.bg);});
   $("bgVol").value=C.bgVol; $("bgVolN").textContent=C.bgVol;
@@ -1695,6 +2305,7 @@ function paintSegs(){
   paintAdv();
 }
 seg("handSeg","hand","data-h");
+seg("postSeg","posture","data-po");
 seg("paceSeg","pace","data-p",parseFloat);
 seg("bgSeg","bg","data-b");
 seg("advSeg","advance","data-a");
@@ -1808,17 +2419,22 @@ try{
 $("tryBtn").addEventListener("click",function(){ begin(true); });
 /* 注意画面を「はじめる」の途中で出したのか、読み返しに来ただけなのかを覚えておく。
    読み返しただけで練習が始まってしまうと、心づもりのないまま始まってしまう。 */
-var gateForStart=false;
+var gateForStart="";   // ""=読み返し / "full"=はじめる / "quick"=みじかく
 $("startBtn").addEventListener("click",function(){
-  if(!C.gateSeen){ gateForStart=true; $("gate").style.display="block"; return; }
+  if(!C.gateSeen){ gateForStart="full"; $("gate").style.display="block"; return; }
   begin(false);
+});
+/* 「みじかく」は、その回だけの組み立て。保存してある設定（段階の長さ・導入）は書き換えない */
+$("quickBtn").addEventListener("click",function(){
+  if(!C.gateSeen){ gateForStart="quick"; $("gate").style.display="block"; return; }
+  begin(false,true);
 });
 $("gateOk").addEventListener("click",function(){
   C.gateSeen=true; saveCfg(); $("gate").style.display="none";
-  if(gateForStart){ gateForStart=false; begin(false); }
+  if(gateForStart){ var q=(gateForStart==="quick"); gateForStart=""; begin(false,q); }
 });
-$("gateBack").addEventListener("click",function(){ gateForStart=false; $("gate").style.display="none"; });
-$("gateShow").addEventListener("click",function(){ gateForStart=false; $("gate").style.display="block"; });
+$("gateBack").addEventListener("click",function(){ gateForStart=""; $("gate").style.display="none"; });
+$("gateShow").addEventListener("click",function(){ gateForStart=""; $("gate").style.display="block"; });
 
 /* ══════ 編集画面 ══════ */
 function edRender(){
@@ -2017,14 +2633,20 @@ $("edFile").addEventListener("change",function(e){
 /* ══════ 同期（sync.js に相乗り）══════ */
 var sync=null;
 function edIsOpen(){ try{ return $("editor").style.display==="block"; }catch(e){ return false; } }
-function syncGetLocal(){ return {history:guardHist(H), clearedAt:clearedAt, script:SCRIPT}; }
+function syncGetLocal(){ return {history:guardHist(H), clearedAt:clearedAt, clearedKeys:CK.slice(), script:SCRIPT}; }
 function syncSetLocal(d){
   d=d||{};
   // 記録も外から来るので、1件ずつ整えてから保存する（崩れた記録で描画が落ちると、
   // 次の起動から「消去動作の復帰」まで動かなくなる）
   H=guardHist(d.history); clearedAt=(+d.clearedAt)||0;
+  // 消した記録の鍵は足すだけ（受け取った側に無くても、この端末で消したものは消したまま）
+  if(Array.isArray(d.clearedKeys))CK=cleanKeys(CK.concat(cleanKeys(d.clearedKeys)));
+  if(CK.length){
+    var gone=Object.create(null); CK.forEach(function(k){ gone[k]=1; });
+    H=H.filter(function(x){ return !gone[recKey(x)]; });
+  }
   try{store.set(KEY,JSON.stringify(H));}catch(e){}
-  try{store.set(CLR_KEY,String(clearedAt));}catch(e){}
+  saveCleared();
   if(d.script&&typeof d.script==="object"){
     // ドライブから来た台本も中身は信用しない。読み込み(JSON)と同じ検証を通す。
     // ここを素通しすると、他の端末の壊れた台本でこの端末まで起動不能になる。
@@ -2053,21 +2675,30 @@ function syncSetLocal(d){
   }
   renderRecs();
 }
+/* 記録は時刻（ts）で重ねてつなぐ。同じ記録が両方にあるときは、あとで直した方（ed の新しい方）を残す。
+   1件ずつ消した記録（clearedKeys）と、以前からの全消去の時刻（clearedAt）より前の記録は戻さない。
+   古い版の端末は clearedKeys を知らずに書き戻すことがあるが、新しい版の端末は自分の鍵を持ち続けるので、
+   消した記録はその端末に戻らず、次の同期で鍵もドライブに戻る */
 function syncMerge(local,remote){
   if(!remote)return local;
   var cl=Math.max((+local.clearedAt)||0,(+remote.clearedAt)||0);
-  var seen={},out=[];
+  var keys=cleanKeys(cleanKeys(local.clearedKeys).concat(cleanKeys(remote.clearedKeys)));
+  var gone=Object.create(null); keys.forEach(function(k){ gone[k]=1; });
+  var at=Object.create(null),out=[];
   [].concat(Array.isArray(local.history)?local.history:[],Array.isArray(remote.history)?remote.history:[]).forEach(function(x){
     var n=normRec(x); if(!n)return;    // 形の崩れた記録は、ここで整えるか捨てる
     if(cl&&n.ts<=cl)return;            // 全消去より前の記録は復活させない
-    if(seen[n.ts])return; seen[n.ts]=1; out.push(n);
+    var k=recKey(n);
+    if(gone[k])return;                 // 1件ずつ消した記録も復活させない
+    if(k in at){ if(((+n.ed)||0)>((+out[at[k]].ed)||0))out[at[k]]=n; return; }
+    at[k]=out.length; out.push(n);
   });
   out.sort(function(a,b){return a.ts-b.ts;});
   out=guardHist(out);                  // 増えすぎたら知らせるだけ。端末をまたいでも記録は捨てない
   // 誘導文は端末間で揃える。あとに編集した方を採る
   var ls=(local.script&&local.script.updatedAt)||0, rs=(remote.script&&remote.script.updatedAt)||0;
   var sc = rs>ls ? remote.script : (local.script||null);
-  return {history:out, clearedAt:cl, script:sc};
+  return {history:out, clearedAt:cl, clearedKeys:keys, script:sc};
 }
 function paintSync(st,auto){
   var b=$("bSync"); if(!b)return;
@@ -2154,6 +2785,8 @@ function checkPending(){
   }
   if(((+p.tries)||0)>=PEND_TRIES){                 // 繰り返しにならないよう上限を置く
     clearPending(p.id);
+    // 練習したことは残す（消去動作は、下の案内で自分で行ってもらう）
+    try{ addSelfRec(p); }catch(e){}
     // 黙って捨てると、消去動作が済んでいないことに気づけない。自分で手足を動かすよう伝える
     toast("前回の練習の消去動作が、最後まで終わっていませんでした。"+LIMB_MSG,12000);
     return;
@@ -2174,15 +2807,22 @@ $("resumeBtn").addEventListener("click",function(){
   // ここは利用者の操作の中。音の解禁と画面ロックの取得は必ずこの中で行う。
   ensureAudio(); loadVoice(); pickVoice();
   wakeOn(); bgStart();
+  var ids=pendIds(p), quick=!!p.quick, po=postureOf(p.posture)?p.posture:"";
+  // 「みじかく」の練習から落ちたときは、復帰でも消去動作を全部流す
   runCancelOnly(Array.isArray(p.steps)?p.steps:[],pendDur(p),
-                {at:p.at,tries:((+p.tries)||0)+1,id:p.id||newPendId()});
+                {at:p.at,tries:((+p.tries)||0)+1,id:p.id||newPendId(),ids:ids,posture:po,quick:quick},
+                {why:"resume",ids:ids,posture:po,quick:quick});
 });
 $("resumeSkip").addEventListener("click",function(){
   var p=resumeP; resumeP=null;
   clearPending(p&&p.id);
+  try{ addSelfRec(p); }catch(e){}   // 練習したことと、消去動作を自分で行ったことを短く残す
   $("resume").style.display="none"; $("home").style.display="block";
   toast(LIMB_MSG,9000);
 });
+/* 答えないまま閉じた記録カードは、開き直したときにもう一度出す（練習の途中だったときは、
+   消去動作の復帰が先。そのあいだホームは隠れているので、カードも出ない） */
+try{ loadDraft(); if(DRAFT)showCard("new",DRAFT,false); }catch(e){}
 try{ checkPending(); }catch(e){}
 })();
 </script>

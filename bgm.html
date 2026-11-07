@@ -129,6 +129,32 @@ html.night .dimnote{display:block}
 #tleft{font-size:12.5px;font-weight:700;color:var(--red-d);margin-left:auto;font-variant-numeric:tabular-nums}
 #toast{position:fixed;left:14px;right:14px;bottom:70px;background:var(--ink);color:var(--paper);border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.6;z-index:40;display:none}
 #storeWarn{display:none;font-size:12px;line-height:1.75;color:var(--red-d);background:color-mix(in srgb,var(--red) 8%,var(--card));border:1px solid var(--red);border-radius:10px;padding:10px 12px;margin:0 0 12px}
+/* 重ねる・端末で作る音・いつもの就寝・集中タイマー */
+.scwrap{position:relative}
+.scwrap .sccard{width:100%;height:100%}
+.scwrap .sccard .n{padding-right:66px}
+.scwrap .tag{font-size:10.5px;font-weight:700;color:var(--soft);font-family:"Zen Kaku Gothic New",sans-serif;margin-left:5px}
+.scadd{position:absolute;top:9px;right:9px;border:1px solid var(--line);background:var(--paper);color:var(--soft);border-radius:8px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit}
+.scadd:hover{border-color:var(--red);color:var(--red)}
+.scadd.on{background:var(--red);color:#fdf1e6;border-color:var(--red)}
+.usual{display:block;width:100%;text-align:left;border:1px solid var(--red);background:color-mix(in srgb,var(--red) 10%,var(--card));color:var(--ink);border-radius:14px;padding:14px 15px;margin:0 0 12px;cursor:pointer;font-family:inherit}
+.usual[hidden]{display:none}
+.usual .un{display:block;font-family:"Shippori Mincho",serif;font-size:17px;font-weight:800;color:var(--red-d)}
+.usual .ud{display:block;font-size:12px;color:var(--soft);margin-top:4px;line-height:1.6}
+.mixbox{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-top:10px}
+.mixttl{font-size:11.5px;font-weight:700;color:var(--soft)}
+.mixrow{display:flex;align-items:center;gap:8px;font-size:12.5px;margin-top:7px}
+.mixrow .mn{flex:none;width:8.5em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}
+.mixrow input{flex:1;min-width:0;accent-color:var(--red)}
+.mixrow .mv{width:2.2em;text-align:right;font-variant-numeric:tabular-nums;color:var(--soft)}
+.mixrow .ax{border:none;background:none;color:var(--soft);cursor:pointer;font-size:14px;padding:2px 4px;font-family:inherit}
+.focus{margin:0 0 12px}
+.focus .frow{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.focus .frow+.frow{margin-top:8px}
+.focus .fstate{flex:1;min-width:0;font-weight:700;color:var(--red-d);font-variant-numeric:tabular-nums;font-size:13px}
+.focus .fk{font-size:11.5px;font-weight:700;color:var(--soft);margin-left:4px}
+.focus .fnote{margin:8px 0 0}
+.tsel{border:1px solid var(--line);background:var(--paper);color:var(--soft);border-radius:8px;padding:5px 6px;font-size:12px;font-family:inherit;font-weight:700}
 </style>
 </head>
 <body>
@@ -139,6 +165,7 @@ html.night .dimnote{display:block}
       <p class="sub">聞きたいBGMに、探さずにたどり着く。</p>
     </div>
     <div class="hbtns">
+      <button class="iconbtn" id="bFocusOpen" title="集中タイマー" hidden>🍅</button>
       <button class="iconbtn" id="bNight" title="夜間モード">🌙</button>
       <button class="iconbtn" id="bWake" title="画面を消さない">💡</button>
       <button class="iconbtn" id="bSync" title="同期">☁</button>
@@ -163,6 +190,19 @@ html.night .dimnote{display:block}
     <button class="mode" id="mSc">就寝用の音</button>
   </div>
 
+  <div id="focusBox" class="note focus" hidden>
+    <div class="frow">
+      <b>🍅 集中タイマー</b>
+      <span id="fState" class="fstate"></span>
+      <button class="cbtn solid" id="bFocus">はじめる</button>
+    </div>
+    <div class="frow" id="fOpts">
+      <span class="fk">集中</span><button class="tiny" data-fw="15">15分</button><button class="tiny" data-fw="25">25分</button><button class="tiny" data-fw="50">50分</button>
+      <span class="fk">休憩</span><button class="tiny" data-fb="5">5分</button><button class="tiny" data-fb="10">10分</button>
+    </div>
+    <p class="hint fnote">区切りごとに音楽を少し下げて、小さなチャイムでお知らせします。音源と就寝用の音は、画面を消しても続きます。YouTubeは画面がついている間だけ鳴るので、💡で消灯を止めてお使いください。<span id="fNoteIos"></span></p>
+  </div>
+
   <section class="panel on" id="pYt">
     <div id="pwrap"><div id="player"></div></div>
     <p class="dimnote">夜間モードのため、映像を暗くしています。触れているあいだは明るくなります。</p>
@@ -183,7 +223,7 @@ html.night .dimnote{display:block}
         <button class="cbtn" id="bShuffle">🔀 シャッフル</button>
         <button class="cbtn" id="bOpenYt">↗ YouTubeで開く</button>
       </div>
-      <div class="volrow"><span>音量</span><input type="range" id="vol" min="0" max="100" step="1"><span id="volN">60</span></div>
+      <div class="volrow"><span>音量</span><input type="range" id="vol" min="0" max="100" step="1" title="曲ごとに覚えます（この端末だけ）"><span id="volN">60</span></div>
     </div>
 
     <div class="secttl">ジャンルから探す<span class="sp"></span><button class="tiny" id="bGEdit">⚙ 編集</button></div>
@@ -228,17 +268,26 @@ html.night .dimnote{display:block}
       <p class="hint">ネットラジオや配信の音声URLを登録できます。64〜128kbps程度なので、動画の10分の1以下の通信量です。</p>
     </div>
     <div class="aulist" id="auList"></div>
-    <div class="volrow"><span>音量</span><input type="range" id="auVol" min="0" max="100" step="1"><span id="auVolN">70</span></div>
+    <div class="nowrow">
+      <button class="cbtn" id="auPrevB">前</button>
+      <button class="cbtn" id="auNextB">次</button>
+      <button class="cbtn" id="auShuf">🔀 シャッフル</button>
+    </div>
+    <div class="volrow"><span>音量</span><input type="range" id="auVol" min="0" max="100" step="1" title="曲ごとに覚えます（この端末だけ）"><span id="auVolN">70</span></div>
+    <p class="hint">ファイルが1つだけのときは、その曲をくり返します。ロック画面の「次・前」も使えます。音量は曲ごとに覚えます（この端末だけ）。</p>
     <p id="auNote" class="hint"></p>
   </section>
 
   <section class="panel" id="pSc">
+    <button class="usual" id="bUsual" hidden><span class="un">🌙 いつもの就寝</span><span class="ud" id="usualDesc"></span></button>
     <div class="sc" id="scList"></div>
+    <div id="scMix" class="mixbox" hidden></div>
     <div class="volrow"><span>音量</span><input type="range" id="scVol" min="0" max="100" step="1"><span id="scVolN">70</span></div>
     <p id="scVolNote" class="hint"></p>
     <div class="note">
       <b>こちらは他のタブに切り替えても、画面を消しても鳴り続けます。</b>YouTubeと違い、端末内の音を鳴らしているためです。再生はアプリの最上位で行うので、日記を書きながらでも止まりません。ロック画面からの再生・停止も使えます。<br>
       音は20秒のループですが、継ぎ目が出ない作りにしてあるので、つなぎ目は聞こえません。
+      <span id="scNoteMix" hidden><br>「＋ 重ねる」で、雨とブラウンノイズのように4つまで重ねられます（それぞれの大きさは下のつまみで）。ホワイトノイズ・深いブラウンノイズ・扇風機・波は、端末の中で作る音です（ファイルは使わず、保存もしません）。<br>「いつもの就寝」は、最後に使った音・音量・タイマー・夜間モードをこの端末に覚えておき、ひと押しでそろえます。</span>
     </div>
   </section>
 </div>
@@ -252,6 +301,11 @@ html.night .dimnote{display:block}
   <button class="tb" data-t="60">60</button>
   <button class="tb" data-t="90">90分</button>
   <button class="tb plus" id="bPlus10">+10分</button>
+  <select id="tFade" class="tsel" title="止めるときに、どれだけかけて音を小さくするか">
+    <option value="20">フェード20秒</option>
+    <option value="300">フェード5分</option>
+    <option value="600">フェード10分</option>
+  </select>
   <span id="tleft"></span>
 </div>
 <div id="toast"></div>
@@ -352,10 +406,35 @@ function auFmtSize(n){ n=n||0; return n>=1048576 ? (Math.round(n/1048576*10)/10)
 var SOUNDS=[
   {id:"brown",n:"ブラウンノイズ",d:"低くこもった「ゴーッ」という音。生活音を覆い隠す力がいちばん強い。",f:"audio/brown.wav"},
   {id:"pink", n:"ピンクノイズ",  d:"音域のバランスが自然で、長く流しても耳が疲れにくい。",f:"audio/pink.wav"},
-  {id:"rain", n:"雨・シャワー",  d:"やわらかな雨だれのような音。静かすぎる部屋が苦手なときに。",f:"audio/rain.wav"}
+  {id:"rain", n:"雨・シャワー",  d:"やわらかな雨だれのような音。静かすぎる部屋が苦手なときに。",f:"audio/rain.wav"},
+  /* ここから下は、入口（index.html）が端末の中で作る音。ファイルは持たない（gen）。
+     単体で開いたとき・古い入口のときは作れないので、出さない。 */
+  {id:"white",n:"ホワイトノイズ",d:"「サーッ」という明るい音。物音をまんべんなく覆う。耳につきやすいので、少し小さめにしてあります。",gen:1},
+  {id:"deep", n:"深いブラウンノイズ",d:"ブラウンより低い、遠くの地鳴りのような音。小さなスピーカーでは聞こえにくいので、イヤホン向き。",gen:1},
+  {id:"fan",  n:"扇風機",        d:"回る羽根の、かすかにうなる風の音。",gen:1},
+  {id:"waves",n:"波",            d:"10秒ほどの間隔で、寄せては返す波の音。",gen:1}
 ];
+var MIX_MAX=4;          // 重ねられる数（作る音1つで2MBほどメモリを使うため）
+var FADES=[20,300,600]; // スリープタイマーのフェード（秒）
 
-var S={items:[],hist:[],genres:[],delItems:[],delGenres:[],tracks:[],delTracks:[],vol:60,scVol:70,auVol:70,shuffle:false,night:false,mode:"yt",filter:"all",gfilter:"",lastCats:[],timer:0};
+/* vol/scVol/auVol/night などと同じく、mixVol（重ねたときのそれぞれの大きさ）・tvol（曲ごとの音量）・
+   fade・sleep（いつもの就寝）・focus・auShuffle は端末ごとの設定。同期には載せない（syncGetLocal を参照）。 */
+var S={items:[],hist:[],genres:[],delItems:[],delGenres:[],tracks:[],delTracks:[],vol:60,scVol:70,auVol:70,shuffle:false,night:false,mode:"yt",filter:"all",gfilter:"",lastCats:[],timer:0,
+       auShuffle:false,mixVol:{},tvol:{},fade:20,sleep:null,focus:{work:25,brk:5}};
+function soundById(id){ for(var i=0;i<SOUNDS.length;i++) if(SOUNDS[i].id===id) return SOUNDS[i]; return null; }
+function pct(v){ v=Math.round(+v); return isFinite(v)?Math.max(0,Math.min(100,v)):null; }
+/* 音量の表（id→0〜100）。読めない値は捨てる */
+function volMap(o,okId){
+  var out={};
+  if(o&&typeof o==="object"&&!Array.isArray(o)) for(var k in o){ var v=pct(o[k]); if(v!==null&&(!okId||okId(k))) out[k]=v; }
+  return out;
+}
+function sleepNorm(u){
+  if(!u||typeof u!=="object"||!Array.isArray(u.ids)) return null;
+  var ids=[]; u.ids.forEach(function(id){ if(soundById(id)&&ids.indexOf(id)<0&&ids.length<MIX_MAX) ids.push(id); });
+  return {ids:ids, vol:(pct(u.vol)===null?70:pct(u.vol)), timer:Math.max(0,Math.min(600,Math.round(+u.timer)||0)),
+          fade:(FADES.indexOf(+u.fade)>=0?+u.fade:20), night:!!u.night, mv:volMap(u.mv,soundById), at:+u.at||0};
+}
 try{
   var raw=store.get(KEY);
   if(raw){var o=JSON.parse(raw)||{};
@@ -373,6 +452,16 @@ try{
     if(typeof o.auVol==="number")S.auVol=Math.max(0,Math.min(100,o.auVol));
     if(typeof o.filter==="string")S.filter=o.filter;
     if(typeof o.gfilter==="string")S.gfilter=o.gfilter;
+    // 音源のシャッフルは YouTube と別にした。以前は共用だったので、はじめて読むときだけ引き継ぐ
+    S.auShuffle=(typeof o.auShuffle==="boolean")?o.auShuffle:S.shuffle;
+    S.mixVol=volMap(o.mixVol,soundById);
+    S.tvol=volMap(o.tvol);
+    if(FADES.indexOf(o.fade)>=0) S.fade=o.fade;
+    S.sleep=sleepNorm(o.sleep);
+    if(o.focus&&typeof o.focus==="object"){
+      if([15,25,50].indexOf(o.focus.work)>=0) S.focus.work=o.focus.work;
+      if([5,10].indexOf(o.focus.brk)>=0) S.focus.brk=o.focus.brk;
+    }
   }
 }catch(e){}
 
@@ -462,12 +551,18 @@ function normalize(){
     // （同じIDが2つあると、次に開いたときや同期で片方が消える）
     if(c&&!have[c]){S.genres.push({id:usedId[c]?"g"+uid():c,name:c,q:c+" BGM",updatedAt:0});have[c]=1;}
   });});
+  // 曲ごとの音量は、消えた曲のぶんを捨てる（登録を入れ替えるたびに増え続けないように）
+  var live=Object.create(null);
+  S.items.forEach(function(it){live[it.id]=1;});
+  (S.tracks||[]).forEach(function(t){if(t&&t.id)live[t.id]=1;});
+  for(var tk in S.tvol){ if(!live[tk]) delete S.tvol[tk]; }
 }
 normalize();
 var saveFailed=false;
 function save(){
   var body=null;
-  try{body=JSON.stringify({items:S.items,hist:S.hist.slice(0,300),genres:S.genres,delItems:S.delItems,delGenres:S.delGenres,tracks:S.tracks,delTracks:S.delTracks,vol:S.vol,scVol:S.scVol,auVol:S.auVol,shuffle:S.shuffle,night:S.night,mode:S.mode,filter:S.filter,gfilter:S.gfilter,lastCats:S.lastCats});}catch(e){return false;}
+  try{body=JSON.stringify({items:S.items,hist:S.hist.slice(0,300),genres:S.genres,delItems:S.delItems,delGenres:S.delGenres,tracks:S.tracks,delTracks:S.delTracks,vol:S.vol,scVol:S.scVol,auVol:S.auVol,shuffle:S.shuffle,night:S.night,mode:S.mode,filter:S.filter,gfilter:S.gfilter,lastCats:S.lastCats,
+                           auShuffle:S.auShuffle,mixVol:S.mixVol,tvol:S.tvol,fade:S.fade,sleep:S.sleep,focus:S.focus});}catch(e){return false;}
   var okNow=store.set(KEY,body);
   /* 保存できなかったことを黙っていると、翌日に開いて全部消えてから気づくことになる。
      データが失われる話なので、必ず目に見える形で伝える。 */
@@ -615,6 +710,7 @@ window.onYouTubeIframeAPIReady=function(){
         onStateChange:function(e){
           if(e.data===1){$("bPlay").textContent="⏸ 一時停止";grabTitle();playOk();}
           else $("bPlay").textContent="▶ 再生";
+          ytReport();
           if(e.data===0){
             // 再生リストは1本終わるごとに ENDED が来る。まだ続きがあるなら、そのままリストに任せる
             if(playlistHasMore()) return;
@@ -671,6 +767,12 @@ function playItem(id){
   var it=byId(id); if(!it) return;
   if(advT){clearTimeout(advT);advT=null;}   // エラーのあと次へ進む予定は、ほかの曲を選んだら取り消す
   curId=id;
+  /* この曲で前に合わせた音量があれば、それで鳴らす（曲ごとに録音の大きさが違うため）。
+     覚えていない曲は、いまの音量のまま。スリープタイマーで絞っている途中は、音量には触らない */
+  if(typeof S.tvol[id]==="number"&&S.tvol[id]!==S.vol){
+    S.vol=S.tvol[id]; save();
+    if(fadeTick||ytFadeTick){ $("vol").value=S.vol; $("volN").textContent=S.vol; } else applyVol();
+  }
   if(it.noEmbed){ countPlay(it); window.open(watchUrl(it),"_blank","noopener"); updateNow(); render(); return; }
   if(cue(it,true)) countPlay(it);
   else if(!ytReady||!yt) $("pnote").textContent="プレーヤーを準備しています。用意ができ次第、この曲を再生します。";
@@ -779,7 +881,19 @@ function applyVol(){
   $("vol").value=S.vol; $("volN").textContent=S.vol;
   if(ytReady&&yt&&yt.setVolume){try{yt.setVolume(S.vol);}catch(e){}}
 }
+/* ロック画面の YouTube。入口の<audio>が空いているときだけ、入口がこの曲名を出し、操作をこちらへ回す
+   （「次・前」は一覧の並びをたどる）。変わったときだけ知らせる。 */
+var ytRepKey="";
+function ytReport(){
+  if(!SND.embedded||SND.v()<2) return;
+  var it=byId(curId), st=-1;
+  try{ if(ytReady&&yt) st=yt.getPlayerState(); }catch(e){}
+  var title=it?String(it.title||it.vid||"YouTube"):"", playing=(st===1||st===3);
+  var k=title+"|"+playing; if(k===ytRepKey) return; ytRepKey=k;
+  SND.cmd({cmd:"ytMedia",title:title,playing:playing});
+}
 function updateNow(){
+  ytReport();
   var it=byId(curId);
   $("nowTitle").textContent=it?(it.title||it.vid):"まだ何も選ばれていません";
   var th=$("nowThumb"), u=it?thumb(it):"";
@@ -1073,7 +1187,8 @@ $("addName").addEventListener("keydown",function(e){if(e.key==="Enter")$("bAdd")
 var scA=$("scAudio");
 var SND=(function(){
   var emb=(function(){try{return window.top!==window.self;}catch(e){return true;}})();
-  var st={id:null,playing:false,volOk:true};
+  // v: 入口の版。2 なら、重ねた音・端末で作る音・タイマーを入口が持っている（古い入口は送ってこない＝0）
+  var st={id:null,playing:false,volOk:true,v:0,kind:null,parts:null};
   var localVolOk=null;
   // 単体で開いたときの blob: URL。作りっぱなしにするとファイルが
   // まるごとメモリに固定され続けるので、切り替えるたびに解放する。
@@ -1090,24 +1205,47 @@ var SND=(function(){
   if(emb){
     window.addEventListener("message",function(e){
       if(e.origin!==location.origin||e.source!==parent) return;
-      var d=e.data; if(!d||!d.nkSoundState) return;
-      st.id=d.nkSoundState.id; st.playing=!!d.nkSoundState.playing;
-      if(typeof d.nkSoundState.volOk==="boolean") st.volOk=d.nkSoundState.volOk;
-      if(d.nkSoundState.err==="tap") toast("もう一度タップしてください。",4000);
-      if(d.nkSoundState.err==="track") toast("この音源を再生できませんでした。ファイルが壊れているか、URLが音声ではないかもしれません。",7000);
-      if(d.nkSoundState.err==="missing") toast("音源の実体が見つかりませんでした。登録し直してください。",6000);
+      var d=e.data; if(!d) return;
+      // 入口が持っているスリープタイマー・集中タイマー・ロック画面の操作
+      if(d.nkSleep){ if(typeof onShellSleep==="function") onShellSleep(d.nkSleep); return; }
+      if(d.nkFocus){ if(typeof onShellFocus==="function") onShellFocus(d.nkFocus); return; }
+      if(d.nkMediaAct){ if(typeof onMediaAct==="function") onMediaAct(d.nkMediaAct); return; }
+      if(d.nkDuck){ if(typeof ytDuck==="function") ytDuck(d.nkDuck); return; }
+      if(!d.nkSoundState) return;
+      var s=d.nkSoundState, v0=st.v;
+      st.id=s.id; st.playing=!!s.playing;
+      if(typeof s.volOk==="boolean") st.volOk=s.volOk;
+      st.v=+s.v||0; st.kind=s.kind||null; st.parts=Array.isArray(s.parts)?s.parts:null;
+      // 音タブを読み込み直したあとも、入口で鳴っている音源を「いまの曲」として引き継ぐ
+      // （でないと、ロック画面の「次」が一覧の先頭から始まってしまう）
+      if(st.playing&&st.kind==="track"&&typeof auById==="function"&&auById(st.id)&&auId_cur!==st.id){ auId_cur=st.id; sndKind="au"; }
+      if(s.err==="tap") toast("もう一度タップしてください。",4000);
+      if(s.err==="track") toast("この音源を再生できませんでした。ファイルが壊れているか、URLが音声ではないかもしれません。",7000);
+      if(s.err==="missing") toast("音源の実体が見つかりませんでした。登録し直してください。",6000);
+      if(s.err==="mix") toast("この音を用意できませんでした。もう一度押してください。",5000);
+      if(st.v!==v0 && typeof paintCaps==="function") paintCaps();   // 入口が新しい版だと分かった
       renderSc();
       if(typeof renderAu==="function") renderAu();
       // 曲が終わったら次へ（ラジオは終わらないのでここには来ない）
-      if(d.nkSoundState.ended && typeof auNext==="function") auNext();
+      if(s.ended && typeof auNext==="function") auNext();
     });
     post({cmd:"state"});
   }
   return {
     embedded:emb,
+    v:function(){ return emb ? st.v : 0; },
     playing:function(){ return emb ? st.playing : !scA.paused; },
     current:function(){ return emb ? st.id : (scA.paused?null:scA.getAttribute("data-id")); },
     volOk:function(){ return emb ? st.volOk : localVolSupported(); },
+    /* いま鳴っている就寝用の音（重ねていれば全部）。音源やほかの音が鳴っているときは空 */
+    parts:function(){
+      if(!emb){ var id0=scA.paused?null:scA.getAttribute("data-id"); return (id0&&soundById(id0))?[{id:id0,vol:1}]:[]; }
+      if(!st.playing) return [];
+      if(st.kind==="mix"&&st.parts) return st.parts.filter(function(p){ return p&&soundById(p.id); });
+      if(st.id&&st.kind!=="track"&&soundById(st.id)) return [{id:st.id,vol:1}];
+      return [];
+    },
+    cmd:function(m){ if(emb) post(m); },
     setVol:function(v){
       v=Math.max(0,Math.min(1,v));
       if(emb){ post({cmd:"vol",vol:v}); return; }
@@ -1120,18 +1258,23 @@ var SND=(function(){
       freeLocalUrl();
       try{ scA.loop=true; }catch(e){}
       if(!scA.src||scA.getAttribute("data-id")!==sd.id){ scA.src=sd.f; scA.setAttribute("data-id",sd.id); }
+      scA.setAttribute("data-kind","sc");
       if(localVolSupported()){ try{ scA.volume=Math.max(0,Math.min(1,vol)); }catch(e){} }
       scA.play().then(function(){ mediaMeta(sd.n); }).catch(function(){ toast("再生できませんでした。もう一度タップしてください。",4000); renderSc(); });
     },
+    /** 重ねた音・端末で作る音（入口が v2 のときだけ）。parts は [{id, vol(0〜1)}]、vol は全体の音量 */
+    mix:function(parts,vol,name){ post({cmd:"mix",parts:parts,vol:vol,name:name}); },
     stop:function(){ if(emb){ post({cmd:"stop"}); return; } try{ scA.pause(); scA.loop=true; }catch(e){} freeLocalUrl(); },
     /** 音源（手持ちのファイル／ストリーム）を鳴らす。
      *  シェルの中では最上位に頼む。最上位で鳴らさないと、タブを切り替えたり
-     *  画面を消したときに止まってしまう。 */
-    playTrack:function(t,vol){
-      if(emb){ post({cmd:"playTrack",id:t.id,kind:t.kind,url:t.url||"",name:t.name,vol:vol}); return; }
+     *  画面を消したときに止まってしまう。
+     *  opt.force … 同じ曲が鳴っていても止めずに頭から（次・前）。opt.loop … その曲をくり返す（1曲だけのとき） */
+    playTrack:function(t,vol,opt){
+      opt=opt||{};
+      if(emb){ post({cmd:"playTrack",id:t.id,kind:t.kind,url:t.url||"",name:t.name,vol:vol,force:!!opt.force,loop:!!opt.loop}); return; }
       var go=function(src,revoke){
-        try{ scA.loop=false; }catch(e){}
-        scA.src=src; scA.setAttribute("data-id",t.id);
+        try{ scA.loop=!!opt.loop; }catch(e){}
+        scA.src=src; scA.setAttribute("data-id",t.id); scA.setAttribute("data-kind","track");
         if(localVolSupported()){ try{ scA.volume=Math.max(0,Math.min(1,vol)); }catch(e){} }
         scA.play().then(function(){ mediaMeta(t.name); }).catch(function(){
           toast("再生できませんでした。もう一度タップしてください。",4000);
@@ -1146,46 +1289,138 @@ var SND=(function(){
         localUrl = URL.createObjectURL(rec.blob);
         go(localUrl,true);
       }).catch(function(){ toast("音源を読み出せませんでした。",5000); });
+    },
+    /** 鳴っている音源のくり返しを切り替える（ファイルを足した・消したとき） */
+    trackLoop:function(on){
+      if(emb){ post({cmd:"trackLoop",loop:!!on}); return; }
+      if(scA.getAttribute("data-kind")==="track"){ try{ scA.loop=!!on; }catch(e){} }
     }
   };
 })();
 var volCtl=null;
 (function(){
   var h="";
-  SOUNDS.forEach(function(s){h+='<button class="sccard" data-sc="'+s.id+'"><div class="n">'+esc(s.n)+'</div><div class="d">'+esc(s.d)+'</div></button>';});
+  SOUNDS.forEach(function(s){
+    h+='<div class="scwrap'+(s.gen?' gen':'')+'"'+(s.gen?' hidden':'')+'>'
+      +'<button class="sccard" data-sc="'+s.id+'"><div class="n">'+esc(s.n)+(s.gen?'<span class="tag">端末で作る音</span>':'')+'</div><div class="d">'+esc(s.d)+'</div></button>'
+      +'<button class="scadd" data-scadd="'+s.id+'" hidden>＋ 重ねる</button></div>';
+  });
   $("scList").innerHTML=h;
 })();
 function scVolSupported(){ return SND.volOk(); }
+/* 入口（v2）が重ねた音・端末で作る音を作れるか。単体で開いたとき・古い入口のときは、ファイルの音を1つずつ */
+function mixOn(){ return SND.v()>=2; }
 /* 就寝音と音源はシェルの同じ<audio>を使う。どちらを鳴らしているかを覚えて
    おかないと、フェードや音量スライダが相手の設定を当ててしまう
    （寝入りばなに音量が跳ね上がる、など）。 */
 var sndKind = null;   // "sc" | "au" | null
 function curBaseVol(){ return (sndKind==="au" ? S.auVol : S.scVol)/100; }
-function applyScVol(){
+function paintScVol(){
   $("scVol").value=S.scVol;$("scVolN").textContent=S.scVol;
+  var t="";
+  // 入口で作る音は音量を焼き込むので、iPhone でもつまみが効く（つまみを離したときに作り直す）
+  if(!scVolSupported()) t=mixOn()
+    ? "※ この端末（iPhone/iPad）では、つまみを離したときに音を作り直して音量を反映します（一瞬とぎれます）。スリープタイマーのフェードは、就寝用の音を段階的に小さくします（音源とYouTubeは、時間が来たらそのまま止めます）。"
+    : "※ この端末（iPhone/iPad）では、音量は本体のボタンで調整してください。";
+  $("scVolNote").textContent=t;
+}
+function applyScVol(){
+  paintScVol();
   // 音源を鳴らしている最中に就寝音のスライダを動かしても、音は変えない
   if(sndKind!=="au") SND.setVol(S.scVol/100);
-  $("scVolNote").textContent=scVolSupported()?"":"※ この端末（iPhone/iPad）では、音量は本体のボタンで調整してください。";
 }
-function playSound(id){
-  var s=null; SOUNDS.forEach(function(x){if(x.id===id)s=x;}); if(!s) return;
-  if(SND.current()===id&&SND.playing()){ SND.stop(); scId=null; sndKind=null; scStopLocal(); renderSc(); if(typeof renderAu==="function") renderAu(); return; }
-  scId=id;
+function scName(ids){ return ids.map(function(id){ var s=soundById(id); return s?s.n:id; }).join("＋"); }
+function mixVolOf(id){ return typeof S.mixVol[id]==="number"?S.mixVol[id]:100; }
+function mixSnap(ids){ var o={}; ids.forEach(function(id){ o[id]=mixVolOf(id); }); return o; }
+/* 入口へ頼む。1つだけのときは、その音をそのままの大きさで（重ねたときの大きさは、重ねたときだけ効かせる） */
+function scSend(ids){
+  if(mixOn()) SND.mix(ids.map(function(id){ return {id:id, vol:(ids.length>1?mixVolOf(id)/100:1)}; }), S.scVol/100, scName(ids));
+  else SND.play(soundById(ids[0]), S.scVol/100);
+}
+/* 就寝用の音を鳴らす（ids は重ねる音の並び）。norem: いつもの就寝から呼んだ（覚え直さない） */
+function scPlayParts(ids, norem){
+  ids=ids.filter(function(id){ var s=soundById(id); return s&&(mixOn()||!s.gen); });
+  if(!mixOn()) ids=ids.slice(0,1);    // 古い入口・単体では重ねられない
+  if(!ids.length) return;
+  scId=ids.join("+");
   auId_cur=null;      // 就寝音に切り替えたので、音源の選択は外す
   sndKind="sc";
-  SND.play(s, S.scVol/100);
-  S.hist.unshift({at:Date.now(),id:"sc:"+id,title:s.n});S.hist=S.hist.slice(0,300);
+  scSend(ids);
+  S.hist.unshift({at:Date.now(),id:"sc:"+ids.join("+"),title:scName(ids)});S.hist=S.hist.slice(0,300);
+  if(!norem) rememberSleep({ids:ids, vol:S.scVol, mv:mixSnap(ids)});
   save(); touch(false);
   renderSc();
 }
-function renderSc(){
-  var cur=SND.current(), on=SND.playing();
-  scId = on ? cur : null;
-  Array.prototype.forEach.call($("scList").children,function(b){
-    b.classList.toggle("on", on && b.getAttribute("data-sc")===cur);
-  });
+function scStop(){ SND.stop(); scId=null; sndKind=null; scStopLocal(); renderSc(); if(typeof renderAu==="function") renderAu(); }
+function playSound(id){
+  if(!soundById(id)) return;
+  var p=SND.parts();
+  // その音だけが鳴っていたら止める。重ねているときに押したら、その音だけに切り替える
+  if(p.length===1&&p[0].id===id&&SND.playing()){ scStop(); return; }
+  scPlayParts([id]);
 }
-$("scList").addEventListener("click",function(e){var b=e.target.closest("[data-sc]");if(b)playSound(b.getAttribute("data-sc"));});
+/* 「＋ 重ねる」「− 外す」 */
+function scLayer(id){
+  if(!soundById(id)||!mixOn()) return;
+  var ids=SND.parts().map(function(p){ return p.id; }), i=ids.indexOf(id);
+  if(i>=0) ids.splice(i,1);
+  else{
+    if(ids.length>=MIX_MAX){ toast("重ねられるのは"+MIX_MAX+"つまでです。",3500); return; }
+    ids.push(id);
+  }
+  if(!ids.length){ scStop(); return; }
+  scPlayParts(ids);
+}
+var mixKey="";
+function renderSc(){
+  var parts=SND.parts(), on={}, ids=[], mx=mixOn();
+  parts.forEach(function(p){ on[p.id]=1; ids.push(p.id); });
+  scId = ids.length ? ids.join("+") : null;
+  Array.prototype.forEach.call($("scList").querySelectorAll(".scwrap"),function(w){
+    var b=w.querySelector("[data-sc]"), id=b.getAttribute("data-sc"), add=w.querySelector("[data-scadd]");
+    if(w.classList.contains("gen")) w.hidden=!mx;
+    b.classList.toggle("on",!!on[id]);
+    add.hidden=!mx;
+    add.classList.toggle("on",!!on[id]);
+    add.textContent=on[id]?"− 外す":"＋ 重ねる";
+  });
+  $("scNoteMix").hidden=!mx;
+  /* それぞれの大きさのつまみは、重ねているときだけ出す（1つなら下の「音量」と同じなので）。
+     動かしている最中に描き直さないよう、並びが変わったときだけ作り直す。 */
+  var box=$("scMix"), k=(mx&&ids.length>1)?ids.join("+"):"";
+  if(k!==mixKey){
+    mixKey=k;
+    if(!k){ box.hidden=true; box.innerHTML=""; }
+    else{
+      var h='<div class="mixttl">重ねている音の大きさ（つまみを離すと、作り直して反映します）</div>';
+      ids.forEach(function(id){
+        var v=mixVolOf(id);
+        h+='<div class="mixrow"><span class="mn">'+esc(soundById(id).n)+'</span>'
+          +'<input type="range" min="0" max="100" step="1" value="'+v+'" data-mixvol="'+esc(id)+'" aria-label="'+esc(soundById(id).n)+'の大きさ">'
+          +'<span class="mv">'+v+'</span><button class="ax" data-mixdel="'+esc(id)+'" title="外す">✕</button></div>';
+      });
+      box.innerHTML=h; box.hidden=false;
+    }
+  }
+}
+$("scList").addEventListener("click",function(e){
+  var a=e.target.closest("[data-scadd]"); if(a){ scLayer(a.getAttribute("data-scadd")); return; }
+  var b=e.target.closest("[data-sc]"); if(b) playSound(b.getAttribute("data-sc"));
+});
+$("scMix").addEventListener("input",function(e){
+  var r=e.target.closest("[data-mixvol]"); if(!r) return;
+  var v=pct(r.value); S.mixVol[r.getAttribute("data-mixvol")]=v;
+  var n=r.parentNode.querySelector(".mv"); if(n) n.textContent=v;
+});
+/* 作り直すのは、つまみを離したとき（動かすたびに作り直すと、そのたびに音が途切れる） */
+$("scMix").addEventListener("change",function(e){
+  var r=e.target.closest("[data-mixvol]"); if(!r) return;
+  S.mixVol[r.getAttribute("data-mixvol")]=pct(r.value);
+  var ids=SND.parts().map(function(p){ return p.id; });
+  if(ids.length>1){ scSend(ids); rememberSleep({mv:mixSnap(ids)}); }
+  save();
+});
+$("scMix").addEventListener("click",function(e){ var b=e.target.closest("[data-mixdel]"); if(b) scLayer(b.getAttribute("data-mixdel")); });
 if(!SND.embedded){
   scA.addEventListener("pause",function(){ renderSc(); if(typeof renderAu==="function") renderAu(); });
   scA.addEventListener("play",function(){ renderSc(); if(typeof renderAu==="function") renderAu(); });
@@ -1196,7 +1431,7 @@ if(!SND.embedded){
 function mediaClear(){
   try{
     if(!("mediaSession" in navigator)) return;
-    ["play","pause","stop"].forEach(function(a){
+    ["play","pause","stop","nexttrack","previoustrack"].forEach(function(a){
       try{ navigator.mediaSession.setActionHandler(a,null); }catch(e){}
     });
     navigator.mediaSession.metadata=null;
@@ -1214,20 +1449,27 @@ function mediaMeta(title){
     // シェルの中にいるときは、ロック画面の操作はシェル側が持つ
     if(SND.embedded) return;
     if(!("mediaSession" in navigator)) return;
-    navigator.mediaSession.metadata=new MediaMetadata({title:title,artist:"就寝用の音",album:"音 — BGM"});
+    navigator.mediaSession.metadata=new MediaMetadata({title:title,artist:"気になり帳 — 音",album:"音 — BGM",
+      artwork:[{src:"icon-192.png",sizes:"192x192",type:"image/png"},{src:"icon-512.png",sizes:"512x512",type:"image/png"}]});
     navigator.mediaSession.setActionHandler("pause",function(){scA.pause();});
     // 止めたあとに再生を押されても、中身の無い<audio>を鳴らそうとしない
     navigator.mediaSession.setActionHandler("play",function(){
-      if(!scId||!scA.src) return;
+      if(!(scId||auId_cur)||!scA.src) return;
       scA.play().catch(function(){});
     });
     navigator.mediaSession.setActionHandler("stop",function(){ scId=null; scStopLocal(); renderSc(); });
+    // 音源のときだけ「次・前」
+    var au=(sndKind==="au");
+    try{ navigator.mediaSession.setActionHandler("nexttrack",au?function(){ auNext(true); }:null); }catch(e){}
+    try{ navigator.mediaSession.setActionHandler("previoustrack",au?function(){ auPrev(); }:null); }catch(e){}
   }catch(e){}
 }
 
 /* ── 操作 ─────────────────────────────────────────── */
-$("vol").addEventListener("input",function(e){S.vol=+e.target.value;save();applyVol();});
+// 曲を選んでいるあいだに合わせた音量は、その曲の音量として覚える（この端末だけ。登録には載せない）
+$("vol").addEventListener("input",function(e){S.vol=+e.target.value;if(curId)S.tvol[curId]=S.vol;save();applyVol();});
 $("scVol").addEventListener("input",function(e){S.scVol=+e.target.value;save();applyScVol();});
+$("scVol").addEventListener("change",function(){ if(SND.parts().length) rememberSleep({vol:S.scVol}); });
 $("bPlay").addEventListener("click",function(){
   if(!curId){var l=visible();if(l.length)return pickPlay(l[0].id);toast("先に一覧に登録してください。",3500);return;}
   if(!ytReady||!yt){
@@ -1300,7 +1542,7 @@ function auAddFiles(files){
       });
     });
     return chain.then(function(){
-      if(added){ save(); renderAu(); toast("音源を"+added+"件追加しました。",3500); }
+      if(added){ save(); renderAu(); auSyncLoop(); toast("音源を"+added+"件追加しました。",3500); }
       if(failed) toast("音源を"+failed+"件保存できませんでした。端末の空き容量を確認してください。",7000);
     });
   }).catch(function(){
@@ -1323,40 +1565,79 @@ function auRemove(id){
   else if(auId_cur===id){ auId_cur=null; }
   S.tracks=S.tracks.filter(function(x){ return x.id!==id; });
   S.delTracks.push({id:id, at:Date.now()});
+  delete S.tvol[id];
   if(t.kind==="file") auDel(id).catch(function(){});
-  save(); renderAu();
+  save(); renderAu(); auSyncLoop();
 }
+function auFiles(){ return S.tracks.filter(function(t){ return t.kind==="file"; }); }
+/* 手持ちのファイルが1つだけなら、その曲をくり返す。<audio>のくり返しに任せるので、
+   画面を消しているあいだも途切れない（終わるたびにこちらから鳴らし直す方式だと、1時間の曲のあと無音になっていた） */
+function auLoopWanted(t){ return !!t && t.kind==="file" && auFiles().length<2; }
+function auSyncLoop(){
+  if(!auId_cur||sndKind!=="au") return;
+  SND.trackLoop(auLoopWanted(auById(auId_cur)));
+}
+/* 「前」に戻るための控え（シャッフルでも、さっきの曲へ戻れるように） */
+var auHist=[];
+function auKeep(id){ if(auId_cur&&auId_cur!==id&&sndKind==="au"){ auHist.push(auId_cur); if(auHist.length>50) auHist.shift(); } }
+/* この曲で前に合わせた音量があれば、それにする（曲ごとに録音の大きさが違うため） */
+function auVolFor(id){ if(typeof S.tvol[id]==="number"&&S.tvol[id]!==S.auVol){ S.auVol=S.tvol[id]; save(); applyAuVol(); } }
 function auPlay(id){
   var t=auById(id); if(!t) return;
   // 「いま鳴っているのがこの音源か」で止める。SND.playing() だけを見ると、
   // 就寝音が鳴っているときにも真になり、押しても就寝音が止まるだけになる。
   if(auId_cur===id && sndKind==="au" && SND.playing()){ SND.stop(); auId_cur=null; sndKind=null; renderAu(); return; }
+  auKeep(id); auVolFor(id);
   auId_cur=id;
   scId=null;          // 音源に切り替えたので就寝音の選択は外す
   sndKind="au";
-  SND.playTrack(t, S.auVol/100);
+  SND.playTrack(t, S.auVol/100, {loop:auLoopWanted(t)});
   renderAu(); renderSc();
 }
-/** 曲が終わったら次へ。ラジオは終わらないので、ここに来るのはファイルだけ。 */
-function auNext(){
-  if(!auId_cur || sndKind!=="au") return;
-  var cur0=auById(auId_cur);
-  // ストリームは終わらない前提。終端が来ても勝手に別の曲へ飛ばさない。
-  if(cur0 && cur0.kind!=="file"){ auId_cur=null; sndKind=null; renderAu(); return; }
-  var i=-1; for(var k=0;k<S.tracks.length;k++) if(S.tracks[k].id===auId_cur) i=k;
-  if(i<0) return;
-  var files=S.tracks.filter(function(t){ return t.kind==="file"; });
-  if(files.length<2){ auId_cur=null; renderAu(); return; }
-  var next;
-  if(S.shuffle){
-    var others=files.filter(function(t){ return t.id!==auId_cur; });
-    next=others[Math.floor(Math.random()*others.length)];
-  }else{
-    var fi=-1; for(var j=0;j<files.length;j++) if(files[j].id===auId_cur) fi=j;
-    next=files[(fi+1)%files.length];
-  }
-  if(next) auPlay(next.id);
+/* 次・前・自動送りで鳴らす。同じ曲でも止めずに頭から（force） */
+function auStart(id){
+  var t=auById(id); if(!t) return;
+  auKeep(id); auVolFor(id);
+  auId_cur=id; scId=null; sndKind="au";
+  SND.playTrack(t, S.auVol/100, {force:true, loop:auLoopWanted(t)});
+  renderAu(); renderSc();
 }
+/** 次へ。manual でないとき（曲が終わった）は手持ちのファイルだけを回る（ラジオは終わらない）。
+ *  手で押した「次」・ロック画面の「次」は、ラジオも含めて一覧の順に。シャッフルは音源だけの設定。 */
+function auNext(manual){
+  var list=manual?S.tracks.slice():auFiles();
+  if(!auId_cur || sndKind!=="au"){
+    // 何も鳴っていないときの「次」は、先頭から（シャッフルなら、どれか）
+    if(manual&&list.length) auStart(list[S.auShuffle?Math.floor(Math.random()*list.length):0].id);
+    return;
+  }
+  var cur0=auById(auId_cur);
+  if(!manual){
+    // ストリームは終わらない前提。終端が来ても勝手に別の曲へ飛ばさない。
+    if(cur0 && cur0.kind!=="file"){ auId_cur=null; sndKind=null; renderAu(); return; }
+    if(!cur0) return;
+    if(list.length<2){ auStart(cur0.id); return; }   // 1曲だけなら、その曲をくり返す（ふだんは<audio>がくり返すので、ここには来ない）
+  }
+  if(!list.length) return;
+  var nx, fi=idxOf(list,auId_cur);
+  if(S.auShuffle&&list.length>1){
+    var others=list.filter(function(t){ return t.id!==auId_cur; });
+    nx=others[Math.floor(Math.random()*others.length)];
+  } else nx=list[(fi+1)%list.length];
+  if(nx) auStart(nx.id);
+}
+/** 前へ。シャッフルのときは、さっき鳴らした曲へ戻る（控えが無ければ一覧の順に）。 */
+function auPrev(){
+  var list=S.tracks; if(!list.length) return;
+  if(!auId_cur||sndKind!=="au"){ auStart(list[list.length-1].id); return; }
+  var id=null;
+  if(S.auShuffle){ while(auHist.length&&!id){ var h=auHist.pop(); if(h!==auId_cur&&auById(h)) id=h; } }
+  if(!id){ var i=idxOf(list,auId_cur); id=list[(i-1+list.length)%list.length].id; }
+  var keep=auHist.slice();
+  auStart(id);
+  if(S.auShuffle) auHist=keep;   // 戻ったぶんを、また控えに積まない（前・前…とさかのぼれるように）
+}
+function paintAuShuf(){ $("auShuf").classList.toggle("on",!!S.auShuffle); }
 function renderAu(){
   var host=$("auList"); if(!host) return;
   auNormalize();
@@ -1394,9 +1675,14 @@ $("auSave").addEventListener("click",function(){
 });
 $("auUrl").addEventListener("keypress",function(e){ if(e.key==="Enter"){ e.preventDefault(); $("auSave").click(); } });
 $("auVol").addEventListener("input",function(){
-  S.auVol=+this.value; $("auVolN").textContent=S.auVol; save();
-  if(auId_cur && sndKind==="au") SND.setVol(S.auVol/100);
+  S.auVol=+this.value; $("auVolN").textContent=S.auVol;
+  // 鳴らしている曲の音量として覚える（この端末だけ。登録には載せない）
+  if(auId_cur && sndKind==="au"){ S.tvol[auId_cur]=S.auVol; SND.setVol(S.auVol/100); }
+  save();
 });
+$("auPrevB").addEventListener("click",function(){ auPrev(); });
+$("auNextB").addEventListener("click",function(){ auNext(true); });
+$("auShuf").addEventListener("click",function(){ S.auShuffle=!S.auShuffle; auHist=[]; save(); paintAuShuf(); });
 function applyAuVol(){
   $("auVol").value=S.auVol; $("auVolN").textContent=S.auVol;
   $("auNote").textContent = SND.volOk() ? "" : "この端末ではアプリから音量を変えられません。本体の音量ボタンを使ってください。";
@@ -1421,7 +1707,11 @@ function applyNight(){
   if(mt)mt.setAttribute("content",S.night?"#0b0a09":"#f4ecda");
   updateDrift();
 }
-$("bNight").addEventListener("click",function(){S.night=!S.night;save();applyNight();});
+$("bNight").addEventListener("click",function(){
+  S.night=!S.night;save();applyNight();
+  // 就寝用の音を鳴らしているとき・タイマーが動いているときに切り替えたら、「いつもの就寝」にも覚える
+  if(SND.parts().length||tActive()) rememberSleep({night:S.night});
+});
 function updateDrift(){
   var need=S.night&&wakeWanted;
   if(need&&!driftTick){
@@ -1476,16 +1766,26 @@ document.addEventListener("visibilitychange",function(){
 });
 
 /* ── スリープタイマー ─────────────────────────────── */
+/* 入口（index.html の v2）の中で開いているときは、止める時刻もフェードも入口が持つ。
+   音タブが読み込み直されたり、取り込みで空にされたりしても、止める役がいなくならないように。
+   ここは表示と、YouTube を絞る役だけをする（YouTube はこの画面の中で鳴っているため）。
+   単体で開いたとき・古い入口のときは、これまでどおりここで数える（下の tTick / beginFade）。 */
+function shellTimer(){ return SND.embedded && SND.v()>=2; }
+var shSleep=null;      // 入口から届いたタイマーの様子 {end, fade, set, ext, phase, t0, len, done}
+function tActive(){ return shellTimer() ? !!(shSleep&&shSleep.phase==="run") : !!tTick; }
+function fadeLabel(s){ return s>=60 ? (s/60)+"分" : s+"秒"; }
+function fmtMS(sec){ var m=Math.floor(sec/60), s=sec%60; return m+":"+(s<10?"0":"")+s; }
 function paintTb(){
-  var hit=false;
+  var hit=false, act=tActive();
   Array.prototype.forEach.call(document.querySelectorAll("#tbar .tb[data-t]"),function(b){
     var on=!tExtended&&(+b.getAttribute("data-t")===S.timer); if(on)hit=true;
     b.classList.toggle("on",on);
   });
   /* 「+10分」や10分指定は、どのボタンの値とも一致しない。全部消灯させると
      タイマーが動いているのに切れているように見えるので、延長ボタンを点けておく。 */
-  $("bPlus10").classList.toggle("on",!hit&&!!tTick);
+  $("bPlus10").classList.toggle("on",!hit&&act);
 }
+function paintFade(){ $("tFade").value=String(S.fade); }
 /* フェードを途中でやめたときは音量を必ず戻す。戻さないと絞られた音量のまま鳴り続け
    （スライダの表示とも食い違う）、次のフェードは元の音量から始まるので、
    寝入りばなに音量が跳ね上がる。音源は就寝音とは別の音量なので、それぞれ戻す。 */
@@ -1494,6 +1794,7 @@ function restoreFadeVol(){
   if(sndKind==="au") SND.setVol(S.auVol/100);
 }
 function setTimer(min){
+  if(shellTimer()){ SND.cmd({cmd:"sleep",min:min,fade:S.fade}); return; }   // 表示は入口の返事（onShellSleep）で
   S.timer=min; tExtended=false;
   if(fadeTick){clearInterval(fadeTick);fadeTick=null;fadeStep=null;restoreFadeVol();}
   if(tTick){clearInterval(tTick);tTick=null;}
@@ -1504,13 +1805,12 @@ function setTimer(min){
 }
 function tickTimer(){
   var left=Math.max(0,Math.round((tEnd-Date.now())/1000));
-  var m=Math.floor(left/60),s=left%60;
-  $("tleft").textContent="残り "+m+":"+(s<10?"0":"")+s;
+  $("tleft").textContent="残り "+fmtMS(left);
   if(left<=0){clearInterval(tTick);tTick=null;paintTb();beginFade();}
 }
 var fadeStep=null, fadeYt=false;
 function beginFade(){
-  var SECS=20;
+  var SECS=S.fade||20;
   /* 絞り具合は、止める予定の時刻（tEnd）からの実時間で決める。0.5秒ずつ足していくと、
      画面を消して間引かれた・凍結されたタイマーではフェードが何分にも伸び、そのあいだ鳴り続けた。
      予定の時刻をフェードの長さより過ぎてから気づいたときは、絞らずにその場で止める。 */
@@ -1539,10 +1839,68 @@ function beginFade(){
   fadeTick=setInterval(fadeStep,500);   // 先に立ててから1回目を回す（その場で止めたときに片付けられるように）
   fadeStep();
 }
+/* 入口がフェードを始めたら、YouTube もここで絞る（入口の<audio>は入口が絞る）。
+   絞り具合は、入口が決めたフェードの始まり（t0）からの実時間で決める（画面を消して間引かれても伸びない）。 */
+var ytFadeTick=null, ytFadeT0=0, ytFadeLen=0, ytFadeV0=0;
+function ytFadeStart(t0,len){
+  var st=-1; try{if(ytReady&&yt)st=yt.getPlayerState();}catch(e){}
+  fadeYt=(st===1||st===3);
+  ytFadeT0=t0||Date.now(); ytFadeLen=len||0; ytFadeV0=S.vol;
+  if(ytFadeTick) clearInterval(ytFadeTick);
+  ytFadeTick=setInterval(ytFadeStep,500);
+  ytFadeStep();
+}
+function ytFadeStep(){
+  if(!ytFadeTick) return;
+  var k=ytFadeLen>0?Math.max(0,Math.min(1,1-(Date.now()-ytFadeT0)/ytFadeLen)):0;
+  if(ytReady&&yt&&yt.setVolume){try{yt.setVolume(Math.round(ytFadeV0*k));}catch(e){}}
+  if(k<=0){ clearInterval(ytFadeTick); ytFadeTick=null; try{if(yt&&yt.pauseVideo)yt.pauseVideo();}catch(e){} }
+}
+function ytFadeStop(){ if(ytFadeTick){ clearInterval(ytFadeTick); ytFadeTick=null; } }
+function onShellSleep(s){
+  if(!s||typeof s!=="object") return;
+  var prev=shSleep; shSleep=s;
+  S.timer=+s.set||0; tExtended=!!s.ext;
+  if(s.phase==="fade"){
+    if(!prev||prev.phase!=="fade") ytFadeStart(+s.t0, +s.len);
+  } else if(prev&&prev.phase==="fade"&&!s.done&&ytFadeTick){
+    // 「+10分」で戻った。音量を戻し、絞る前に鳴っていた YouTube は鳴らし続ける（止めてあったものは鳴らさない）
+    ytFadeStop(); applyVol();
+    var cu=byId(curId);
+    try{if(fadeYt&&yt&&yt.playVideo&&cu&&!cu.noEmbed)yt.playVideo();}catch(e){}
+  }
+  if(s.done){
+    // 入口が止め終えた。YouTube も止めて、画面の消灯を元に戻す
+    var wasFade=!!ytFadeTick, st=-1; ytFadeStop();
+    try{if(ytReady&&yt)st=yt.getPlayerState();}catch(e){}
+    if(wasFade||st===1||st===3){ try{if(yt&&yt.pauseVideo)yt.pauseVideo();}catch(e){} }
+    scId=null; auId_cur=null; sndKind=null; renderSc(); renderAu();
+    applyVol(); paintScVol();
+    wakeWanted=false; wakeRelease(); paintWake(); updateDrift();
+    toast("スリープタイマーで停止しました。おやすみなさい。",6000);
+  }
+  paintShTimer(); uiTickRun();
+}
+function paintShTimer(){
+  if(!shellTimer()) return;
+  var s=shSleep, el=$("tleft"), now=Date.now();
+  if(!s||s.phase==="idle") el.textContent="";
+  else if(s.phase==="run") el.textContent="残り "+fmtMS(Math.max(0,Math.round((s.end-now)/1000)));
+  else el.textContent="停止中…"+(s.len>=60000?" "+fmtMS(Math.max(0,Math.round((s.t0+s.len-now)/1000))):"");
+  paintTb();
+}
+/* 表示だけを1秒ごとに書き直す（数えるのは入口） */
+var uiT=null;
+function uiTickRun(){
+  var need=shellTimer()&&((shSleep&&shSleep.phase!=="idle")||(shFocus&&shFocus.on));
+  if(need&&!uiT) uiT=setInterval(function(){ paintShTimer(); paintFocus(); },1000);
+  else if(!need&&uiT){ clearInterval(uiT); uiT=null; }
+}
 /* 裏に回っているあいだはタイマーが間引かれ、凍結されることもある。
    戻ってきたら（resume は凍結からの復帰）、待たずにいまの時刻へ追いつかせる。 */
 function catchUpTimer(){
   if(document.visibilityState==="hidden") return;
+  if(shellTimer()){ ytFadeStep(); paintShTimer(); paintFocus(); return; }
   if(tTick) tickTimer(); else if(fadeTick&&fadeStep) fadeStep();
 }
 document.addEventListener("visibilitychange",catchUpTimer);
@@ -1551,18 +1909,32 @@ Array.prototype.forEach.call(document.querySelectorAll("#tbar .tb[data-t]"),func
   b.addEventListener("click",function(){
     var m=+b.getAttribute("data-t");
     setTimer(m);
-    toast(m?m+"分後に、ゆっくり音を絞って止めます。":"スリープタイマーを解除しました。",3600);
+    rememberSleep({timer:m, fade:S.fade});
+    var msg=m?m+"分後に、"+(S.fade>=60?fadeLabel(S.fade)+"かけて":"ゆっくり")+"音を絞って止めます。":"スリープタイマーを解除しました。";
+    if(m&&shellTimer()&&!SND.volOk()) msg=m+"分後に止めます（この端末では音量を変えられないため、就寝用の音だけ段階的に小さくします）。";
+    toast(msg,3600);
   });
+});
+$("tFade").addEventListener("change",function(){
+  var v=+this.value; if(FADES.indexOf(v)<0) v=20;
+  S.fade=v; save(); rememberSleep({fade:v});
+  if(shellTimer()) SND.cmd({cmd:"sleepFade",fade:v});
 });
 /* 寝落ちしそこねたとき用。フェード中に押したら音量を戻して再開する */
 $("bPlus10").addEventListener("click",function(){
+  if(shellTimer()){
+    var s0=shSleep||{phase:"idle"}, run=(s0.phase==="run"&&s0.end>Date.now()), fading=(s0.phase==="fade");
+    SND.cmd({cmd:"sleepAdd",min:10});   // 音量を戻すのは入口（YouTube は onShellSleep で戻す）
+    toast(run?"10分延長しました。":fading?"音を戻して、10分後に止めるようにしました。":"10分後に止めます。",run?3000:4000);
+    return;
+  }
   var wasFading=!!fadeTick;
   if(wasFading){
     clearInterval(fadeTick);fadeTick=null;fadeStep=null;
     restoreFadeVol();
     var cu=byId(curId);
     try{if(fadeYt&&yt&&yt.playVideo&&cu&&!cu.noEmbed)yt.playVideo();}catch(e){}
-    if(scId){ var sd=null; SOUNDS.forEach(function(x){if(x.id===scId)sd=x;}); if(sd) SND.play(sd,S.scVol/100); }
+    if(scId){ var ids0=scId.split("+").filter(soundById); if(ids0.length) scSend(ids0); }
   }
   if(tTick&&tEnd>Date.now()){
     tEnd+=10*60000; S.timer+=10; tExtended=true; paintTb(); tickTimer();
@@ -1572,6 +1944,112 @@ $("bPlus10").addEventListener("click",function(){
     toast(wasFading?"音を戻して、10分後に止めるようにしました。":"10分後に止めます。",4000);
   }
 });
+
+/* ── 集中タイマー（25分集中・5分休憩など。数えるのは入口）──────────
+   区切りで、入口が音楽を少し下げて小さなチャイムを鳴らす。YouTube はこの画面の中で鳴っているので、
+   下げるのはここ（ytDuck）。YouTube はスマホで画面を消すと止まるので、💡と組み合わせて使う。 */
+var shFocus=null, focusOpen=false;
+function focusAvail(){ return SND.embedded && SND.v()>=2; }
+function onShellFocus(f){ if(!f||typeof f!=="object") return; shFocus=f; paintFocus(); uiTickRun(); }
+function paintFocus(){
+  var ok=focusAvail(), box=$("focusBox"), f=shFocus, on=!!(f&&f.on);
+  $("bFocusOpen").hidden=!ok;
+  if(!ok){ box.hidden=true; return; }
+  box.hidden=!(on||focusOpen);
+  $("bFocusOpen").classList.toggle("on",on);
+  var b=$("bFocus"); b.textContent=on?"やめる":"はじめる"; b.classList.toggle("solid",!on);
+  var st=$("fState");
+  if(on){
+    var left=Math.max(0,Math.round((f.end-Date.now())/1000));
+    st.textContent=(f.phase==="work"?"集中":"休憩")+" "+fmtMS(left)+(f.phase==="work"?"（"+f.round+"回目）":"");
+  } else st.textContent=S.focus.work+"分集中・"+S.focus.brk+"分休憩";
+  Array.prototype.forEach.call(box.querySelectorAll("[data-fw]"),function(x){ x.classList.toggle("on",+x.getAttribute("data-fw")===S.focus.work); });
+  Array.prototype.forEach.call(box.querySelectorAll("[data-fb]"),function(x){ x.classList.toggle("on",+x.getAttribute("data-fb")===S.focus.brk); });
+  $("fNoteIos").textContent=SND.volOk()?"":"この端末では音楽の音量を下げられないので、チャイムだけでお知らせします。";
+}
+$("bFocusOpen").addEventListener("click",function(){ focusOpen=!focusOpen; paintFocus(); });
+$("bFocus").addEventListener("click",function(){
+  focusOpen=true;   // 止めたあとも開いたままにする（長さを選び直せるように）
+  if(shFocus&&shFocus.on){ SND.cmd({cmd:"focus",on:false}); toast("集中タイマーを止めました。",3000); return; }
+  SND.cmd({cmd:"focus",on:true,work:S.focus.work,brk:S.focus.brk});
+  toast(S.focus.work+"分集中します。区切りでチャイムを鳴らしてお知らせします。",4500);
+});
+$("fOpts").addEventListener("click",function(e){
+  var b=e.target.closest("[data-fw],[data-fb]"); if(!b) return;
+  if(b.hasAttribute("data-fw")) S.focus.work=+b.getAttribute("data-fw"); else S.focus.brk=+b.getAttribute("data-fb");
+  save(); paintFocus();
+  // 動いている途中に変えたら、いまの区切りはそのまま、次の区切りから
+  if(shFocus&&shFocus.on) SND.cmd({cmd:"focus",on:true,keep:true,work:S.focus.work,brk:S.focus.brk});
+});
+/* 区切りの合図で YouTube を少し下げて、元に戻す。スリープタイマーで絞っている途中は触らない */
+var ytDuckT=null;
+function ytDuck(d){
+  if(!ytReady||!yt||!yt.setVolume||fadeTick||ytFadeTick) return;
+  var st=-1; try{st=yt.getPlayerState();}catch(e){}
+  if(st!==1&&st!==3) return;
+  var k=Math.max(0,Math.min(1,+d.k||0.3)), ms=Math.max(500,Math.min(10000,+d.ms||3000)), t0=Date.now();
+  if(ytDuckT) clearInterval(ytDuckT);
+  ytDuckT=setInterval(function(){
+    var t=Date.now()-t0, g;
+    if(fadeTick||ytFadeTick){ clearInterval(ytDuckT); ytDuckT=null; return; }
+    if(t<400) g=1-(1-k)*t/400; else if(t<ms) g=k; else if(t<ms+1500) g=k+(1-k)*(t-ms)/1500;
+    else { clearInterval(ytDuckT); ytDuckT=null; applyVol(); return; }
+    try{ yt.setVolume(Math.round(S.vol*g)); }catch(e){}
+  },100);
+}
+
+/* ── ロック画面からの操作（入口が受けて、こちらへ回してくる）── */
+function onMediaAct(m){
+  var a=m&&m.act; if(!a) return;
+  if(m.src==="track"){ if(a==="next") auNext(true); else if(a==="prev") auPrev(); return; }
+  if(m.src!=="yt") return;
+  // 「次」は埋め込みできない曲（別の画面で開くもの）を飛ばす。ロック画面からは開けないため
+  if(a==="next") next(true);
+  else if(a==="prev") prev();
+  else if(a==="play"){ if(curId&&ytReady&&yt){ try{yt.playVideo();}catch(e){} } }
+  else if(a==="pause"){ if(ytReady&&yt){ try{yt.pauseVideo();}catch(e){} } }
+}
+
+/* ── いつもの就寝 ───────────────────────────────────
+   寝る前に毎回「音を選ぶ・重ねる・音量・タイマー・夜間モード」をやり直すのは手間なので、
+   最後に使った組み合わせをこの端末に覚えておき、ひと押しで全部そろえる。
+   端末ごとの設定なので同期はしない（音量や夜間モードと同じ）。 */
+function rememberSleep(p){
+  var o={}, k, u=S.sleep||{ids:[],vol:S.scVol,timer:0,fade:S.fade,night:S.night,mv:{}};
+  for(k in u) o[k]=u[k];
+  for(k in p) o[k]=p[k];
+  if(p.ids) o.night=S.night;   // 音を鳴らしはじめたときの夜間モードも、いっしょに覚える
+  o.at=Date.now();
+  S.sleep=sleepNorm(o); save(); paintUsual();
+}
+function usualIds(u){
+  return (u&&u.ids?u.ids:[]).filter(function(id){ var s=soundById(id); return s&&(mixOn()||!s.gen); }).slice(0,mixOn()?MIX_MAX:1);
+}
+function paintUsual(){
+  var u=S.sleep, ids=usualIds(u), el=$("bUsual");
+  el.hidden=!ids.length;
+  if(!ids.length) return;
+  var b=[scName(ids),"音量"+u.vol];
+  b.push(u.timer>0?u.timer+"分で止める（フェード"+fadeLabel(u.fade)+"）":"タイマーなし");
+  if(u.night) b.push("夜間モード");
+  $("usualDesc").textContent=b.join(" ・ ");
+}
+function startUsual(){
+  var u=S.sleep, ids=usualIds(u); if(!ids.length) return;
+  setMode("sc");
+  if(u.night!==S.night){ S.night=u.night; applyNight(); }
+  S.scVol=u.vol; paintScVol();
+  for(var k in (u.mv||{})) S.mixVol[k]=u.mv[k];
+  S.fade=u.fade; paintFade();
+  mixKey="";            // それぞれの大きさのつまみも描き直す
+  scPlayParts(ids,true);
+  setTimer(u.timer>0?u.timer:0);
+  save();
+  toast("いつもの就寝をはじめました。"+(u.timer>0?u.timer+"分後に止めます。":"")+"おやすみなさい。",5000);
+}
+$("bUsual").addEventListener("click",startUsual);
+/* 入口が新しい版（v2）だと分かったら、作る音・重ねる・集中タイマー・入口のタイマーを出す */
+function paintCaps(){ paintScVol(); paintFocus(); paintShTimer(); uiTickRun(); paintUsual(); ytRepKey=""; ytReport(); }
 
 /* ── 端末間の同期（sync.js の共通エンジンを使う）───────
    同期するのは 登録リスト・ジャンル と削除の墓標だけ。
@@ -1726,7 +2204,9 @@ $("bSyncAuto").addEventListener("click",function(){ if(sync) sync.setAuto(!sync.
 
 /* ── 初期化 ───────────────────────────────────────── */
 addCats=(S.lastCats||[]).filter(function(c){return !!genreByName(c);});
-setMode(S.mode); applyNight(); applyVol(); applyScVol(); applyAuVol(); renderAu(); paintWake();
+/* 就寝音の音量は表示だけ。ここで入口へ送ると、音タブを開き直しただけで、鳴っている音源やくつろぎの音が
+   就寝音の音量に変わってしまう（単体で開いたときは、鳴らすときに合わせる） */
+setMode(S.mode); applyNight(); applyVol(); paintScVol(); applyAuVol(); renderAu(); paintWake(); paintFade(); paintAuShuf(); paintUsual(); paintFocus();
 renderGenreSearch(); renderAddCats(); renderGFilters();
 Array.prototype.forEach.call(document.querySelectorAll("#sfilters .f"),function(x){
   x.classList.toggle("on",x.getAttribute("data-f")===S.filter);

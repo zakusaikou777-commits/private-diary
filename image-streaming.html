@@ -245,9 +245,45 @@
   /* 練習中の暗転。目を閉じて行う練習なので、画面は見なくていい。
      真っ黒にしておくと、ふと目を開けても光が入らない（有機ELなら電池も減りにくい）。 */
   #darkroom{position:fixed; inset:0; background:#000; z-index:90; display:flex; align-items:flex-end; justify-content:center;
-    padding-bottom:max(28px, env(safe-area-inset-bottom)); cursor:pointer; -webkit-tap-highlight-color:transparent;}
+    padding-bottom:max(28px, env(safe-area-inset-bottom)); cursor:pointer; -webkit-tap-highlight-color:transparent;
+    /* 長押し（一時停止・再開）で、文字の選択やメニューが出ないように */
+    touch-action:none; -webkit-touch-callout:none; user-select:none; -webkit-user-select:none;}
   #darkroom[hidden]{display:none;}
   .dr-hint{font-size:11px; letter-spacing:.08em; color:#2c2320; user-select:none; -webkit-user-select:none;}
+
+  /* 前回の練習の取りこぼし（落ちた・閉じた） */
+  .recover{width:100%; max-width:340px; margin:0 0 18px; padding:13px 14px; border-radius:13px; border:1px solid rgba(224,122,74,.45); background:rgba(224,122,74,.08);}
+  .recover-q{font-size:14px; font-weight:600; color:var(--paper); line-height:1.45;}
+  .recover-sub{font-size:11.5px; color:var(--dim); line-height:1.5; margin-top:4px;}
+  .recover-acts{display:flex; gap:10px; margin-top:11px;}
+  .recover-acts .btn{flex:1; padding:10px 12px; font-size:13px;}
+
+  .seg-help{font-size:11.5px; color:var(--dim); line-height:1.45; margin-top:7px;}
+  .rec-store{font-size:11.5px; color:var(--dim); line-height:1.5; display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:-6px; padding:0 4px;}
+  .rec-live{margin-top:12px; font-size:11px; letter-spacing:.08em; color:var(--ember);}
+  .rec-live.off{color:var(--dim);}
+
+  .done-status{font-size:12.5px; color:var(--dim); text-align:center; line-height:1.5;}
+  .flabel{display:block; font-size:11px; letter-spacing:.12em; color:var(--dim); font-weight:600; margin:0 0 6px 2px;}
+  .playbtn{background:none; border:1px solid var(--faint); border-radius:9px; cursor:pointer; font-family:var(--fb); font-size:12px; color:var(--paper); padding:6px 10px;}
+  .playbtn:hover{border-color:rgba(224,122,74,.5);}
+  .playbtn.wide{width:100%; padding:10px 12px; font-size:13px;}
+
+  .frame.half{border-style:dashed; border-color:rgba(224,122,74,.42);
+    background:linear-gradient(to top, rgba(255,176,120,.28), rgba(181,72,46,.14) 50%, rgba(255,255,255,.015) 50%);}
+  .frame.half .frame-num{color:rgba(239,230,218,.6);}
+  .today{font-family:var(--fm); font-size:11.5px; color:var(--dim); margin-top:10px; text-align:right; letter-spacing:.02em;}
+
+  .jtools{display:flex; flex-direction:column; gap:6px; margin-top:12px;}
+  .jsearch{width:100%; font-family:var(--fb); font-size:13px; color:var(--paper); background:rgba(239,230,218,.05); border:1px solid var(--faint); border-radius:10px; padding:9px 12px;}
+  .jsearch:focus{outline:none; border-color:rgba(224,122,74,.5);}
+  .jcount{font-size:11px; color:var(--dim); padding:0 2px;}
+  .jfield{font-size:12.5px; color:var(--paper); line-height:1.45; margin-top:5px; white-space:pre-wrap;}
+  .jlab{font-size:10px; letter-spacing:.1em; color:var(--ember); font-weight:600; margin-right:6px;}
+  .jacts{display:flex; gap:6px; justify-content:flex-end; align-items:center; margin-top:8px; flex-wrap:wrap;}
+  .jedit{display:flex; flex-direction:column; gap:9px; margin-top:10px;}
+  .jedit .rating-row{justify-content:flex-start;}
+  .jedit .vbtn{width:38px; height:38px; font-size:13px;}
 
   @media (prefers-reduced-motion: reduce){
     .glow{animation:none !important;}
@@ -258,7 +294,7 @@
 </style>
 </head>
 <body>
-  <div id="darkroom" hidden><div class="dr-hint">練習中 · 触ると操作が出ます</div></div>
+  <div id="darkroom" hidden><div class="dr-hint" id="drHint">練習中 · 触ると操作が出ます · 長押しで一時停止</div></div>
   <div class="console">
     <header class="head">
       <div class="eyebrow">イメージストリーミング · ウェンガー式</div>
@@ -277,6 +313,14 @@
     </header>
 
     <main class="stage">
+      <div class="recover" id="recoverBox" role="alertdialog" aria-labelledby="recoverQ" hidden>
+        <div class="recover-q" id="recoverQ"></div>
+        <div class="recover-sub" id="recoverSub"></div>
+        <div class="recover-acts">
+          <button class="btn ghost" id="recoverNo" type="button">記録しない</button>
+          <button class="btn primary" id="recoverYes" type="button">記録する</button>
+        </div>
+      </div>
       <div class="tray-wrap">
         <div class="tray phase-idle" id="tray">
           <div class="glow"></div>
@@ -295,6 +339,7 @@
               <div class="clock" id="clock">10:00</div>
               <div class="sense-live" id="senseLive"></div>
               <div class="paused" id="pausedLbl" hidden>一時停止中</div>
+              <div class="rec-live" id="recLive" hidden></div>
             </div>
             <div id="pDone" hidden>
               <div class="done-mark" id="doneMark"></div>
@@ -326,10 +371,15 @@
           <span class="toggle-ico" id="toggleIco"></span>
           <span class="toggle-text">
             <span class="toggle-head">音声ガイド</span>
-            <span class="toggle-help">目を閉じたまま続けられるよう、情景と感覚の切り替えを声と合図の音で伝えます</span>
+            <span class="toggle-help">目を閉じたまま続けられるよう、情景と感覚の切り替え・残り時間・一時停止と再開を、声と合図の音で伝えます</span>
           </span>
           <span class="switch" id="toggleSwitch"><span class="knob"></span></span>
         </button>
+        <div>
+          <div class="block-label">問いかけの間隔</div>
+          <div class="segmented" id="cueSeg"></div>
+          <div class="seg-help" id="cueHelp"></div>
+        </div>
         <button class="toggle" id="dimBtn" type="button">
           <span class="toggle-ico" id="dimIco"></span>
           <span class="toggle-text">
@@ -338,6 +388,15 @@
           </span>
           <span class="switch" id="dimSwitch"><span class="knob"></span></span>
         </button>
+        <button class="toggle" id="recBtn" type="button">
+          <span class="toggle-ico" id="recIco"></span>
+          <span class="toggle-text">
+            <span class="toggle-head">描写を録音する（この端末だけ）</span>
+            <span class="toggle-help" id="recHelp"></span>
+          </span>
+          <span class="switch" id="recSwitch"><span class="knob"></span></span>
+        </button>
+        <div class="rec-store" id="recStore" hidden></div>
         <div class="voicebox" id="voiceBox">
           <label class="vlbl" for="voiceSel">声</label>
           <select id="voiceSel" class="vsel"></select>
@@ -373,15 +432,26 @@
       </div>
 
       <div class="controls done" id="ctlDone" hidden>
+        <div class="done-status" id="doneStatus" role="status"></div>
+        <button class="playbtn wide" id="donePlay" type="button" hidden></button>
         <div>
           <div class="rating-label">鮮明さ（任意）</div>
           <div class="rating-row" id="ratingRow"></div>
         </div>
-        <textarea class="note" id="noteEl" rows="2" placeholder="どれくらい鮮明でしたか？気づいたことがあれば（任意）"></textarea>
-        <div class="done-actions">
-          <button class="btn ghost" id="discardBtn">破棄</button>
-          <button class="btn primary" id="saveBtn">記録する</button>
+        <div>
+          <label class="flabel" for="imgEl">印象に残った像</label>
+          <textarea class="note" id="imgEl" rows="2" placeholder="いちばん印象に残ったもの（任意）"></textarea>
         </div>
+        <div>
+          <label class="flabel" for="meanEl">気づき・意味</label>
+          <textarea class="note" id="meanEl" rows="2" placeholder="その像から気づいたこと、思い当たる意味（任意）"></textarea>
+        </div>
+        <textarea class="note" id="noteEl" rows="2" placeholder="メモ（任意）" aria-label="メモ"></textarea>
+        <div class="done-actions">
+          <button class="btn ghost" id="discardBtn" type="button"></button>
+          <button class="btn primary" id="saveBtn" type="button"></button>
+        </div>
+        <div class="clear-confirm" id="discardAsk" hidden><span id="discardQ">この記録を消しますか？</span><button class="link danger" id="discardYes" type="button">消す</button><button class="link" id="discardNo" type="button">やめる</button></div>
       </div>
     </main>
 
@@ -391,6 +461,7 @@
         <span class="cycle" id="cycleTxt">0 / 10</span>
       </div>
       <div class="strip" id="strip" role="img" aria-label="練習の記録"></div>
+      <div class="today" id="todayTxt" hidden></div>
       <div class="cycle-done" id="cycleDone" hidden></div>
 
       <div class="stats">
@@ -402,7 +473,7 @@
       <div id="spark"></div>
 
       <div class="tenten-foot">
-        <p class="guide">ウェンガーのTen/Ten：1日10分を10日間。変化がなければ別の方法を。何かが動き出したら、続けてみましょう。</p>
+        <p class="guide">ウェンガーのTen/Ten：1日10分を10日間。その日の練習が合わせて10分に届くと、1コマ現像されます（届かない日は半分だけ）。変化がなければ別の方法を。何かが動き出したら、続けてみましょう。</p>
         <div id="clearWrap"></div>
         <p class="persist-note" id="persistNote" hidden>このプレビューでは履歴が保存されません。ダウンロードして開くと、記録がこの端末に残ります。</p>
       </div>
@@ -413,6 +484,10 @@
         <span>練習の記録</span>
         <span class="jchev" id="jchev"></span>
       </button>
+      <div class="jtools" id="jtools" hidden>
+        <input class="jsearch" id="jsearch" type="search" placeholder="記録をさがす（お題・像・気づき・メモ）" aria-label="記録をさがす" autocomplete="off">
+        <div class="jcount" id="jcount"></div>
+      </div>
       <div class="jlist" id="jlist" hidden></div>
     </section>
 
@@ -448,11 +523,40 @@
   ];
 
   var DURATIONS = [3, 5, 10];
-  var CUE_INTERVAL = 50000;
+  /* 問いかけの間隔（秒）。0 は「なし」（はじめの案内と終わりの声だけ）。端末ごとの好み */
+  var CUE_CHOICES = [0, 50, 90];
+  var CUE_DEFAULT = 50;
+  /* ウェンガーの「ベルクロ」の問い。感覚を切り替えるあいだに、いま見ている像をもう一段深める。
+     声にだけ使うので、読み違えやすい言い回しは避けてある（「何が」はなにが、「何ですか」はなんですか と読まれる） */
+  var QUESTIONS = [
+    "もっと近づくと、何が変わりますか。",
+    "その向こうには、何がありますか。",
+    "そこにいて、どんな気持ちですか。",
+    "いちばん細かいところは、どうなっていますか。",
+    "少し離れて、全体を見わたすと、どう見えますか。",
+    "それにさわってみると、どんな手ざわりですか。",
+    "光は、どこから来ていますか。",
+    "次の瞬間、何が起こりますか。",
+    "その奥に、まだ気づいていないものはありませんか。",
+    "いま、いちばん目を引くものは何ですか。"
+  ];
+  /* 黙ったままのときの、短い呼び水（マイクを使うときだけ） */
+  var NUDGES = [
+    "いま、何が見えていますか。",
+    "小さなことでも、そのまま声に出してみてください。",
+    "どんな色や、明るさがありますか。",
+    "浮かんでいるものを、ひとつ言葉にしてみましょう。",
+    "何も浮かばなければ、まぶたの裏に見えるものを、そのまま話してみてください。"
+  ];
   var SENSE_FREQS = [523.25, 587.33, 659.25, 783.99, 880.0];
   var CIRC = 2 * Math.PI * 92;
   var KEY = "image-streaming:v1";
   var CLR_KEY = "image-streaming:clearedAt";
+  var RUN_KEY = "image-streaming:running";   // 練習中の控え（この端末だけ。落ちた・閉じたときに記録を拾うため）
+  var RUN_SS = "image-streaming:runId";      // このタブで動かしていた練習の名札（sessionStorage）
+  var AUDIO_FLAG = "image-streaming:audio";  // この端末に録音が置いてあるか（無い端末では IndexedDB を開かない）
+  var MIN_SAVE_SEC = 30;                     // これより短い練習は、自動では記録しない
+  var TEN_SEC = 600;                         // Ten/Ten の1コマ＝その日の練習の合計10分
 
   /* ---------- helpers ---------- */
   function pad(n){ return n < 10 ? "0" + n : "" + n; }
@@ -461,6 +565,21 @@
   function fmtDay(s){ var p = s.split("-"); return Number(p[1]) + "月" + Number(p[2]) + "日"; }
   function esc(t){ return String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
   function $(id){ return document.getElementById(id); }
+  /* 「7分」「45秒」。練習の長さを言葉で */
+  function fmtDur(sec){ sec = Math.max(0, Math.round(+sec || 0)); return sec < 60 ? sec + "秒" : Math.round(sec / 60) + "分"; }
+  function fmtSize(b){ b = +b || 0; return b < 1048576 ? Math.max(1, Math.round(b / 1024)) + "KB" : (b / 1048576).toFixed(1) + "MB"; }
+  /* 残り時間を、耳で聞いて分かる言い方に（30秒きざみ。「あと1分半」） */
+  function remainText(sec){
+    var h = Math.round(sec / 30);
+    if(h <= 1) return Math.max(10, Math.round(sec / 10) * 10) + "秒";
+    return Math.floor(h / 2) + "分" + (h % 2 ? "半" : "");
+  }
+  function shuffled(n){
+    var a = [], i;
+    for(i=0;i<n;i++) a.push(i);
+    for(i=n-1;i>0;i--){ var k = (Math.random() * (i + 1)) | 0, t = a[i]; a[i] = a[k]; a[k] = t; }
+    return a;
+  }
 
   /* ---------- storage (localStorage with safe fallback) ---------- */
   var store = (function(){
@@ -485,7 +604,8 @@
     rotate: function(s){ return svg(s,'<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>'); },
     check: function(s){ return '<svg width="'+s+'" height="'+s+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>'; },
     chev: function(s){ return svg(s,'<path d="m6 9 6 6 6-6"/>'); },
-    moon: function(s){ return svg(s,'<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>'); }
+    moon: function(s){ return svg(s,'<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>'); },
+    mic: function(s){ return svg(s,'<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" y1="18" x2="12" y2="22"/>'); }
   };
   function svg(s, inner){ return '<svg width="'+s+'" height="'+s+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+inner+'</svg>'; }
 
@@ -500,14 +620,24 @@
     free: false,         // お題なし（浮かんだものをそのまま描写する、本来のやり方）
     run: { free: false, scene: "" },   // 練習中の回のお題（begin で控える）
     voiceURI: "", vPitch: 1.15, vRate: 0.90, vPreset: "soft",
+    cueSec: CUE_DEFAULT, // 問いかけの間隔（秒）。0 = なし
+    rec: false,          // 描写を録音する（この端末だけ。既定はOFF）
     activeSense: 0,
+    sid: 0,              // 練習ごとの名札（始めた時刻）
+    cueN: 0, cueText: "", qOrder: [], qPos: 0, nPos: 0,
+    ann: { half: false, one: false },   // 残り時間の知らせ（済んだか）
+    darkPause: false,    // 暗いまま（長押しで）一時停止した。再開も暗い画面の長押しでできるように
     rating: null,
-    pending: { sec:0, scene:"" },
+    pending: { sec:0, scene:"", audio:null },
+    doneKey: "",         // 終わった回の記録の鍵（自動で記録したもの。記録していなければ空）
+    discardAsk: false,
+    recover: null,       // 前回、記録されないまま終わった練習の控え
     history: [],
     clearedAt: 0,        // 旧版の全消去（消した時刻）。読むだけで、新しくは作らない（loadCleared の説明）
-    clearedKeys: [],     // 全消去で消した記録の鍵（recKey）
+    clearedKeys: [],     // 消した記録の鍵（recKey）。全消去と、1件ずつの削除の両方
     confirmClear: false,
-    journalOpen: false
+    journalOpen: false,
+    jq: "", jEdit: "", jDraft: null, jDel: "", jDirty: false   // 記録の一覧：検索・直している記録・消す確認
   };
   var justFlash = false;
   var ttsSupported = ("speechSynthesis" in window);
@@ -701,14 +831,17 @@
   var speakGen = 0;
   // 声のせいで黙ったときのエラー。止めた・操作が要る・文が長すぎる、などは声を替えても直らない
   var NET_ERR = /^(network|synthesis-failed|synthesis-unavailable|voice-unavailable|language-unavailable|)$/;
-  function speak(text){
-    speakParts(splitJa(yomiText(text)), false);
+  /* queued: 読んでいる案内を止めず、その後ろに並べる（残り時間の知らせ・問いかけなど）。
+     ふだんの speak は、いま読んでいるものを止めて読み替える（操作への返事・テスト） */
+  function speak(text, queued){
+    speakParts(splitJa(yomiText(text)), false, !!queued);
   }
-  function speakParts(parts, retry){
+  function speakParts(parts, retry, queued){
     try {
       if(!ttsSupported) return;
       var ss = window.speechSynthesis;
-      var gen = ++speakGen;
+      // 後ろに並べるときは世代を進めない（先に読んでいる文の読み直しを止めないように）
+      var gen = queued ? speakGen : ++speakGen;
       var go = function(){
         speakTimer = null;
         if(gen !== speakGen) return;          // 待っている間に止めた・別の文に替わった
@@ -731,6 +864,11 @@
           } catch(e){}
         });
       };
+      if(queued){
+        // 止めた直後の読み直し待ちがあるなら、それが読まれてから並べる（順番が入れ替わらないように）
+        if(speakTimer){ setTimeout(function(){ if(gen === speakGen) speakParts(parts, retry, true); }, 300); return; }
+        go(); return;                               // 読み上げの順番待ち（engine の列）に任せる
+      }
       // 連打で go が積み上がらないよう、待機中のものは必ず捨ててから入れ替える
       if(speakTimer){ clearTimeout(speakTimer); speakTimer = null; }
       if(ss.speaking || ss.pending){
@@ -754,6 +892,11 @@
     if(speakTimer){ clearTimeout(speakTimer); speakTimer = null; }
     speaking.length = 0;
     try { if(ttsSupported) window.speechSynthesis.cancel(); } catch(e){}
+  }
+  /* 案内の声が出ている（または順番を待っている）か */
+  function guideTalking(){
+    if(!ttsSupported) return false;
+    try { var ss = window.speechSynthesis; return !!(ss.speaking || ss.pending || speakTimer); } catch(e){ return false; }
   }
 
   /* ---------- wake lock ---------- */
@@ -787,23 +930,397 @@
      終了時刻を持って、そこから残りを計算する。 */
   var tick = null, cueTick = null, endAt = 0;
   function readClock(){ return Math.max(0, Math.round((endAt - Date.now()) / 1000)); }
-  function onTick(){ S.secondsLeft = readClock(); renderClock(); if(S.secondsLeft === 0) onComplete(); }
+  function onTick(){
+    S.secondsLeft = readClock(); renderClock();
+    if(S.secondsLeft === 0){ onComplete(); return; }
+    checkTimeAnn();
+  }
   function startTimer(){ stopTimer(); endAt = Date.now() + S.secondsLeft * 1000; tick = setInterval(onTick, 1000); }
   function stopTimer(){
     if(tick){ clearInterval(tick); tick = null; if(endAt) S.secondsLeft = readClock(); }
     endAt = 0;
   }
   document.addEventListener("visibilitychange", function(){
-    if(document.visibilityState !== "visible" || S.phase !== "running") return;
+    // 裏に回ったまま端末に落とされても、練習と書きかけの記録を拾えるように
+    if(document.visibilityState !== "visible"){ saveRun(); flushPatch(); return; }
+    if(S.phase !== "running") return;
     reqWake();
     if(tick) onTick();   // 裏にいるあいだ止まっていた時計を、実時間に合わせ直す
   });
-  function startCues(){ stopCues(); cueTick = setInterval(function(){
-      S.activeSense = (S.activeSense + 1) % SENSES.length;
-      renderSense();
-      if(S.speakCues){ senseTone(S.activeSense); speak(SENSES[S.activeSense].speak); }
-    }, CUE_INTERVAL); }
-  function stopCues(){ if(cueTick){ clearInterval(cueTick); cueTick = null; } }
+
+  /* ---------- 問いかけ ----------
+     間隔ごとに「像を深める問い」と「次の感覚」を交互に伝える（問い→感覚→問い…）。
+     決まった時刻にかぶせるのではなく、案内の声が終わってから伝える。マイクを使うときは、
+     本人が話しているあいだは待つ（話の途中で遮らない）。待っても話しつづけているなら、
+     流れを止めないよう、その問いかけは見送る。 */
+  var CUE_WAIT = 20000, ANN_WAIT = 10000;
+  var heldTimers = [];
+  function cueMs(){ return (S.cueSec || 0) * 1000; }
+  function startCues(){ stopCues(); armCue(); }
+  function armCue(){
+    var ms = cueMs();
+    if(!ms || S.phase !== "running") return;
+    if(cueTick) clearTimeout(cueTick);
+    cueTick = setTimeout(function(){ cueTick = null; fireCue(); }, ms);   // 前の合図を伝えてから数える
+  }
+  function stopCues(){
+    if(cueTick){ clearTimeout(cueTick); cueTick = null; }
+    for(var i=0;i<heldTimers.length;i++) clearTimeout(heldTimers[i]);
+    heldTimers.length = 0;
+  }
+  function holdLater(fn, ms){
+    var id = setTimeout(function(){
+      var i = heldTimers.indexOf(id); if(i >= 0) heldTimers.splice(i, 1);
+      fn();
+    }, ms);
+    heldTimers.push(id);
+  }
+  function nextQuestion(){
+    if(S.qPos >= S.qOrder.length){ S.qOrder = shuffled(QUESTIONS.length); S.qPos = 0; }   // 一巡するまで同じ問いは出さない
+    return QUESTIONS[S.qOrder[S.qPos++]];
+  }
+  function fireCue(){
+    if(S.phase !== "running") return;
+    S.cueN++;
+    if(S.cueN % 2 === 1){
+      var q = nextQuestion();
+      deliver({ text: q, wait: CUE_WAIT, skip: true, apply: function(){ S.cueText = q; renderSense(); } }, armCue);
+    } else {
+      deliver({ tone: true, wait: CUE_WAIT, skip: true,
+        apply: function(){ S.activeSense = (S.activeSense + 1) % SENSES.length; S.cueText = ""; renderSense(); },
+        say: function(){ return SENSES[S.activeSense].speak; } }, armCue);
+    }
+  }
+  /* 合図をひとつ伝える。案内の声が出ているあいだ・本人が話しているあいだは、最長 c.wait まで待つ。
+     待ちきっても話しつづけているなら、問いかけ（c.skip）は見送る。残り時間の知らせは見送らない。 */
+  function deliver(c, after){
+    var t0 = Date.now();
+    var attempt = function(){
+      if(S.phase !== "running") return;          // 止めた・終えた（再開すると数え直す）
+      if(S.speakCues){
+        var talking = userTalking();
+        if((talking || guideTalking()) && Date.now() - t0 < c.wait){ holdLater(attempt, 300); return; }
+        if(talking && c.skip){ if(after) after(); return; }
+      }
+      if(c.apply) c.apply();
+      if(S.speakCues){
+        if(c.tone) senseTone(S.activeSense);
+        var t = c.say ? c.say() : c.text;
+        if(t) speak(t, true);                      // 案内がまだ続いていれば、その後ろに並べる
+      }
+      if(after) after();
+    };
+    attempt();
+  }
+  /* 残り時間を声で知らせる。目を閉じたままでも、あとどれくらいか分かるように。
+     半分の知らせは5分以上の練習だけ（3分だと「あと1分」とすぐ重なるため） */
+  function checkTimeAnn(){
+    if(S.phase !== "running" || !S.speakCues) return;
+    var left = S.secondsLeft, total = S.durationMin * 60;
+    if(!S.ann.half && total >= 300 && left <= total / 2 && left > 75){
+      S.ann.half = true;
+      deliver({ wait: ANN_WAIT, say: function(){ return "半分が過ぎました。あと" + remainText(S.secondsLeft) + "です。"; } });
+    }
+    if(!S.ann.one && left <= 60 && left > 10){
+      S.ann.one = true;
+      deliver({ wait: ANN_WAIT, say: function(){ return "あと" + remainText(S.secondsLeft) + "です。"; } });
+    }
+  }
+
+  /* ---------- 黙っているかどうか（マイクを使うときだけ） ----------
+     声の大きさだけを見る（音は残さない・送らない）。案内の声が出ているあいだと、その直後は
+     マイクが案内の声を拾うので数えない。練習中だけ動かす（電池のため。一時停止・終了で止める） */
+  var VAD_MS = 250, VAD_MIN = 0.012, TALK_HOLD = 1200, GUIDE_TAIL = 700, SILENCE_MS = 12000, NUDGE_GAP = 30000;
+  var Vad = { an: null, src: null, buf: null, t: null, floor: 0.004, lastVoice: 0, guideAt: 0, from: 0, lastNudge: 0 };
+  function vadStart(stream){
+    vadStop();
+    var ctx = ensureAudio();
+    if(!ctx || !ctx.createMediaStreamSource || !ctx.createAnalyser) return;
+    try {
+      var src = ctx.createMediaStreamSource(stream), an = ctx.createAnalyser();
+      an.fftSize = 1024;
+      src.connect(an);                      // 出口（スピーカー）にはつながない。自分の声が返ってこないように
+      Vad.src = src; Vad.an = an;
+      Vad.buf = an.getFloatTimeDomainData ? new Float32Array(an.fftSize) : new Uint8Array(an.fftSize);
+      Vad.from = Date.now(); Vad.lastVoice = 0;
+      Vad.t = setInterval(vadTick, VAD_MS);
+    } catch(e){ vadStop(); }
+  }
+  function vadStop(){
+    if(Vad.t){ clearInterval(Vad.t); Vad.t = null; }
+    try { if(Vad.src) Vad.src.disconnect(); } catch(e){}
+    Vad.src = null; Vad.an = null; Vad.buf = null; Vad.lastVoice = 0;
+  }
+  function vadLevel(){
+    var b = Vad.buf, s = 0, i;
+    if(b instanceof Float32Array){ Vad.an.getFloatTimeDomainData(b); for(i=0;i<b.length;i++) s += b[i] * b[i]; }
+    else { Vad.an.getByteTimeDomainData(b); for(i=0;i<b.length;i++){ var x = (b[i] - 128) / 128; s += x * x; } }
+    return Math.sqrt(s / b.length);
+  }
+  function vadTick(){
+    if(!Vad.an || S.phase !== "running") return;
+    var now = Date.now();
+    if(guideTalking()){ Vad.guideAt = now; return; }   // 案内の声を、本人の声と数えない
+    if(now - Vad.guideAt < GUIDE_TAIL) return;         // 読み終わった直後の余韻も
+    var lv = 0;
+    try { lv = vadLevel(); } catch(e){ return; }
+    var thr = Math.max(VAD_MIN, Vad.floor * 3);
+    // まわりの物音の大きさ（floor）を少しずつ覚える。話しているあいだは、ごくゆっくりとだけ
+    if(lv > thr){ Vad.lastVoice = now; Vad.floor = Vad.floor * 0.9995 + lv * 0.0005; }
+    else Vad.floor = Vad.floor * 0.95 + lv * 0.05;
+    maybeNudge(now);
+  }
+  function userTalking(){ return !!Vad.an && Vad.lastVoice > 0 && (Date.now() - Vad.lastVoice) < TALK_HOLD; }
+  /* 黙ったまま12秒たったら、短く呼びかける（30秒に1回まで）。伝えるのを待っている合図があれば、そちらに任せる。
+     「問いかけの間隔」が「なし」のときは呼びかけない（練習中は黙っていてほしい、という選択なので） */
+  function maybeNudge(now){
+    if(!S.speakCues || !S.cueSec || heldTimers.length) return;
+    var quiet = now - Math.max(Vad.lastVoice, Vad.guideAt, Vad.from);
+    if(quiet < SILENCE_MS || now - Vad.lastNudge < NUDGE_GAP) return;
+    Vad.lastNudge = now;
+    speak(NUDGES[(S.nPos++) % NUDGES.length], true);
+  }
+
+  /* ---------- 録音（この端末だけ） ----------
+     「描写を録音する」をONにしたときだけ。音は IndexedDB に記録の鍵で置き、同期も送信もしない。
+     マイクは練習中だけ使う（一時停止・終了で切る）。一時停止をはさむと録音は区切られ、
+     聞き返すときは続けて流す。許可されなかったときは、録音せずにそのまま続ける。 */
+  var Mic = { req: null, stream: null, mr: null, mrDone: null, bucket: [], pend: Promise.resolve(), denied: false };
+  function recSupported(){
+    try { return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder); } catch(e){ return false; }
+  }
+  function killStream(st){
+    try { st.getTracks().forEach(function(t){ try { t.stop(); } catch(e){} }); } catch(e){}
+  }
+  /* はじめる・再開の操作の流れの中で呼ぶ（許可を求める画面が、押した操作への返事として出るように） */
+  function micOpen(){
+    if(!S.rec || !recSupported() || Mic.denied || Mic.stream || Mic.req) return;
+    var sid = S.sid, p;
+    try { p = navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
+    catch(e){ p = Promise.reject(e); }
+    Mic.req = p;
+    p.then(function(stream){
+      var mine = (Mic.req === p);
+      if(mine) Mic.req = null;
+      if(!mine || S.sid !== sid || S.phase !== "running"){ killStream(stream); return; }   // 待っている間に止めた・終えた
+      Mic.stream = stream;
+      recStart(stream);
+      vadStart(stream);
+      renderRecLive();
+    }, function(){
+      if(Mic.req === p) Mic.req = null;
+      if(S.sid !== sid || !(S.phase === "running" || S.phase === "paused")) return;
+      Mic.denied = true;                    // この回はもう求めない（再開のたびに許可の画面を出さない）
+      renderRecLive();
+      // 目を閉じているので、声でも伝える（案内の後ろに並べる）
+      if(S.speakCues) speak("マイクが使えないため、録音せずに続けます。", true);
+    });
+  }
+  function recType(){
+    var c = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm", "audio/ogg;codecs=opus"];
+    try { if(MediaRecorder.isTypeSupported){ for(var i=0;i<c.length;i++){ if(MediaRecorder.isTypeSupported(c[i])) return c[i]; } } } catch(e){}
+    return "";
+  }
+  function recStart(stream){
+    var type = recType(), bucket = Mic.bucket, chunks = [], mr = null, fin = null;
+    var done = new Promise(function(r){ fin = r; });
+    try {
+      var opt = { audioBitsPerSecond: 32000 };    // 話し声には十分（10分でおよそ2.4MB）
+      if(type) opt.mimeType = type;
+      try { mr = new MediaRecorder(stream, opt); } catch(e){ mr = new MediaRecorder(stream); }
+      mr.ondataavailable = function(e){ if(e && e.data && e.data.size) chunks.push(e.data); };
+      mr.onstop = function(){
+        if(chunks.length) bucket.push(new Blob(chunks, { type: mr.mimeType || type || chunks[0].type || "audio/webm" }));
+        fin();
+      };
+      mr.onerror = function(){ fin(); };
+      mr.start(1000);
+      Mic.mr = mr; Mic.mrDone = done;
+    } catch(e){ Mic.mr = null; fin(); }
+  }
+  /* 一時停止・終了：録音を区切り、マイクを切る */
+  function micClose(){
+    vadStop();
+    if(Mic.mr){
+      var mr = Mic.mr, d = Mic.mrDone;
+      Mic.mr = null; Mic.mrDone = null;
+      try { if(mr.state !== "inactive") mr.stop(); } catch(e){}
+      // 止まった知らせ（onstop）が来ない端末でも、3秒で先へ進む
+      Mic.pend = Promise.all([Mic.pend, Promise.race([d, new Promise(function(r){ setTimeout(r, 3000); })])]);
+    }
+    if(Mic.stream){ killStream(Mic.stream); Mic.stream = null; }
+    Mic.req = null;                         // 待っている許可は、届いたときに捨てる（micOpen の mine）
+    renderRecLive();
+  }
+  /* 終えたとき：最後の区切りまで書き終えてから、この回の録音（区切りの並び）を渡す */
+  function micEnd(){
+    micClose();
+    var b = Mic.bucket;
+    return Mic.pend.then(function(){ return b; }, function(){ return b; });
+  }
+
+  /* ---------- 録音の置き場（IndexedDB。この端末だけ） ----------
+     clips に音そのもの、meta に大きさだけを置く（一覧や合計を出すのに、音まで読まないように） */
+  var ADB_NAME = "image-streaming-audio", adbP = null;
+  var audioMeta = Object.create(null);   // 記録の鍵 → { size, sec }
+  function adb(){
+    if(adbP) return adbP;
+    adbP = new Promise(function(res, rej){
+      var open = function(ver){
+        try {
+          var rq = ver ? indexedDB.open(ADB_NAME, ver) : indexedDB.open(ADB_NAME);
+          rq.onupgradeneeded = function(){
+            var db = rq.result;
+            if(!db.objectStoreNames.contains("clips")) db.createObjectStore("clips", { keyPath: "key" });
+            if(!db.objectStoreNames.contains("meta")) db.createObjectStore("meta", { keyPath: "key" });
+          };
+          rq.onsuccess = function(){
+            var db = rq.result;
+            // 置き場の無い（壊れた・途中で作られた）DB なら、版を上げて作り直す
+            if(!db.objectStoreNames.contains("clips") || !db.objectStoreNames.contains("meta")){ var v = db.version + 1; db.close(); open(v); return; }
+            res(db);
+          };
+          rq.onerror = function(){ rej(rq.error); };
+        } catch(e){ rej(e); }
+      };
+      open(0);
+    });
+    adbP.then(null, function(){ adbP = null; });   // 開けなかったら、次にまた試す
+    return adbP;
+  }
+  function adbRun(stores, mode, fn){
+    return adb().then(function(db){
+      return new Promise(function(res, rej){
+        var tx = db.transaction(stores, mode), out = {};
+        tx.oncomplete = function(){ res(out.v); };
+        tx.onerror = tx.onabort = function(){ rej(tx.error); };
+        fn(tx, out);
+      });
+    });
+  }
+  /* 音は ArrayBuffer にして置く（Blob のままだと置けない端末・モードがある） */
+  function blobBuf(b){
+    if(b.arrayBuffer) return b.arrayBuffer();
+    return new Promise(function(res, rej){ var fr = new FileReader(); fr.onload = function(){ res(fr.result); }; fr.onerror = function(){ rej(fr.error); }; fr.readAsArrayBuffer(b); });
+  }
+  function audioPut(key, parts, sec){
+    if(!key || !parts || !parts.length) return Promise.resolve(false);
+    var type = parts[0].type || "audio/webm";
+    return Promise.all(parts.map(blobBuf)).then(function(bufs){
+      var size = 0; bufs.forEach(function(x){ size += x.byteLength; });
+      return adbRun(["clips", "meta"], "readwrite", function(tx){
+        tx.objectStore("clips").put({ key: key, type: type, parts: bufs });
+        tx.objectStore("meta").put({ key: key, size: size, sec: sec || 0, type: type, at: Date.now() });
+      }).then(function(){
+        try { store.set(AUDIO_FLAG, "1"); } catch(e){}
+        audioMeta[key] = { size: size, sec: sec || 0 };
+        // 聞き返すときに読み直さなくていいよう、いま手元にある音を控えておく
+        cacheClip(key, parts);
+        return true;
+      });
+    }).then(function(ok){ renderAudioBits(); return ok; }, function(){ return false; });
+  }
+  function audioGet(key){
+    return adbRun(["clips"], "readonly", function(tx, out){
+      var rq = tx.objectStore("clips").get(key);
+      rq.onsuccess = function(){ out.v = rq.result || null; };
+    });
+  }
+  function audioDel(key){
+    dropClip(key);
+    var had = (key in audioMeta);
+    delete audioMeta[key];
+    if(had) renderAudioBits();
+    if(store.get(AUDIO_FLAG) !== "1") return Promise.resolve();
+    return adbRun(["clips", "meta"], "readwrite", function(tx){
+      tx.objectStore("clips").delete(key); tx.objectStore("meta").delete(key);
+    }).then(null, function(){});
+  }
+  function audioClearAll(){
+    stopPlay();
+    Object.keys(clipCache).forEach(dropClip);
+    audioMeta = Object.create(null);
+    renderAudioBits();
+    return adbRun(["clips", "meta"], "readwrite", function(tx){
+      tx.objectStore("clips").clear(); tx.objectStore("meta").clear();
+    }).then(function(){ try { store.remove(AUDIO_FLAG); } catch(e){} }, function(){});
+  }
+  function audioLoadMeta(){
+    if(store.get(AUDIO_FLAG) !== "1") return;     // 録音したことの無い端末では開かない
+    adbRun(["meta"], "readonly", function(tx, out){
+      var rq = tx.objectStore("meta").getAll();
+      rq.onsuccess = function(){ out.v = rq.result || []; };
+    }).then(function(list){
+      (list || []).forEach(function(x){ if(x && typeof x.key === "string") audioMeta[x.key] = { size: +x.size || 0, sec: +x.sec || 0 }; });
+      purgeGoneAudio();
+      renderAudioBits();
+    }, function(){});
+  }
+  /* 消した記録（ほかの端末で消したものも、同期で届く）の録音を片付ける */
+  function purgeGoneAudio(){
+    var gone = Object.create(null);
+    S.clearedKeys.forEach(function(k){ gone[k] = 1; });
+    Object.keys(audioMeta).forEach(function(k){
+      if(gone[k] || (S.clearedAt && /^\d+$/.test(k) && Number(k) <= S.clearedAt)) audioDel(k);
+    });
+  }
+  function audioTotal(){ var n = 0, b = 0; for(var k in audioMeta){ n++; b += audioMeta[k].size || 0; } return { n: n, bytes: b }; }
+
+  /* 聞き返す。iPhone は操作から時間をおいた play() を断ることがあるので、読み込み済みならその場で鳴らす。
+     読み込みが要るときは読んでから鳴らし、断られたら「もう一度押す」と出す（2回目は読み込み済み） */
+  var clipCache = Object.create(null);   // 記録の鍵 → [objectURL…]
+  var Play = { el: null, key: "", i: 0, need: "" };
+  function cacheClip(key, blobs){
+    dropClip(key);
+    try { clipCache[key] = blobs.map(function(b){ return URL.createObjectURL(b); }); } catch(e){}
+  }
+  function dropClip(key){
+    var u = clipCache[key]; if(!u) return;
+    if(Play.key === key) stopPlay();
+    u.forEach(function(x){ try { URL.revokeObjectURL(x); } catch(e){} });
+    delete clipCache[key];
+  }
+  function stopPlay(){
+    var el = Play.el;
+    Play.key = ""; Play.i = 0;
+    if(el){ el.onended = null; try { el.pause(); } catch(e){} try { el.removeAttribute("src"); el.load(); } catch(e){} }
+    renderPlayButtons();
+  }
+  function playFrom(key){
+    var urls = clipCache[key]; if(!urls || !urls.length) return;
+    if(!Play.el){ try { Play.el = new Audio(); } catch(e){ return; } }
+    var el = Play.el;
+    Play.key = key; Play.i = 0; Play.need = "";
+    var start = function(){
+      var pr = null;
+      try { el.src = urls[Play.i]; pr = el.play(); } catch(e){}
+      if(pr && pr.then) pr.then(null, function(){ if(Play.key === key){ Play.key = ""; Play.need = key; renderPlayButtons(); } });
+    };
+    // 一時停止をはさんだ録音は区切りが分かれているので、続けて流す
+    el.onended = function(){ if(Play.key !== key) return; Play.i++; if(Play.i < urls.length) start(); else stopPlay(); };
+    start();
+    renderPlayButtons();
+  }
+  function togglePlay(key){
+    if(Play.key === key){ stopPlay(); return; }
+    stopPlay();
+    if(clipCache[key]){ playFrom(key); return; }
+    audioGet(key).then(function(r){
+      if(!r || !r.parts || !r.parts.length) return;
+      cacheClip(key, r.parts.map(function(b){ return new Blob([b], { type: r.type || "audio/webm" }); }));
+      playFrom(key);
+    }, function(){});
+  }
+  function playLabel(key){
+    if(Play.key === key) return "■ 止める";
+    if(Play.need === key) return "▶ もう一度押すと再生します";
+    var m = audioMeta[key];
+    return "▶ 録音を聞く" + (m ? "（" + fmtSize(m.size) + "）" : "");
+  }
+  function renderPlayButtons(){
+    Array.prototype.forEach.call(document.querySelectorAll("[data-play]"), function(b){ b.textContent = playLabel(b.getAttribute("data-play")); });
+  }
+  function renderAudioBits(){ renderDonePlay(); renderJournal(); renderRecStore(); }
 
   /* ---------- 暗転 ----------
      始めて数秒で画面を真っ黒にする。触ると数秒だけ操作が見え、また暗くなる。
@@ -811,7 +1328,13 @@
      お題も感覚の切り替えも分からなくなるので、そのときは暗くしない。 */
   var darkT = null, DARK_AFTER = 4000, PEEK_MS = 6000;
   // 日本語の声が無い端末では、ja-JP 指定でも案内が聞き取れないので暗くしない
-  function darkWanted(){ return !!(S.dim && S.speakCues && jaVoiceReady() && S.phase === "running"); }
+  function darkOK(){ return !!(S.dim && S.speakCues && jaVoiceReady()); }
+  /* 暗い画面の長押しで止めたときは、暗いままにする（もう一度の長押しで再開できるように） */
+  function darkWanted(){ return darkOK() && (S.phase === "running" || (S.phase === "paused" && S.darkPause)); }
+  function renderDarkHint(){
+    var h = $("drHint"); if(!h) return;
+    h.textContent = S.phase === "paused" ? "一時停止中 · 長押しで再開 · 触ると操作が出ます" : "練習中 · 触ると操作が出ます · 長押しで一時停止";
+  }
   /* シェル（index.html）の中では、上のタブ帯はこのフレームの外にあって覆えない。
      そこだけ明るいままだと、ふと目を開けたときにまぶしいので、暗さをシェルにも伝える。 */
   var darkShown = false;
@@ -821,6 +1344,7 @@
   function setDark(on){
     var d = $("darkroom"); if(d) d.hidden = !on;
     on = !!on;
+    if(on) renderDarkHint();
     if(on !== darkShown){ darkShown = on; tellShellDark(on); }
   }
   function undark(){ if(darkT){ clearTimeout(darkT); darkT = null; } setDark(false); }
@@ -830,6 +1354,25 @@
     darkT = setTimeout(function(){ darkT = null; if(darkWanted()) setDark(true); }, ms);
   }
   function peek(){ setDark(false); scheduleDark(PEEK_MS); }
+  /* 暗い画面を長押し（0.8秒）すると、一時停止・再開。目を閉じたまま止められるように。
+     短く触ったときは、これまでどおり操作を見せる（peek）。指が大きく動いたら長押しにしない。 */
+  var LP_MS = 800, lpT = null, lpFired = false, lpX = 0, lpY = 0;
+  function lpStart(e){
+    if(lpT) clearTimeout(lpT);
+    lpFired = false; lpX = e.clientX || 0; lpY = e.clientY || 0;
+    lpT = setTimeout(function(){ lpT = null; lpFired = true; longPress(); }, LP_MS);
+  }
+  function lpCancel(){ if(lpT){ clearTimeout(lpT); lpT = null; } }
+  function lpMove(e){ if(lpT && (Math.abs((e.clientX || 0) - lpX) > 24 || Math.abs((e.clientY || 0) - lpY) > 24)) lpCancel(); }
+  function longPress(){
+    try { if(navigator.vibrate) navigator.vibrate(40); } catch(e){}   // 声より先に、指に返事をする（Android）
+    if(S.phase === "running") pause(true);
+    else if(S.phase === "paused") resume();
+  }
+  function darkTap(){
+    if(lpFired){ lpFired = false; return; }   // 長押しのあとに来るクリックは、操作を見せる合図にしない
+    peek();
+  }
 
   /* ---------- actions ---------- */
   function nextScene(cur){ var n = cur; while(n === cur) n = SCENES[(Math.random()*SCENES.length)|0]; return n; }
@@ -841,52 +1384,213 @@
       : "目を閉じて、「" + S.run.scene + "」を思い浮かべてください。気づいたことを、声に出して、詳しく。";
   }
   function pendingScene(){ return S.run.free ? "（お題なし）" : S.run.scene; }
+  function clearDoneFields(){ S.rating = null; $("noteEl").value = ""; $("imgEl").value = ""; $("meanEl").value = ""; }
   function begin(){
     /* この回のお題を控えておく。練習中に別の窓（同じ端末の別タブ）で「お題なし」が
        切り替わっても、練習中の表示や記録が始めたときの内容と食い違わないように */
     S.run = { free: !!S.free, scene: S.scene };
-    S.rating = null; $("noteEl").value = "";
-    S.activeSense = 0;
+    S.sid = Date.now();
+    clearDoneFields(); S.doneKey = ""; S.discardAsk = false; stopPlay();
+    S.activeSense = 0; S.cueN = 0; S.cueText = ""; S.qPos = S.qOrder.length;   // 問いは毎回まぜ直す
+    S.ann = { half: false, one: false }; S.darkPause = false;
+    Mic.bucket = []; Mic.denied = false; Mic.pend = Promise.resolve();
+    Vad.lastNudge = 0; Vad.guideAt = 0; Vad.floor = 0.004;
     S.secondsLeft = S.durationMin * 60;
     ensureAudio();
     S.phase = "running";
     renderPhase(); renderClock(); renderSense();
     startTimer(); startCues(); reqWake();
     if(S.speakCues){ senseTone(0); speak(introText() + SENSES[0].speak); }
+    micOpen();          // 録音するときは、ここ（「はじめる」を押した流れ）でマイクの許可を求める
+    saveRun(); beatOn();
     scheduleDark(DARK_AFTER);
   }
-  function pause(){ S.phase = "paused"; undark(); renderPhase(); stopTimer(); renderClock(); stopCues(); stopSpeech(); relWake(); }
+  /* inDark: 暗い画面の長押しで止めた。目を閉じたまま再開できるよう、暗いままにする */
+  function pause(inDark){
+    S.phase = "paused";
+    S.darkPause = !!inDark && darkShown && darkOK();
+    if(S.darkPause){ if(darkT){ clearTimeout(darkT); darkT = null; } setDark(true); }
+    else undark();
+    renderPhase(); stopTimer(); renderClock(); stopCues(); stopSpeech(); relWake();
+    micClose();         // 止めているあいだはマイクを使わない（録音も区切る）
+    saveRun();
+    if(S.speakCues) speak("一時停止しました。");
+  }
   /* 一時停止のあいだに着信などで音が止められると（iOS）、再開しても合図の音が鳴らない。
      再開はタップ（またはキー）から来るので、ここで起こし直す */
-  function resume(){ ensureAudio(); S.phase = "running"; renderPhase(); startTimer(); startCues(); reqWake(); scheduleDark(DARK_AFTER); }
+  function resume(){
+    ensureAudio(); S.phase = "running"; S.darkPause = false;
+    renderPhase(); startTimer(); startCues(); reqWake(); scheduleDark(DARK_AFTER);
+    if(S.speakCues) speak("再開します。");
+    micOpen();
+    saveRun();
+  }
   function endNow(){
-    stopTimer(); stopCues(); stopSpeech(); relWake(); undark();
+    stopTimer();
     // stopTimer() が残り時間を実時間で締めるので、そのあとで経過を出す
-    var sec = Math.max(0, S.durationMin*60 - S.secondsLeft);
-    S.pending = { sec: sec, scene: pendingScene() }; S.rating = null; $("noteEl").value = "";
-    S.phase = "done"; renderPhase(); renderDone();
+    finish(Math.max(0, S.durationMin*60 - S.secondsLeft));
   }
   function onComplete(){
-    stopTimer(); stopCues(); stopSpeech(); relWake(); undark();
+    finish(S.durationMin*60);
     playChime();
-    // 目を閉じているので、終わりも声で知らせる（合図の音が鳴り終わってから）
-    if(S.speakCues) setTimeout(function(){ if(S.phase === "done") speak("時間です。ゆっくり、目を開けてください。"); }, 1800);
-    S.pending = { sec: S.durationMin*60, scene: pendingScene() }; S.rating = null; $("noteEl").value = "";
-    S.phase = "done"; renderPhase(); renderDone();
+    // 目を閉じているので、終わりも声で知らせる（合図の音が鳴り終わってから）。
+    // ふり返りの問いも添える（目を開けたら、すぐ下の欄に書きとめられる）
+    if(S.speakCues) setTimeout(function(){
+      if(S.phase === "done") speak("時間です。いちばん印象に残ったものは、何でしたか。思い浮かべたまま、ゆっくり目を開けてください。");
+    }, 1800);
   }
-  function discard(){ S.phase = "idle"; renderPhase(); }
-  function save(){
-    var today = localDate(new Date());
-    var prev = {}; for(var i=0;i<S.history.length;i++) prev[S.history[i].date] = true;
-    var isNew = !prev[today];
-    S.history.push({ date: today, ts: Date.now(), sec: S.pending.sec, scene: S.pending.scene, note: ($("noteEl").value||"").trim(), vivid: S.rating });
-    try { store.set(KEY, JSON.stringify(S.history)); } catch(e){}
-    if (window.__isTouch) window.__isTouch(true);   // 練習1回ぶんは「意味のある変更」
+  /* 終わったら、その場で記録する（以前は「記録する」を押すまで残らず、押し忘れや
+     アプリが閉じたときに練習が消えていた）。鮮明さやメモは、あとから終了画面と一覧で直せる。
+     30秒に満たない回は、押し間違いのことが多いので自動では記録しない。 */
+  function finish(sec){
+    stopTimer(); stopCues(); stopSpeech(); relWake(); undark();
+    var rec = micEnd();
+    beatOff(); clearRun();
+    S.pending = { sec: sec, scene: pendingScene(), audio: null };
+    clearDoneFields(); S.discardAsk = false;
+    S.doneKey = sec >= MIN_SAVE_SEC ? addRecord({ sec: sec, scene: S.pending.scene }) : "";
+    S.phase = "done"; renderPhase(); renderDone();
+    var key = S.doneKey, pend = S.pending;
+    rec.then(function(parts){
+      if(!parts || !parts.length) return;
+      if(key){ if(findRec(key)) audioPut(key, parts, sec); }   // 書き終える前に消した記録には置かない
+      else if(S.pending === pend) pend.audio = parts;          // 記録していない回は、「記録する」を押したときに置く
+    });
+  }
+  /* 終了画面を閉じる。直した中身はすぐ書き、同期にも早めに知らせる */
+  function closeDone(){
+    flushPatch();
+    if(S.doneKey) touchSync(true);
+    stopPlay();
+    S.discardAsk = false; S.pending.audio = null; S.doneKey = "";
     S.phase = "idle"; renderPhase();
     S.scene = nextScene(S.scene); renderScene();
-    if(isNew){ justFlash = true; renderTenten(); setTimeout(function(){ justFlash = false; renderTenten(); }, 1200); }
-    else renderTenten();
+    renderTenten(); renderJournal();
+  }
+  /* 30秒に満たず自動では記録しなかった回を、それでも記録する */
+  function saveShort(){
+    var p = S.pending;
+    var key = addRecord({ sec: p.sec, scene: p.scene, vivid: S.rating, note: ($("noteEl").value || "").trim(),
+                          image: ($("imgEl").value || "").trim(), meaning: ($("meanEl").value || "").trim() });
+    if(p.audio && p.audio.length) audioPut(key, p.audio, p.sec);
+    closeDone();
+  }
+
+  /* ---------- 練習中の控え（落ちた・閉じたときに拾う） ----------
+     練習の進み具合はメモリにしか無いので、アプリが落ちる・閉じられると記録されずに消える。
+     始めた時刻・お題・練習した秒数・一時停止中かを、ときどき localStorage に書いておき、
+     次に開いたとき「前回の練習を記録しますか」と聞く。同期はしない（この端末だけ）。
+     別のタブでいま練習中の控え（新しい鼓動がある）は、横から拾わない。 */
+  var RUN_BEAT = 5000, RUN_DEAD = 20000, RUN_TTL = 12 * 3600 * 1000, beatT = null;
+  /* 鼓動。一時停止中も打つ（止めているだけのタブを、ほかのタブが「落ちた」と誤解しないように） */
+  function beatOn(){ beatOff(); beatT = setInterval(function(){ saveRun(); }, RUN_BEAT); }
+  function beatOff(){ if(beatT){ clearInterval(beatT); beatT = null; } }
+  function practisedSec(){
+    var left = (S.phase === "running" && endAt) ? readClock() : S.secondsLeft;
+    return Math.max(0, S.durationMin * 60 - left);
+  }
+  function saveRun(dead){
+    if(!(S.phase === "running" || S.phase === "paused")) return;
+    var o = { id: S.sid, at: S.sid, beat: Date.now(), sec: practisedSec(), paused: S.phase === "paused", scene: pendingScene(), dur: S.durationMin };
+    if(dead) o.dead = true;                 // ページを離れた印。開き直したとき、鼓動が止まるのを待たずに聞ける
+    try { store.set(RUN_KEY, JSON.stringify(o)); } catch(e){}
+    try { sessionStorage.setItem(RUN_SS, String(S.sid)); } catch(e){}
+  }
+  function readRun(){
+    try {
+      var o = JSON.parse(store.get(RUN_KEY) || "null");
+      if(!o || typeof o !== "object" || Array.isArray(o)) return null;
+      if(!(typeof o.id === "number" && isFinite(o.id) && typeof o.beat === "number" && isFinite(o.beat) && typeof o.sec === "number" && isFinite(o.sec))) return null;
+      o.sec = Math.max(0, Math.min(86400, Math.round(o.sec)));
+      o.scene = typeof o.scene === "string" ? o.scene : "";
+      return o;
+    } catch(e){ return null; }
+  }
+  /* 控えを消す。別のタブでいま動いている練習のもの（名札が違う）は残す */
+  function clearRun(id){
+    var o = readRun();
+    if(!o || o.id === (id || S.sid)) { try { store.remove(RUN_KEY); } catch(e){} }
+    try { if(!id || sessionStorage.getItem(RUN_SS) === String(id)) sessionStorage.removeItem(RUN_SS); } catch(e){}
+  }
+  function checkRecover(){
+    var o = readRun();
+    if(!o){ if(store.get(RUN_KEY)) store.remove(RUN_KEY); return; }   // 壊れた控えは捨てる
+    if(o.id === S.sid && (S.phase === "running" || S.phase === "paused")) return;   // このタブのいまの練習
+    var now = Date.now(), age = now - o.beat;
+    if(age > RUN_TTL || o.sec < MIN_SAVE_SEC){ store.remove(RUN_KEY); return; }    // 古すぎる・短すぎる控えは聞かない
+    var own = false;
+    try { own = sessionStorage.getItem(RUN_SS) === String(o.id); } catch(e){}    // このタブで動いていた（再読み込み）
+    if(!own && !o.dead && age < RUN_DEAD){
+      // 別のタブでいま練習しているのかもしれない。鼓動が止まるのを待ってから見直す
+      setTimeout(checkRecover, RUN_DEAD - age + 500);
+      return;
+    }
+    S.recover = o;
+    renderRecover();
+  }
+  function answerRecover(yes){
+    var o = S.recover; if(!o) return;
+    S.recover = null;
+    clearRun(o.id);
+    if(yes) addRecord({ date: localDate(new Date(o.beat)), ts: o.beat, sec: o.sec, scene: o.scene });
+    renderRecover();
+  }
+
+  /* ---------- 記録の1件ずつの操作 ---------- */
+  function findRec(key){
+    for(var i=0;i<S.history.length;i++){ if(recKey(S.history[i]) === key) return S.history[i]; }
+    return null;
+  }
+  function persist(){ try { store.set(KEY, JSON.stringify(S.history)); } catch(e){} }
+  function touchSync(urgent){ if(window.__isTouch) window.__isTouch(!!urgent); }
+  function addRecord(f){
+    var now = Date.now();
+    var r = { date: f.date || localDate(new Date(now)), ts: f.ts || now, sec: Math.max(0, Math.round(f.sec || 0)), scene: f.scene || "",
+              note: f.note || "", vivid: (typeof f.vivid === "number") ? f.vivid : null,
+              image: f.image || "", meaning: f.meaning || "", upd: now };
+    while(findRec(String(r.ts))) r.ts++;   // 鍵（ts）は1件ずつ違うように
+    var today = localDate(new Date()), was = (dayTotals()[today] || 0) >= TEN_SEC;
+    S.history.push(r);
+    S.history.sort(function(a,b){ return (a.ts||0) - (b.ts||0); });
+    persist();
+    touchSync(true);                       // 練習1回ぶんは「意味のある変更」
+    // 今日の合計が10分に届いた → そのコマを現像する
+    if(!was && r.date === today && (dayTotals()[today] || 0) >= TEN_SEC){
+      justFlash = true; renderTenten(); setTimeout(function(){ justFlash = false; renderTenten(); }, 1200);
+    } else renderTenten();
     renderJournal();
+    return recKey(r);
+  }
+  /* 記録を直す。直した時刻（upd）を付け、同期ではあとから直した方を残す */
+  var patchT = null;
+  function patchRec(key, f){
+    var r = findRec(key); if(!r) return false;
+    for(var k in f){ if(Object.prototype.hasOwnProperty.call(f, k)) r[k] = f[k]; }
+    r.upd = Date.now();
+    if(patchT) clearTimeout(patchT);
+    patchT = setTimeout(flushPatch, 500);   // 打つたびには書かない
+    return true;
+  }
+  function flushPatch(){
+    if(!patchT) return;
+    clearTimeout(patchT); patchT = null;
+    persist(); touchSync(false);
+    renderTenten(); renderJournal();
+  }
+  /* 1件消す。全消去と同じく消した鍵を持ち回り、ほかの端末から同期で戻ってこないようにする。録音も消す */
+  function deleteRec(key){
+    var i, at = -1;
+    for(i=0;i<S.history.length;i++){ if(recKey(S.history[i]) === key){ at = i; break; } }
+    if(at < 0) return;
+    flushPatch();
+    S.history.splice(at, 1);
+    S.clearedKeys = cleanKeys(S.clearedKeys.concat([key]));
+    persist(); saveCleared();
+    touchSync(true);
+    audioDel(key);
+    if(S.jEdit === key){ S.jEdit = ""; S.jDraft = null; }
+    if(S.jDel === key) S.jDel = "";
+    renderTenten(); renderJournal();
   }
   /* ── 端末間の同期（sync.js の共通エンジン）───────────────
      練習の記録は追記型なので、時刻で重ねてつなぐだけでよい。
@@ -909,7 +1613,11 @@
     if("ts" in o && (typeof o.ts !== "number" || !isFinite(o.ts))) delete o.ts;
     if("scene" in o && typeof o.scene !== "string") o.scene = o.scene == null ? "" : String(o.scene);
     if("note" in o && typeof o.note !== "string") o.note = o.note == null ? "" : String(o.note);
+    // ふり返りの欄（印象に残った像・気づき）。古い記録には無い
+    if("image" in o && typeof o.image !== "string") o.image = o.image == null ? "" : String(o.image);
+    if("meaning" in o && typeof o.meaning !== "string") o.meaning = o.meaning == null ? "" : String(o.meaning);
     if("vivid" in o && !(typeof o.vivid === "number" && o.vivid >= 1 && o.vivid <= 5)) o.vivid = null;
+    if("upd" in o && (typeof o.upd !== "number" || !isFinite(o.upd))) delete o.upd;   // 直した時刻（同期でどちらを残すか）
     return o;
   }
   function cleanHistory(a){
@@ -950,6 +1658,8 @@
     S.clearedKeys = cleanKeys(d && d.clearedKeys);
     try { store.set(KEY, JSON.stringify(S.history)); } catch(e){}
     saveCleared();
+    purgeGoneAudio();                              // ほかの端末で消した記録の録音も片付ける
+    if(S.jEdit && !findRec(S.jEdit)){ S.jEdit = ""; S.jDraft = null; }
     renderTenten(); renderJournal();
   }
   function syncMerge(local, remote){
@@ -957,14 +1667,16 @@
     var cleared = Math.max(+local.clearedAt || 0, +remote.clearedAt || 0);
     var keys = cleanKeys(cleanKeys(local.clearedKeys).concat(cleanKeys(remote.clearedKeys)));
     var gone = Object.create(null); keys.forEach(function(k){ gone[k] = 1; });
-    var seen = {}, out = [];
+    var map = Object.create(null), order = [];
     [].concat(cleanHistory(local.history), cleanHistory(remote.history)).forEach(function(h){
       var k = recKey(h);
-      if(gone[k]) return;                              // 全消去で消した記録は復活させない
+      if(gone[k]) return;                              // 消した記録（全消去・1件ずつ）は復活させない
       if(cleared && (h.ts || 0) <= cleared) return;   // 旧版の端末の全消去（時刻）より前の記録も
-      if(seen[k]) return;
-      seen[k] = 1; out.push(h);
+      // 同じ記録が両方にあれば、あとから直した方（upd が新しい方）を残す。同じならこの端末の方
+      if(k in map){ if((+h.upd || 0) > (+map[k].upd || 0)) map[k] = h; return; }
+      map[k] = h; order.push(k);
     });
+    var out = order.map(function(k){ return map[k]; });
     out.sort(function(a,b){ return (a.ts||0) - (b.ts||0); });
     var res = { history: out, clearedKeys: keys };
     if(cleared) res.clearedAt = cleared;
@@ -1019,6 +1731,7 @@
       var o = readVoicePrefs(store.get(VOICE_KEY)) || {};
       o.voiceURI = S.voiceURI; o.vPitch = S.vPitch; o.vRate = S.vRate; o.vPreset = S.vPreset;
       o.speakCues = S.speakCues; o.dim = S.dim; o.free = S.free; o.cues2 = 1;
+      o.cueSec = S.cueSec; o.rec = S.rec;   // 問いかけの間隔・録音も、この端末だけの好み
       store.set(VOICE_KEY, JSON.stringify(o));
     } catch(e){}
   }
@@ -1035,13 +1748,18 @@
       if(typeof o.speakCues === "boolean" && o.cues2) S.speakCues = o.speakCues;
       if(typeof o.dim === "boolean") S.dim = o.dim;
       if(typeof o.free === "boolean") S.free = o.free;
+      if(typeof o.cueSec === "number" && CUE_CHOICES.indexOf(o.cueSec) >= 0) S.cueSec = o.cueSec;
+      if(typeof o.rec === "boolean") S.rec = o.rec;
     } catch(e){}
   }
 
   function clearAll(){
     // 単純に消すだけだと、他端末との同期で復活してしまう。消した記録の鍵を残す。
     // ★消した時刻で区切らない。時計のずれた端末では、ほかの端末が消去のあとに付けた記録まで消える
-    S.clearedKeys = cleanKeys(S.clearedKeys.concat(S.history.map(recKey)));
+    var keys = S.history.map(recKey);
+    S.clearedKeys = cleanKeys(S.clearedKeys.concat(keys));
+    keys.forEach(function(k){ audioDel(k); });   // 消した記録の録音も
+    S.jEdit = ""; S.jDraft = null; S.jDel = "";
     S.history = []; S.confirmClear = false;
     try { store.remove(KEY); } catch(e){}
     saveCleared();
@@ -1051,6 +1769,24 @@
 
   /* ---------- derived ---------- */
   function distinctDays(){ var seen = {}, out = []; for(var i=0;i<S.history.length;i++){ var d = S.history[i].date; if(!seen[d]){ seen[d]=true; out.push(d); } } out.sort(); return out; }
+  /* 日ごとの練習の合計（秒）。Ten/Ten は「1日10分」なので、1日に何回かに分けてもよい */
+  function dayTotals(){
+    var t = Object.create(null);
+    for(var i=0;i<S.history.length;i++){ var h = S.history[i]; t[h.date] = (t[h.date] || 0) + (h.sec || 0); }
+    return t;
+  }
+  /* フィルムの巻（10コマ）。10分に届いた日が1コマ。届かない日は数えないが、半分だけ現像したコマとして見せる。
+     10コマそろった次の練習日から、新しい巻になる。記録から毎回数え直す（消したり直したりすると、前の巻も変わる） */
+  function filmRolls(tot){
+    var days = Object.keys(tot).sort(), rolls = [[]], full = 0;
+    for(var i=0;i<days.length;i++){
+      if(full === 10){ rolls.push([]); full = 0; }
+      var f = tot[days[i]] >= TEN_SEC;
+      rolls[rolls.length - 1].push({ d: days[i], full: f, sec: tot[days[i]] });
+      if(f) full++;
+    }
+    return rolls;
+  }
   function streakCount(days){
     if(!days.length) return 0;
     var set = {}; for(var i=0;i<days.length;i++) set[days[i]] = true;
@@ -1098,6 +1834,23 @@
       $("senseLive").hidden = (p !== "running");
       $("pausedLbl").hidden = (p !== "paused");
     }
+    renderDarkHint(); renderRecLive(); renderRecover();
+  }
+  function renderRecover(){
+    var box = $("recoverBox"), o = S.recover; if(!box) return;
+    box.hidden = !(o && S.phase === "idle");
+    if(!o) return;
+    $("recoverQ").textContent = "前回の練習（" + fmtDur(o.sec) + "）を記録しますか";
+    $("recoverSub").textContent = fmtDay(localDate(new Date(o.beat))) + "・" + (o.scene || "お題なし") +
+      "。途中でアプリが閉じたため、まだ記録されていません。";
+  }
+  function renderRecLive(){
+    var el = $("recLive"); if(!el) return;
+    var run = (S.phase === "running" || S.phase === "paused");
+    if(run && Mic.mr){ el.textContent = "● 録音中（この端末だけ）"; el.className = "rec-live"; el.hidden = false; }
+    else if(run && S.rec && Mic.denied){ el.textContent = "マイクが使えないため、録音していません"; el.className = "rec-live off"; el.hidden = false; }
+    else if(S.phase === "paused" && S.rec && recSupported()){ el.textContent = "録音も止めています"; el.className = "rec-live off"; el.hidden = false; }
+    else el.hidden = true;
   }
   function renderClock(){
     $("clock").textContent = fmtClock(S.secondsLeft);
@@ -1109,23 +1862,85 @@
     var s = SENSES[S.activeSense];
     var el = $("senseLive");
     el.style.setProperty("--sense", s.hue);
-    el.innerHTML = '<span class="sense-dot"></span><span class="sense-name">' + s.label + '</span><span class="sense-line">' + s.prompt + '</span>';
+    // 問いかけのあとは、その問いを出しておく（ふと目を開けたときに分かるように）
+    el.innerHTML = '<span class="sense-dot"></span><span class="sense-name">' + s.label + '</span><span class="sense-line">' + esc(S.cueText || s.prompt) + '</span>';
     el.style.animation = "none"; void el.offsetWidth; el.style.animation = "";
   }
   function renderDone(){
     $("doneMark").innerHTML = ICON.check(26);
-    $("doneMeta").textContent = fmtClock(S.pending.sec) + " の練習";
+    var tsec = dayTotals()[localDate(new Date())] || 0;
+    $("doneMeta").textContent = fmtClock(S.pending.sec) + " の練習" + (S.doneKey ? " · 今日 " + todayMin(tsec) : "");
     $("doneScene").textContent = S.pending.scene;
+    $("doneStatus").textContent = S.doneKey ? "記録しました。下の欄は、あとから一覧でも直せます。"
+      : "30秒に満たない練習なので、記録していません。";
+    $("discardBtn").textContent = S.doneKey ? "この記録を消す" : "記録しないで閉じる";
+    $("saveBtn").textContent = S.doneKey ? "閉じる" : "記録する";
+    $("discardAsk").hidden = !(S.discardAsk && S.doneKey);
+    $("discardQ").textContent = "この記録を消しますか？" + (audioMeta[S.doneKey] ? "（録音も消えます）" : "");
+    renderRating(); renderDonePlay();
+  }
+  function renderDonePlay(){
+    var b = $("donePlay"); if(!b) return;
+    var k = S.doneKey;
+    b.hidden = !(S.phase === "done" && k && audioMeta[k]);
+    if(b.hidden){ b.removeAttribute("data-play"); return; }
+    b.setAttribute("data-play", k);
+    b.textContent = playLabel(k);
+  }
+  function setRating(n){
+    S.rating = (S.rating === n) ? null : n;          // もう一度押すと外せる
+    if(S.doneKey) patchRec(S.doneKey, { vivid: S.rating });
     renderRating();
   }
   function renderRating(){
     var row = $("ratingRow");
     var html = "";
-    for(var n=1;n<=5;n++){ html += '<button class="vbtn' + (S.rating === n ? " on" : "") + '" data-v="' + n + '">' + n + '</button>'; }
+    for(var n=1;n<=5;n++){ html += '<button class="vbtn' + (S.rating === n ? " on" : "") + '" type="button" data-v="' + n + '" aria-pressed="' + (S.rating === n) + '">' + n + '</button>'; }
     row.innerHTML = html;
     var btns = row.querySelectorAll(".vbtn");
-    for(var i=0;i<btns.length;i++){ btns[i].addEventListener("click", function(){ S.rating = Number(this.getAttribute("data-v")); renderRating(); }); }
+    for(var i=0;i<btns.length;i++){ btns[i].addEventListener("click", function(){ setRating(Number(this.getAttribute("data-v"))); }); }
   }
+  function renderCueSeg(){
+    var seg = $("cueSeg"); if(!seg) return;
+    var html = "";
+    for(var i=0;i<CUE_CHOICES.length;i++){ var c = CUE_CHOICES[i];
+      html += '<button class="seg' + (S.cueSec === c ? " on" : "") + '" type="button" data-c="' + c + '">' + (c ? c + "秒" : "なし") + (c === CUE_DEFAULT ? '<span class="seg-tag">既定</span>' : '') + '</button>';
+    }
+    seg.innerHTML = html;
+    Array.prototype.forEach.call(seg.querySelectorAll(".seg"), function(b){
+      b.addEventListener("click", function(){ S.cueSec = Number(b.getAttribute("data-c")); saveVoicePrefs(); renderCueSeg(); });
+    });
+    $("cueHelp").textContent = S.cueSec
+      ? "約" + S.cueSec + "秒ごとに、像を深める問い（「もっと近づくと、何が変わりますか」など）と、次の感覚への切り替えを交互に声で伝えます。"
+      : "練習中は問いかけません（はじめの案内と、残り時間・終わりの知らせだけ）。";
+  }
+  function renderRecToggle(){
+    var b = $("recBtn"); if(!b) return;
+    var can = recSupported();
+    b.className = "toggle" + (S.rec && can ? " on" : "") + (can ? "" : " muted");
+    $("recIco").innerHTML = ICON.mic(16);
+    $("recSwitch").className = "switch" + (S.rec && can ? " on" : "");
+    $("recHelp").textContent = !can ? "この環境では録音できません。"
+      : "声に出した描写をこの端末にだけ録音し、あとで聞き返せます（同期も送信もしません。10分でおよそ2〜5MB）。" +
+        "問いかけを使うときは、黙ったままなら短く呼びかけ、話している途中は待ちます。" +
+        "iPhone では録音中、案内の声が小さくなったり受話口から聞こえたりすることがあります（イヤホンだと聞きやすくなります）。";
+    renderRecStore();
+  }
+  var recClearAsk = false;
+  function renderRecStore(){
+    var el = $("recStore"); if(!el) return;
+    var t = audioTotal();
+    el.hidden = !t.n;
+    if(!t.n){ recClearAsk = false; el.innerHTML = ""; return; }
+    el.innerHTML = '<span>この端末の録音：' + t.n + '件・' + fmtSize(t.bytes) + '</span>' + (recClearAsk
+      ? '<span class="clear-confirm">録音をすべて消しますか？（記録は残ります）<button class="link danger" id="recClearYes" type="button">消す</button><button class="link" id="recClearNo" type="button">やめる</button></span>'
+      : '<button class="link reset" id="recClear" type="button">録音を全部消す</button>');
+    var a = $("recClear"), y = $("recClearYes"), n = $("recClearNo");
+    if(a) a.addEventListener("click", function(){ recClearAsk = true; renderRecStore(); });
+    if(y) y.addEventListener("click", function(){ recClearAsk = false; audioClearAll(); });
+    if(n) n.addEventListener("click", function(){ recClearAsk = false; renderRecStore(); });
+  }
+  function todayMin(sec){ var m = Math.floor((sec || 0) / 60); return sec >= TEN_SEC ? m + "分 ✓" : m + "/10分"; }
   function renderLength(){
     var seg = $("lengthSeg");
     var html = "";
@@ -1150,7 +1965,7 @@
     $("dimHelp").textContent = !ttsSupported ? "この環境では読み上げが使えないため、暗くしません"
       : noJa ? "日本語の読み上げ音声が無いため、暗くしません（案内が聞き取れないため）"
       : !S.speakCues ? "音声ガイドがOFFのあいだは暗くしません（お題や感覚の切り替えが見えなくなるため）"
-      : "始めて数秒で真っ暗になります。触ると数秒だけ操作が出ます";
+      : "始めて数秒で真っ暗になります。触ると数秒だけ操作が出ます。長押し（1秒ほど）で一時停止・再開します";
   }
   function sparkline(vals){
     var w = 100, h = 40, p = 4, lo = 1, hi = 5;
@@ -1169,31 +1984,45 @@
   }
   function renderTenten(){
     var days = distinctDays();
-    var count = days.length;
-    var cycleNumber = Math.max(1, Math.ceil(count / 10));
-    var filled = count === 0 ? 0 : ((count - 1) % 10) + 1;
-    var cycleDays = days.slice((cycleNumber-1)*10, (cycleNumber-1)*10 + filled);
-    var today = localDate(new Date());
+    var tot = dayTotals(), rolls = filmRolls(tot);
+    var roll = rolls[rolls.length - 1];
+    var cycleNumber = rolls.length;
+    var filled = roll.filter(function(x){ return x.full; }).length;
+    var today = localDate(new Date()), todaySec = tot[today] || 0;
+    /* 10分に届かない日も、半分だけ現像したコマで見せる（数えはしない）。
+       たくさん並ぶと帯が長くなるので、新しい10日ぶんまで */
+    var halves = roll.filter(function(x){ return !x.full; });
+    if(halves.length > 10){ var cut = halves[halves.length - 11].d; roll = roll.filter(function(x){ return x.full || x.d > cut; }); }
 
     $("cycleTxt").textContent = (cycleNumber > 1 ? cycleNumber + "周目 · " : "") + filled + " / 10";
+    var tt = $("todayTxt");
+    if(tt){ tt.hidden = !todaySec; tt.textContent = "今日 " + todayMin(todaySec); }
 
-    var html = "";
-    for(var i=0;i<10;i++){
-      var dev = i < filled;
-      var just = justFlash && i === filled - 1;
-      var title = dev ? fmtDay(cycleDays[i]) : "まだ";
-      html += '<div class="frame' + (dev ? " dev" : "") + (just ? " just" : "") + '" title="' + title + '"><span class="frame-num">' + (i+1) + '</span></div>';
+    var html = "", n = 0;
+    for(var i=0;i<roll.length;i++){
+      var x = roll[i], isToday = (x.d === today);
+      var lab = (isToday ? "今日" : fmtDay(x.d)) + " · " + Math.floor(x.sec / 60) + "分";
+      if(x.full){
+        n++;
+        html += '<div class="frame dev' + (justFlash && isToday ? " just" : "") + '" title="' + esc(lab) + '"><span class="frame-num">' + n + '</span></div>';
+      } else {
+        html += '<div class="frame half" title="' + esc(lab + "（10分に届かず、数えません）") + '"><span class="frame-num">' + Math.floor(x.sec / 60) + '′</span></div>';
+      }
     }
+    for(var j=filled;j<10;j++) html += '<div class="frame" title="まだ"><span class="frame-num">' + (j+1) + '</span></div>';
     $("strip").innerHTML = html;
+    // 半分のコマがあるときは、14コマまでは1列に詰めて並べる（それより多いと折り返す）
+    $("strip").style.gridTemplateColumns = "repeat(" + Math.min(14, Math.max(10, roll.length + 10 - filled)) + ",1fr)";
+    $("strip").setAttribute("aria-label", "練習の記録：10コマのうち" + filled + "コマ" + (todaySec ? "。今日 " + todayMin(todaySec) : ""));
 
     var totalMin = 0; for(var k=0;k<S.history.length;k++) totalMin += (S.history[k].sec || 0);
     totalMin = Math.round(totalMin / 60);
-    $("statDays").textContent = count;
+    $("statDays").textContent = days.length;
     $("statStreak").textContent = streakCount(days);
     $("statMin").textContent = totalMin;
 
     var cd = $("cycleDone");
-    if(filled === 10 && days.indexOf(today) !== -1){ cd.hidden = false; cd.textContent = "10日のうち10日。何か兆しを感じるなら、新しいフィルムを。感じなくても、損はありません。"; }
+    if(filled === 10 && todaySec >= TEN_SEC && roll.some(function(x){ return x.d === today; })){ cd.hidden = false; cd.textContent = "10日のうち10日。何か兆しを感じるなら、新しいフィルムを。感じなくても、損はありません。"; }
     else cd.hidden = true;
 
     var rated = S.history.filter(function(h){ return typeof h.vivid === "number"; });
@@ -1216,31 +2045,113 @@
       }
     } else cw.innerHTML = "";
   }
-  function renderJournal(){
+  /* 一覧の絞り込み。お題・メモ・印象に残った像・気づき・日付のどれかに含むもの */
+  function recMatches(h, q){
+    if(!q) return true;
+    var hay = [h.scene, h.note, h.image, h.meaning, fmtDay(h.date)].join("\n").toLowerCase();
+    var words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    for(var i=0;i<words.length;i++){ if(hay.indexOf(words[i]) < 0) return false; }
+    return true;
+  }
+  function jRateRow(v){
+    var h = '<div class="rating-row">';
+    for(var n=1;n<=5;n++) h += '<button class="vbtn' + (v === n ? " on" : "") + '" type="button" data-act="rate" data-v="' + n + '" aria-pressed="' + (v === n) + '">' + n + '</button>';
+    return h + '</div>';
+  }
+  function jItemHTML(h){
+    var k = recKey(h), dots = '<span class="jvivid">';
+    if(typeof h.vivid === "number"){ for(var n=1;n<=5;n++) dots += '<span class="jdot' + (n <= h.vivid ? " on" : "") + '"></span>'; }
+    dots += '</span>';
+    var head = '<div class="jtop"><span class="jdate">' + fmtDay(h.date) + ' · ' + fmtDur(h.sec) + '</span>' + dots + '</div>' +
+      '<div class="jscene">' + esc(h.scene || "") + '</div>';
+    if(S.jEdit === k && S.jDraft){
+      var d = S.jDraft;
+      return '<div class="jitem" data-k="' + esc(k) + '">' + head + '<div class="jedit">' +
+        '<div><div class="flabel">鮮明さ</div>' + jRateRow(d.vivid) + '</div>' +
+        '<label><span class="flabel">印象に残った像</span><textarea class="note" rows="2" data-f="image">' + esc(d.image) + '</textarea></label>' +
+        '<label><span class="flabel">気づき・意味</span><textarea class="note" rows="2" data-f="meaning">' + esc(d.meaning) + '</textarea></label>' +
+        '<label><span class="flabel">メモ</span><textarea class="note" rows="2" data-f="note">' + esc(d.note) + '</textarea></label>' +
+        '<div class="done-actions"><button class="btn ghost" type="button" data-act="cancel">やめる</button><button class="btn primary" type="button" data-act="save">保存</button></div>' +
+        '</div></div>';
+    }
+    var acts = S.jDel === k
+      ? '<span class="clear-confirm">この記録を消しますか？' + (audioMeta[k] ? "（録音も消えます）" : "") +
+        '<button class="link danger" type="button" data-act="delyes">消す</button><button class="link" type="button" data-act="delno">やめる</button></span>'
+      : (audioMeta[k] ? '<button class="playbtn" type="button" data-act="play" data-play="' + esc(k) + '">' + esc(playLabel(k)) + '</button>' : '') +
+        '<button class="link" type="button" data-act="edit">直す</button><button class="link reset" type="button" data-act="del">消す</button>';
+    return '<div class="jitem" data-k="' + esc(k) + '">' + head +
+      (h.image ? '<div class="jfield"><span class="jlab">像</span>' + esc(h.image) + '</div>' : '') +
+      (h.meaning ? '<div class="jfield"><span class="jlab">気づき</span>' + esc(h.meaning) + '</div>' : '') +
+      (h.note ? '<div class="jnote">' + esc(h.note) + '</div>' : '') +
+      '<div class="jacts">' + acts + '</div></div>';
+  }
+  function renderJournal(force){
     var sec = $("journalSec");
     sec.hidden = (S.history.length === 0);
     $("journalToggle").className = "jtoggle" + (S.journalOpen ? " open" : "");
     $("jchev").innerHTML = ICON.chev(15);
     var list = $("jlist");
     list.hidden = !S.journalOpen;
+    $("jtools").hidden = !S.journalOpen;
     if(!S.journalOpen) return;
+    /* 直している最中に同期などで描き直すと、打っている欄が消えて入れ直しになる。閉じるまで待つ */
+    if(!force && S.jEdit && list.contains(document.activeElement)){ S.jDirty = true; return; }
+    S.jDirty = false;
 
-    var items = S.history.slice().reverse().slice(0, 30);
-    if(items.length === 0){ list.innerHTML = '<div class="jempty">まだ記録がありません。</div>'; return; }
+    var q = (S.jq || "").trim();
+    var all = S.history.slice().reverse();
+    var hits = q ? all.filter(function(h){ return recMatches(h, q); }) : all;
+    var items = hits.slice(0, q ? 100 : 30);
+    $("jcount").textContent = q ? "「" + q + "」 " + hits.length + "件" + (hits.length > items.length ? "（新しい" + items.length + "件）" : "")
+      : (all.length > items.length ? "全" + all.length + "件のうち新しい" + items.length + "件（古い記録は検索で出せます）" : "");
+    if(items.length === 0){ list.innerHTML = '<div class="jempty">' + (q ? "見つかりませんでした。" : "まだ記録がありません。") + '</div>'; return; }
     var html = "";
-    for(var i=0;i<items.length;i++){
-      var h = items[i];
-      var dots = "";
-      if(typeof h.vivid === "number"){
-        dots = '<span class="jvivid">';
-        for(var n=1;n<=5;n++) dots += '<span class="jdot' + (n <= h.vivid ? " on" : "") + '"></span>';
-        dots += '</span>';
-      } else dots = '<span class="jvivid"></span>';
-      html += '<div class="jitem"><div class="jtop"><span class="jdate">' + fmtDay(h.date) + '</span>' + dots + '</div>' +
-        '<div class="jscene">' + esc(h.scene) + '</div>' +
-        (h.note ? '<div class="jnote">' + esc(h.note) + '</div>' : '') + '</div>';
-    }
+    for(var i=0;i<items.length;i++) html += jItemHTML(items[i]);
     list.innerHTML = html;
+  }
+  function onJournalClick(e){
+    var b = e.target && e.target.closest ? e.target.closest("[data-act]") : null;
+    if(!b) return;
+    var it = b.closest(".jitem"), k = it ? it.getAttribute("data-k") : "", act = b.getAttribute("data-act");
+    if(!k) return;
+    if(act === "play"){ togglePlay(k); return; }
+    if(act === "rate"){
+      if(!S.jDraft) return;
+      var v = Number(b.getAttribute("data-v"));
+      S.jDraft.vivid = S.jDraft.vivid === v ? null : v;
+      // 打ちかけの欄を消さないよう、ボタンの見た目だけを変える
+      Array.prototype.forEach.call(it.querySelectorAll('[data-act="rate"]'), function(x){
+        var on = Number(x.getAttribute("data-v")) === S.jDraft.vivid;
+        x.classList.toggle("on", on); x.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+      return;
+    }
+    if(act === "edit"){
+      var h = findRec(k); if(!h) return;
+      S.jDel = ""; S.jEdit = k;
+      S.jDraft = { vivid: typeof h.vivid === "number" ? h.vivid : null, image: h.image || "", meaning: h.meaning || "", note: h.note || "" };
+    }
+    else if(act === "cancel"){ S.jEdit = ""; S.jDraft = null; }
+    else if(act === "save"){
+      var d = S.jDraft;
+      S.jEdit = ""; S.jDraft = null;
+      if(d && patchRec(k, { vivid: d.vivid, image: d.image.trim(), meaning: d.meaning.trim(), note: d.note.trim() })){
+        if(S.doneKey === k) syncDoneFields();
+        flushPatch(); touchSync(true);
+      }
+    }
+    else if(act === "del"){ S.jDel = k; S.jEdit = ""; S.jDraft = null; }
+    else if(act === "delno"){ S.jDel = ""; }
+    else if(act === "delyes"){ S.jDel = ""; deleteRec(k); if(S.doneKey === k) closeDone(); return; }
+    renderJournal(true);
+    if(act === "edit"){ var ta = $("jlist").querySelector('[data-k="' + k.replace(/"/g, "") + '"] textarea'); if(ta) try { ta.focus(); } catch(x){} }
+  }
+  /* 一覧で直した終了画面の記録を、終了画面の欄にも映す */
+  function syncDoneFields(){
+    var h = findRec(S.doneKey); if(!h) return;
+    S.rating = typeof h.vivid === "number" ? h.vivid : null;
+    $("imgEl").value = h.image || ""; $("meanEl").value = h.meaning || ""; $("noteEl").value = h.note || "";
+    renderRating();
   }
 
   /* ---------- init ---------- */
@@ -1260,6 +2171,8 @@
 
     renderLength();
     renderToggle();
+    renderCueSeg();
+    renderRecToggle();
     $("ringArc").setAttribute("stroke-dasharray", CIRC.toFixed(2));
     $("ringArc").setAttribute("stroke-dashoffset", "0");
     if(!ttsSupported) $("ttsNote").hidden = false;
@@ -1278,12 +2191,21 @@
     renderClock();
     renderTenten();
     renderJournal();
+    checkRecover();     // 前回、記録されないまま閉じた練習があれば聞く
+    audioLoadMeta();    // この端末の録音（あれば）
 
     // events
     $("newScene").addEventListener("click", function(){ S.scene = nextScene(S.scene); renderScene(); });
     $("freeBtn").addEventListener("click", function(){ S.free = !S.free; saveVoicePrefs(); renderScene(); });
     $("dimBtn").addEventListener("click", function(){ S.dim = !S.dim; saveVoicePrefs(); renderToggle(); });
-    $("darkroom").addEventListener("click", peek);
+    var dr = $("darkroom");
+    dr.addEventListener("click", darkTap);
+    dr.addEventListener("pointerdown", lpStart);
+    dr.addEventListener("pointerup", lpCancel);
+    dr.addEventListener("pointercancel", lpCancel);
+    dr.addEventListener("pointerleave", lpCancel);
+    dr.addEventListener("pointermove", lpMove);
+    dr.addEventListener("contextmenu", function(e){ e.preventDefault(); });   // 長押しのメニューを出さない
     // 暗いときにキーを押したら、まず操作を見せる（スペースは一時停止のまま）
     document.addEventListener("keydown", function(e){
       if($("darkroom").hidden || e.code === "Space") return;
@@ -1297,8 +2219,16 @@
     });
     /* フレームごと消える（再読み込み・取り込み）ときは、暗さを解いたとシェルに伝える。
        伝えないと、シェルのタブ帯だけが暗いまま残る。戻ってきたら（bfcache）伝え直す。 */
-    window.addEventListener("pagehide", function(){ if(darkShown) tellShellDark(false); });
-    window.addEventListener("pageshow", function(e){ if(e && e.persisted && darkShown) tellShellDark(true); });
+    window.addEventListener("pagehide", function(){
+      if(darkShown) tellShellDark(false);
+      saveRun(true);    // 練習中に閉じた・読み込み直した → 次に開いたとき、すぐ「記録しますか」と聞けるように
+      flushPatch();
+    });
+    window.addEventListener("pageshow", function(e){
+      if(!e || !e.persisted) return;
+      if(darkShown) tellShellDark(true);
+      saveRun();        // 戻ってきた（bfcache）。まだ練習中なので、離れた印を消す
+    });
     $("beginBtn").addEventListener("click", begin);
     $("toggleBtn").addEventListener("click", function(){ S.speakCues = !S.speakCues; if(S.speakCues) ensureAudio(); else stopSpeech(); saveVoicePrefs(); renderToggle(); });
     $("testBtn").addEventListener("click", function(){
@@ -1353,9 +2283,9 @@
         var o = readVoicePrefs(e.newValue);
         if(o) applyVoicePrefs(o); else S.voiceURI = "";
         try { paintVoice(); } catch(x){}
-        renderToggle(); renderScene();
+        renderToggle(); renderScene(); renderCueSeg(); renderRecToggle();
         // 練習中に音声ガイドや暗転が切られたら、暗いままにしない
-        if(S.phase === "running" && !darkWanted()) undark();
+        if((S.phase === "running" || S.phase === "paused") && !darkWanted()) undark();
         pickVoice();
       });
     } catch(e){}
@@ -1367,9 +2297,35 @@
     paintVoice();
     $("playPauseBtn").addEventListener("click", function(){ if(S.phase === "running") pause(); else if(S.phase === "paused") resume(); });
     $("endBtn").addEventListener("click", endNow);
-    $("discardBtn").addEventListener("click", discard);
-    $("saveBtn").addEventListener("click", save);
-    $("journalToggle").addEventListener("click", function(){ S.journalOpen = !S.journalOpen; renderJournal(); });
+    /* 終了画面。記録は終わった時点で済んでいるので、「消す」は確かめてから */
+    $("discardBtn").addEventListener("click", function(){
+      if(!S.doneKey){ closeDone(); return; }
+      S.discardAsk = true; renderDone();
+    });
+    $("discardYes").addEventListener("click", function(){ var k = S.doneKey; S.doneKey = ""; deleteRec(k); closeDone(); });
+    $("discardNo").addEventListener("click", function(){ S.discardAsk = false; renderDone(); });
+    $("saveBtn").addEventListener("click", function(){ if(S.doneKey) closeDone(); else saveShort(); });
+    $("donePlay").addEventListener("click", function(){ if(S.doneKey) togglePlay(S.doneKey); });
+    [["imgEl", "image"], ["meanEl", "meaning"], ["noteEl", "note"]].forEach(function(p){
+      $(p[0]).addEventListener("input", function(){ if(S.doneKey) patchRec(S.doneKey, (function(o){ o[p[1]] = ($(p[0]).value || "").trim(); return o; })({})); });
+    });
+    /* 前回の練習の取りこぼし */
+    $("recoverYes").addEventListener("click", function(){ answerRecover(true); });
+    $("recoverNo").addEventListener("click", function(){ answerRecover(false); });
+    /* 録音 */
+    $("recBtn").addEventListener("click", function(){
+      if(!recSupported()){ S.rec = false; renderRecToggle(); return; }
+      S.rec = !S.rec; saveVoicePrefs(); renderRecToggle();
+    });
+    $("journalToggle").addEventListener("click", function(){ S.journalOpen = !S.journalOpen; renderJournal(true); });
+    $("jsearch").addEventListener("input", function(){ S.jq = $("jsearch").value || ""; renderJournal(true); });
+    $("jlist").addEventListener("click", onJournalClick);
+    $("jlist").addEventListener("input", function(e){
+      var f = e.target && e.target.getAttribute && e.target.getAttribute("data-f");
+      if(f && S.jDraft) S.jDraft[f] = e.target.value || "";
+    });
+    // 直す欄から離れたとき、待っていた描き直しを済ませる（同期で届いた変更など）
+    $("jlist").addEventListener("focusout", function(){ setTimeout(function(){ if(S.jDirty && !$("jlist").contains(document.activeElement)) renderJournal(); }, 0); });
 
     // voices may load async
     loadVoicePrefs();
@@ -1377,6 +2333,7 @@
     try { paintVoice(); } catch(e){}
     renderToggle();   // 保存してあった音声ガイドのON/OFF・暗転を反映する
     renderScene();    // 保存してあった「お題なし」を反映する
+    renderCueSeg(); renderRecToggle();   // 問いかけの間隔・録音
     if(ttsSupported){
       pickVoice();
       try { window.speechSynthesis.onvoiceschanged = function(){ voicesSettled = true; pickVoice(); }; } catch(e){}
