@@ -1336,8 +1336,9 @@ body.nk-dark .knnew{opacity:.12}
             var im=obj.diaryImages[k]; if(!im||!im.id) continue;
             try{
               if(im.enc){ var er={id:im.id, enc:1, type:im.type, iv:im.iv, data:knB64ToBuf(im.b64)}; if(typeof im.ks==='string') er.ks=im.ks; await knDiaryImgPut(ddb2,er); }
-              // 画像の data: URL だけを読む（ほかのURLを fetch すると、取り込むファイル次第で外へ通信してしまう）
-              else if(typeof im.dataUrl==='string' && /^data:image\//i.test(im.dataUrl)){ var b2=await (await fetch(im.dataUrl)).blob(); await knDiaryImgPut(ddb2,{id:im.id, enc:0, type:im.type||b2.type, data:b2, size:b2.size}); }
+              // data: URL だけを読む（ほかのURLを fetch すると、取り込むファイル次第で外へ通信してしまう）。
+              // 画像のほか、日記帳に添付したファイル（id が f…。Excel・Word・PDF など）も戻す（v48）
+              else if(typeof im.dataUrl==='string' && (/^data:image\//i.test(im.dataUrl) || (/^f[a-z0-9]{4,32}$/i.test(String(im.id)) && /^data:[^,]*,/i.test(im.dataUrl)))){ var b2=await (await fetch(im.dataUrl)).blob(); await knDiaryImgPut(ddb2,{id:im.id, enc:0, type:im.type||b2.type, data:b2, size:b2.size}); }
             }catch(e){}
           }
         }catch(e){}
