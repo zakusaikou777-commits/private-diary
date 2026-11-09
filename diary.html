@@ -51,7 +51,11 @@
             --color-success: rgb(33, 128, 141);
             --color-error: rgb(192, 21, 47);
             --color-warning: rgb(168, 75, 47);
+            /* 4・6・10 は使っているのに定義が無く、ボタンの余白が0になっていた（ツールバーの小さな赤い札） */
+            --space-4: 4px;
+            --space-6: 6px;
             --space-8: 8px;
+            --space-10: 10px;
             --space-12: 12px;
             --space-16: 16px;
             --space-20: 20px;
@@ -129,9 +133,22 @@
         .entry-date { font-size: 12px; color: var(--color-text-secondary); margin-bottom: 4px; }
         .entry-title { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .editor-section { flex: 1; display: flex; flex-direction: column; background-color: var(--color-surface); border-radius: var(--radius-lg); border: 1px solid var(--color-border); overflow: hidden; }
-        .editor-toolbar { display: flex; gap: var(--space-8); padding: var(--space-12); border-bottom: 1px solid var(--color-border); flex-wrap: wrap; background-color: rgba(94, 82, 64, 0.05); }
-        .editor-toolbar button { padding: var(--space-6) var(--space-10); background-color: var(--color-primary); color: white; border: none; border-radius: var(--radius-base); cursor: pointer; font-size: 13px; font-weight: 500; transition: all 0.2s; }
-        .editor-toolbar button:hover { background-color: var(--color-primary-hover); transform: translateY(-2px); }
+        /* 書式のツールバー（OneNote の「ホーム」の最小限）。まとまりごとに区切り線を入れる */
+        .editor-toolbar { display: flex; flex-wrap: wrap; align-items: center; row-gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--color-border); background-color: rgba(94, 82, 64, 0.05); }
+        .tb-group { display: flex; align-items: center; gap: 1px; padding: 0 5px; border-right: 1px solid var(--color-border); flex-shrink: 0; }
+        .tb-group:first-child { padding-left: 0; }
+        .tb-group:last-child { border-right: none; }
+        .editor-toolbar .tb { min-width: 34px; height: 34px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center; gap: 3px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--color-text); font: inherit; font-size: 15px; line-height: 1; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+        .editor-toolbar .tb:hover { background-color: rgba(94, 82, 64, 0.10); border-color: var(--color-border); }
+        .editor-toolbar .tb[aria-pressed="true"] { background-color: rgba(192, 70, 60, 0.13); border-color: rgba(192, 70, 60, 0.45); color: var(--color-primary-hover); }
+        .editor-toolbar .tb:disabled { opacity: 0.35; cursor: default; background: transparent; border-color: transparent; }
+        .editor-toolbar .tb .tb-txt { font-size: 13px; }
+        .editor-toolbar .tb .tb-caret { font-size: 10px; opacity: 0.7; }
+        .editor-toolbar .tb-color { display: inline-flex; flex-direction: column; align-items: center; line-height: 1; font-weight: 700; }
+        .editor-toolbar .tb-color i { display: block; width: 16px; height: 4px; margin-top: 2px; border-radius: 1px; background: var(--fc-red); }
+        .editor-toolbar .tb-hl i { background: var(--hl-yellow); }
+        /* 少し狭い PC では、📎 と 🧹 の文字を隠して1行に収める（ボタンの説明は title と読み上げに残る） */
+        @media (min-width: 768px) and (max-width: 1320px) { .editor-toolbar .tb[data-cmd="file"] .tb-txt, .editor-toolbar .tb[data-cmd="clear"] .tb-txt { display: none; } }
         .editor-textarea { flex: 1; padding: var(--space-16); border: none; font-size: 16px; font-family: inherit; resize: none; background-color: var(--color-surface); color: var(--color-text); outline: none; }
         .editor-textarea::placeholder { color: var(--color-text-secondary); }
         .editor-footer { display: flex; justify-content: space-between; align-items: center; padding: var(--space-12); border-top: 1px solid var(--color-border); background-color: rgba(94, 82, 64, 0.05); flex-wrap: wrap; gap: var(--space-12); }
@@ -227,6 +244,89 @@
         .editor-meta input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(33, 128, 141, 0.1); }
         .toast-region { position: fixed; bottom: 20px; right: 20px; z-index: 2000; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; pointer-events: none; max-width: 320px; }
         .toast-region .toast { position: static; pointer-events: auto; }
+
+        /* --- 今日を書く（PC はサイドバーのいちばん上、スマホは右下の丸いボタン） --- */
+        .write-today { width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 14px 16px; margin: 0 0 var(--space-16); border: none; border-radius: var(--radius-lg); background-color: var(--color-primary); color: #fff; font: inherit; font-size: 17px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 12px rgba(160, 57, 47, 0.28); }
+        .write-today:hover { background-color: var(--color-primary-hover); }
+        .write-today .wt-date { font-size: 12px; font-weight: 500; opacity: 0.9; }
+        .fab-write { display: none; }
+        .empty-state .empty-write { margin-top: var(--space-12); font-size: 16px; padding: 12px 20px; }
+        .empty-state .empty-sub { margin: 4px 0 0; font-size: 12px; }
+        .only-narrow { display: none; }
+        .kbd-hold { position: fixed; top: 0; left: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; font-size: 16px; pointer-events: none; }
+
+        /* --- 本文の書式。決まった名前の class だけで表す（サニタイズで残すのもこの名前だけ）。
+               ※下の kn-unify はダークモードでも明るい紙のままにするので、色は紙の上で読める濃さにしてある --- */
+        :root {
+            --fc-red: #c62828; --fc-orange: #a84300; --fc-green: #2e7d32; --fc-blue: #1565c0; --fc-purple: #7b1fa2; --fc-gray: #6b6358;
+            --hl-yellow: #ffe14a; --hl-green: #aee89a; --hl-pink: #ffb8d1; --hl-blue: #a9d4ff;
+        }
+        .editor-content .fc-red { color: var(--fc-red); }
+        .editor-content .fc-orange { color: var(--fc-orange); }
+        .editor-content .fc-green { color: var(--fc-green); }
+        .editor-content .fc-blue { color: var(--fc-blue); }
+        .editor-content .fc-purple { color: var(--fc-purple); }
+        .editor-content .fc-gray { color: var(--fc-gray); }
+        .editor-content mark.hl-yellow { background-color: var(--hl-yellow); color: inherit; }
+        .editor-content mark.hl-green { background-color: var(--hl-green); color: inherit; }
+        .editor-content mark.hl-pink { background-color: var(--hl-pink); color: inherit; }
+        .editor-content mark.hl-blue { background-color: var(--hl-blue); color: inherit; }
+        .editor-content .fs-s { font-size: 0.85em; }
+        .editor-content .fs-l { font-size: 1.25em; }
+        .editor-content .fs-xl { font-size: 1.6em; }
+        .editor-content .ind-1 { margin-left: 2em; } .editor-content .ind-2 { margin-left: 4em; } .editor-content .ind-3 { margin-left: 6em; }
+        .editor-content .ind-4 { margin-left: 8em; } .editor-content .ind-5 { margin-left: 10em; } .editor-content .ind-6 { margin-left: 12em; }
+        /* チェックボックス（やること）。四角は ::before で描き、押した位置で切り替える */
+        .editor-content ul.todo { list-style: none; padding-left: 0.2em; }
+        .editor-content ul.todo > li { position: relative; padding-left: 1.9em; min-height: 1.5em; }
+        .editor-content ul.todo > li::before { content: ''; position: absolute; left: 0.1em; top: 0.18em; width: 1.15em; height: 1.15em; box-sizing: border-box; border: 2px solid var(--color-primary); border-radius: 4px; background-color: var(--color-surface); cursor: pointer; }
+        .editor-content ul.todo > li[data-done]::before { content: '✓'; background-color: var(--color-primary); color: #fff; font-weight: 700; line-height: 1.02em; text-align: center; text-decoration: none; }
+        .editor-content ul.todo > li[data-done] { color: var(--color-text-secondary); text-decoration: line-through; }
+        /* ファイルのカード（中身は端末内に置き、本文には目印だけ） */
+        .editor-content .dy-file { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; margin: 4px 2px; padding: 8px 12px; border: 1px solid var(--color-border); border-radius: 10px; background-color: var(--color-background); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08); cursor: pointer; vertical-align: middle; user-select: none; -webkit-user-select: none; white-space: normal; line-height: 1.35; text-decoration: none; color: var(--color-text); }
+        .editor-content .dy-file:hover, .editor-content .dy-file:focus-visible { border-color: var(--color-primary); }
+        .dy-file .dyf-ic { font-size: 22px; line-height: 1; }
+        .dy-file .dyf-name { font-weight: 600; word-break: break-all; }
+        .dy-file .dyf-size { font-size: 12px; color: var(--color-text-secondary); white-space: nowrap; }
+        /* Google のドキュメント類へのリンク。ふつうのリンクのまま、種類が分かる形にする */
+        .editor-content a.gcard { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; margin: 4px 2px; padding: 8px 12px; border: 1px solid var(--color-border); border-radius: 10px; background-color: var(--color-background); color: var(--color-text); text-decoration: none; font-weight: 600; vertical-align: middle; line-height: 1.35; word-break: break-all; }
+        .editor-content a.gcard:hover { border-color: var(--color-primary); background-color: var(--color-background); }
+        .editor-content a.gcard::before { font-size: 22px; line-height: 1; font-weight: 400; }
+        .editor-content a.gcard::after { font-size: 12px; font-weight: 400; color: var(--color-text-secondary); white-space: nowrap; }
+        .editor-content a.gcard[data-same]::after { content: none; }
+        .editor-content a.gcard-doc::before { content: '📝'; } .editor-content a.gcard-doc::after { content: 'Googleドキュメント'; }
+        .editor-content a.gcard-sheet::before { content: '📊'; } .editor-content a.gcard-sheet::after { content: 'Googleスプレッドシート'; }
+        .editor-content a.gcard-slide::before { content: '📽'; } .editor-content a.gcard-slide::after { content: 'Googleスライド'; }
+        .editor-content a.gcard-form::before { content: '📋'; } .editor-content a.gcard-form::after { content: 'Googleフォーム'; }
+        .editor-content a.gcard-drive::before { content: '📁'; } .editor-content a.gcard-drive::after { content: 'Googleドライブのファイル'; }
+
+        /* --- ツールバーから開く小さなメニュー（見出し・大きさ・色・蛍光ペン・ファイル） --- */
+        .rte-pop { position: fixed; z-index: 1100; display: flex; flex-direction: column; gap: 2px; min-width: 168px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow-y: auto; padding: 6px; background-color: var(--color-surface); border: 1px solid var(--color-border); border-radius: 10px; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18); }
+        .rte-pop .pop-head { padding: 6px 10px 8px; font-size: 13px; line-height: 1.5; color: var(--color-text); border-bottom: 1px solid var(--color-border); margin-bottom: 4px; word-break: break-all; }
+        .rte-pop .pop-head small { display: block; color: var(--color-text-secondary); }
+        .rte-pop button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 40px; padding: 8px 12px; border: none; border-radius: 6px; background: none; color: var(--color-text); font: inherit; font-size: 14px; text-align: left; cursor: pointer; }
+        .rte-pop button:hover, .rte-pop button:focus-visible { background-color: rgba(94, 82, 64, 0.10); }
+        .rte-pop button[aria-checked="true"] { background-color: rgba(192, 70, 60, 0.10); }
+        .rte-pop .sw { width: 20px; height: 20px; flex-shrink: 0; border-radius: 4px; border: 1px solid rgba(0, 0, 0, 0.18); }
+        .rte-pop .pv-h2 { font-size: 20px; font-weight: 700; } .rte-pop .pv-h3 { font-size: 17px; font-weight: 700; } .rte-pop .pv-h4 { font-size: 15px; font-weight: 700; }
+        .rte-pop .pv-fs-s { font-size: 12px; } .rte-pop .pv-fs-l { font-size: 18px; } .rte-pop .pv-fs-xl { font-size: 22px; }
+
+        @media (max-width: 767px) {
+            /* スマホ: サイドバーの大きなボタンの代わりに、右下の丸い＋（書いている間は隠す） */
+            .write-today { display: none; }
+            .only-wide { display: none; }
+            .only-narrow { display: inline; }
+            .fab-write { display: flex; align-items: center; justify-content: center; position: fixed; right: calc(16px + env(safe-area-inset-right, 0px)); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); width: 60px; height: 60px; padding: 0; border: none; border-radius: 50%; background-color: var(--color-primary); color: #fff; font: inherit; font-size: 34px; line-height: 1; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); z-index: 900; cursor: pointer; }
+            body.writing .fab-write, body.on-today .fab-write { display: none; }
+            /* 丸いボタンが保存・削除のボタンに重なったままにならないよう、下に余白を足す */
+            .container { padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px)); }
+            .toast-region { bottom: calc(92px + env(safe-area-inset-bottom, 0px)); }
+            /* ツールバーは折り返さずに横へ流す（指で横にスクロール）。書いている間も上に残す */
+            .editor-section { overflow: clip; }
+            .editor-toolbar { flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; position: sticky; top: 0; z-index: 5; background-color: var(--color-surface); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06); }
+            .editor-toolbar::-webkit-scrollbar { display: none; }
+            .editor-toolbar .tb { min-width: 42px; height: 42px; font-size: 16px; }
+        }
     </style>
 <style id="kn-unify">
 @import url('https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@600;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap');
@@ -274,7 +374,6 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
             <div class="header-actions">
                 <button class="btn btn-secondary btn-sm" onclick="openSecurityModal()">🔐 セキュリティ</button>
                 <button class="btn btn-secondary btn-sm" onclick="openExportModal()">💾 エクスポート</button>
-                <button class="btn btn-primary btn-sm" onclick="openNewEntryModal()">➕ 新規作成</button>
             </div>
         </div>
 
@@ -287,6 +386,9 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
 
         <div class="main">
             <div class="sidebar">
+                <!-- 「押したらすぐ書ける」入口。今日の日記があれば開き、無ければ「今日の出来事」で作って本文にカーソルを置く。
+                     以前は小さな「新規作成」から日付とタイトルの入力画面を出していて、どこから書けばよいか分かりにくかった -->
+                <button type="button" class="write-today" id="writeTodayBtn" onclick="writeToday()" title="今日の日記を開く・書きはじめる（Alt+N）">✏ 今日を書く <span class="wt-date" id="writeTodayDate"></span></button>
                 <!-- 探すためのものを画面の上に置く。以前は統計と空のエディタが上を
                      占めていて、スマホではタグに届くまで2画面ぶんスクロールが要り、
                      機能があっても事実上使えなかった。 -->
@@ -361,11 +463,14 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
             <div class="editor-section" id="editorSection">
                 <div class="empty-state">
                     <div class="empty-state-icon">📝</div>
-                    <p>カレンダーで日付を選ぶか、新規作成ボタンで始めましょう</p>
+                    <p>「✏ 今日を書く」で、今日の日記を書きはじめられます</p>
                 </div>
             </div>
         </div>
     </div>
+
+    <!-- スマホ用の「今日を書く」。書いている間（本文・タイトルを触っている間）は隠す -->
+    <button type="button" class="fab-write" id="fabWrite" onclick="writeToday()" aria-label="今日を書く" title="今日を書く">＋</button>
 
     <div class="modal" id="securityModal">
         <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="securityModalTitle">
@@ -536,26 +641,6 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
         </div>
     </div>
 
-    <div class="modal" id="newEntryModal">
-        <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="newEntryModalTitle">
-            <div class="modal-header" id="newEntryModalTitle">新規作成</div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label class="form-label">日付</label>
-                    <input type="date" class="form-input" id="entryDate">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">タイトル</label>
-                    <input type="text" class="form-input" id="entryTitle" placeholder="例：今日の出来事">
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="closeModal('newEntryModal')">キャンセル</button>
-                <button class="btn btn-primary" onclick="createNewEntry()">作成</button>
-            </div>
-        </div>
-    </div>
-
     <div id="toastRegion" class="toast-region" role="region" aria-label="通知" aria-live="polite" aria-atomic="false"></div>
 
     <script>
@@ -692,7 +777,7 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
          *  Date.now().toString(36) はいま8桁、遠い将来9桁になるので両方試す。 */
         function imgIdTime(id) {
             const s = String(id || '');
-            if (s[0] !== 'i') return 0;
+            if (s[0] !== 'i' && s[0] !== 'f') return 0;   // 画像 i… とファイル f…
             for (const n of [8, 9]) {
                 const t = parseInt(s.slice(1, 1 + n), 36);
                 if (t > 1500000000000 && t < 4000000000000) return t;
@@ -741,10 +826,14 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
         let currentYear = new Date().getFullYear();
         let currentMonth = new Date().getMonth();
         let selectedDate = null;
-        // 新規作成の既定日。カレンダーのセルを選んだときだけ入る。
-        // selectedDate は一覧から日記を開いただけでも変わるので、そのまま既定値に
-        // 使うと「過去の日記を読み返しただけで今日の日記が作れない」ことになる（B-6）
+        // カレンダーで選んだ、まだ日記の無い日。空の画面に「この日に書く」を出すのに使う。
+        // カレンダーのセルを選んだときだけ入る。selectedDate は一覧から日記を開いただけでも
+        // 変わるので、そちらを使うと「読み返しただけの過去の日」に書くボタンが出てしまう（B-6）
         let newEntryDefaultDate = null;
+        // 新しい日記のタイトル（あとから変えられる）
+        const DEFAULT_ENTRY_TITLE = '今日の出来事';
+        // ロック中に「今日を書く」を押した日。解除できたら続けてその日を開く（解除をやめたら忘れる）
+        let pendingWriteDate = null;
 
 // ---- Phase1: autosave + dirty indicator + navigation guard ----
 let isDirty = false;
@@ -1244,6 +1333,7 @@ window.addEventListener('beforeunload', (e) => {
             }
             try {
                 updateEncUI();
+                updateWriteTodayLabel();
                 updateStats();
                 renderCalendar();
                 renderEntriesList();
@@ -1562,14 +1652,21 @@ window.addEventListener('beforeunload', (e) => {
             const entry = entries.find(e => e.date === dateStr);
             if (entry) {
                 loadEntry(entry);
-            } else {
-                currentEntry = null;
-                renderEditor();
-                showToast(`${dateStr} の日記はありません`, 'warning');
+                return;
             }
-            // カレンダーで明示的に日を選んだときだけ、新規作成の既定日にする。
-            // loadEntry の中で消しているので、必ずその後で付け直す（B-6）
+            // 日記の無い日: 空の画面に「この日に書く（11月9日）」を出す（押すとその日の日記を作って書ける）。
+            // 以前は「日記はありません」と知らせるだけで、そこから書く手立てが分かりにくかった
+            currentEntry = null;
             newEntryDefaultDate = dateStr;
+            renderEditor();
+            // スマホでは本文の欄がカレンダーの下にあるので、ボタンが見えていなければ見える所まで寄せる
+            try {
+                const b = document.querySelector('#editorSection .empty-write');
+                if (b && window.matchMedia && window.matchMedia('(max-width: 767px)').matches) {
+                    const r = b.getBoundingClientRect();
+                    if (r.bottom > window.innerHeight || r.top < 0) b.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
+            } catch (e) {}
         }
 
         function renderEntriesList() {
@@ -1583,12 +1680,13 @@ window.addEventListener('beforeunload', (e) => {
                 li.className = 'entry-item' + (currentEntry?.id === entry.id ? ' active' : '');
                 const et = entry.tags || [];
                 const hasImg = /data-did="/.test(entry.content || '');
+                const hasFile = /data-fid="/.test(entry.content || '');
                 const tagHtml = et.length
                     // 属性値には escapeAttr。escapeHtml は " を変換しないので、
                     // 取り込んだ日記のタグ名だけで属性を突き破られる
                     ? `<div class="entry-tags">${et.map(t => `<span class="entry-tag" data-tag="${escapeAttr(t)}">${escapeHtml(t)}</span>`).join('')}</div>`
                     : '';
-                li.innerHTML = `<div class="entry-date">${formatDate(entry.date)}${hasImg ? ' <span class="entry-imgmark" title="画像あり">🖼️</span>' : ''}</div>`
+                li.innerHTML = `<div class="entry-date">${formatDate(entry.date)}${hasImg ? ' <span class="entry-imgmark" title="画像あり">🖼️</span>' : ''}${hasFile ? ' <span class="entry-imgmark" title="ファイルあり">📎</span>' : ''}</div>`
                     + `<div class="entry-title">${escapeHtml(entry.title)}</div>${tagHtml}`;
                 // 一覧からの切り替えも selectDate と同じ扱いにする。素通りさせると
                 // renderEditor が isDirty を落とし、予約中の自動保存が空振りして
@@ -1753,7 +1851,7 @@ window.addEventListener('beforeunload', (e) => {
             renderEditor();
             if (currentView === 'calendar') renderCalendar();
             if (currentView === 'list') renderEntriesList();
-            // スマホ（縦並び）では本文エディタを最上部に並べているので、開いたら先頭へ
+            // スマホ（縦並び）では本文エディタをカレンダーの下に並べているので、開いたら先頭へ
             try {
                 if (window.matchMedia && window.matchMedia('(max-width: 767px)').matches) {
                     requestAnimationFrame(() => {
@@ -1800,6 +1898,7 @@ function clipboardImageFiles(cd) {
 }
 
 function renderEditor() {
+  syncFabToday();
   const section = document.getElementById('editorSection');
   // 直前の描画で作った blob: URL は、どの分岐へ進むにしても必ず捨てる。
   // 早期returnの後ろに置いていたため、日記を消した／ロックしたときに
@@ -1808,11 +1907,20 @@ function renderEditor() {
 
   if (appLocked) {
     section.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🔒</div><p>日記は暗号化されています。続けるにはロックを解除してください。</p><button class="btn btn-primary" type="button" onclick="openUnlockModal()" style="margin-top: var(--space-12);">ロックを解除</button></div>`;
+    rteHistReset();
     return;
   }
 
   if (!currentEntry) {
-    section.innerHTML = `<div class="empty-state"><div class="empty-state-icon">📝</div><p>カレンダーで日付を選ぶか、新規作成ボタンで始めましょう</p></div>`;
+    // カレンダーで日記の無い日を選んだときは、その日に書くボタンを出す（押したらすぐ書ける）
+    const d = (newEntryDefaultDate && /^\d{4}-\d{2}-\d{2}$/.test(newEntryDefaultDate) && !entries.some(e => e.date === newEntryDefaultDate)) ? newEntryDefaultDate : null;
+    if (d) {
+      const md = monthDayLabel(d);
+      section.innerHTML = `<div class="empty-state"><div class="empty-state-icon">📅</div><p>${md}${d === localDateStr() ? '（今日）' : ''}の日記はまだありません</p><button class="btn btn-primary empty-write" type="button" onclick="writeOnDate('${d}')">✏ この日に書く（${md}）</button></div>`;
+    } else {
+      section.innerHTML = `<div class="empty-state"><div class="empty-state-icon">📝</div><p><span class="only-wide">「✏ 今日を書く」</span><span class="only-narrow">右下の「＋」</span>で、今日の日記を書きはじめられます</p><p class="empty-sub">カレンダーの日付を押すと、その日の日記を開けます</p></div>`;
+    }
+    rteHistReset();
     return;
   }
 
@@ -1828,15 +1936,42 @@ function renderEditor() {
       </div>
     </div>
 
-    <div class="editor-toolbar" role="toolbar" aria-label="書式設定">
-      <button type="button" onclick="rteToggleInline('STRONG')" aria-label="太字"><strong>太字</strong></button>
-      <button type="button" onclick="rteToggleInline('EM')" aria-label="斜体"><em>斜体</em></button>
-      <button type="button" onclick="rteToggleInline('S')" aria-label="取消線"><s>取消線</s></button>
-      <button type="button" onclick="rteToggleBlock('ul')" aria-label="箇条書きリスト">リスト</button>
-      <button type="button" onclick="rteToggleBlock('blockquote')" aria-label="引用">引用</button>
-      <button type="button" onclick="insertTablePrompt()" aria-label="表を挿入">表</button>
-      <button type="button" onclick="rteCreateLink()" aria-label="リンクを挿入" title="リンクを作る／カーソル位置のリンクを編集する（本文のリンクは長押し・ダブルクリックでも編集できます）">🔗 リンク</button>
-      <button type="button" onclick="pickImages()" aria-label="画像を挿入">🖼️ 画像</button>
+    <div class="editor-toolbar" id="rteBar" role="toolbar" aria-label="書式設定">
+      <div class="tb-group" role="group" aria-label="元に戻す・やり直し">
+        <button type="button" class="tb" data-cmd="undo" aria-label="元に戻す" title="元に戻す（Ctrl+Z）">↶</button>
+        <button type="button" class="tb" data-cmd="redo" aria-label="やり直し" title="やり直し（Ctrl+Y）">↷</button>
+      </div>
+      <div class="tb-group" role="group" aria-label="見出しと文字の大きさ">
+        <button type="button" class="tb" data-cmd="heading" aria-haspopup="menu" aria-label="見出し" title="見出し（大・中・小・本文）"><span class="tb-txt">見出し</span><span class="tb-caret">▾</span></button>
+        <button type="button" class="tb" data-cmd="size" aria-haspopup="menu" aria-label="文字の大きさ" title="文字の大きさ（小・標準・大・特大）"><span class="tb-txt">大きさ</span><span class="tb-caret">▾</span></button>
+      </div>
+      <div class="tb-group" role="group" aria-label="文字の飾り">
+        <button type="button" class="tb" data-cmd="bold" aria-pressed="false" aria-label="太字" title="太字（Ctrl+B）"><b>B</b></button>
+        <button type="button" class="tb" data-cmd="italic" aria-pressed="false" aria-label="斜体" title="斜体（Ctrl+I）"><i style="font-family: serif;">I</i></button>
+        <button type="button" class="tb" data-cmd="underline" aria-pressed="false" aria-label="下線" title="下線（Ctrl+U）"><u>U</u></button>
+        <button type="button" class="tb" data-cmd="strike" aria-pressed="false" aria-label="取消線" title="取消線"><s>S</s></button>
+      </div>
+      <div class="tb-group" role="group" aria-label="文字の色と蛍光ペン">
+        <button type="button" class="tb" data-cmd="color" aria-haspopup="menu" aria-label="文字の色" title="文字の色"><span class="tb-color">A<i></i></span><span class="tb-caret">▾</span></button>
+        <button type="button" class="tb" data-cmd="highlight" aria-haspopup="menu" aria-label="蛍光ペン" title="蛍光ペン"><span class="tb-color tb-hl">🖍<i></i></span><span class="tb-caret">▾</span></button>
+      </div>
+      <div class="tb-group" role="group" aria-label="箇条書きと字下げ">
+        <button type="button" class="tb" data-cmd="ul" aria-pressed="false" aria-label="箇条書き" title="箇条書き">•≡</button>
+        <button type="button" class="tb" data-cmd="ol" aria-pressed="false" aria-label="番号付きリスト" title="番号付きリスト">1.≡</button>
+        <button type="button" class="tb" data-cmd="todo" aria-pressed="false" aria-label="チェックボックス" title="チェックボックス（やること。四角を押すと済みになります）">☑</button>
+        <button type="button" class="tb" data-cmd="outdent" aria-label="字下げ解除" title="字下げ解除（Shift+Tab）">⇤</button>
+        <button type="button" class="tb" data-cmd="indent" aria-label="字下げ" title="字下げ（箇条書きの中では Tab でも）">⇥</button>
+      </div>
+      <div class="tb-group" role="group" aria-label="挿入">
+        <button type="button" class="tb" data-cmd="quote" aria-pressed="false" aria-label="引用" title="引用">❝</button>
+        <button type="button" class="tb" data-cmd="table" aria-label="表を挿入" title="表を挿入">▦</button>
+        <button type="button" class="tb" data-cmd="link" aria-label="リンクを挿入" title="リンクを作る／カーソル位置のリンクを編集する（本文のリンクは長押し・ダブルクリックでも編集できます）">🔗</button>
+        <button type="button" class="tb" data-cmd="image" aria-label="画像を挿入" title="画像を挿入">🖼️</button>
+        <button type="button" class="tb" data-cmd="file" aria-label="ファイルを入れる" title="ファイルを入れる（Excel・Word・PDF など。ドラッグして落としても入ります）">📎<span class="tb-txt">ファイル</span></button>
+      </div>
+      <div class="tb-group" role="group" aria-label="書式を消す">
+        <button type="button" class="tb" data-cmd="clear" aria-label="書式を消す" title="書式を消す（太字・色・蛍光ペン・大きさ・見出し）">🧹<span class="tb-txt">書式を消す</span></button>
+      </div>
     </div>
 
     <div class="editor-content" id="contentEditor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="日記の本文" data-placeholder="ここに入力..."></div>
@@ -1876,9 +2011,13 @@ function renderEditor() {
     const newDate = dateInput.value;
     if (!newDate) { dateInput.value = currentEntry.date; return; }
     if (newDate !== currentEntry.date) {
+      // 1日1件。別のタブで書いた分も取り込んでから確かめる（見ずに移すと、保存のときに
+      // 同じ日の2件が1件にまとめられてしまう）。移せないときは日付を元に戻し、どちらの日記も触らない
+      if (!(await absorbOtherTab())) { if (currentEntry) dateInput.value = currentEntry.date; return; }
+      if (!currentEntry) return;
       const clash = entries.find(e => e.id !== currentEntry.id && e.date === newDate);
       if (clash) {
-        showToast('その日付には既に日記があります', 'error');
+        showToast(`${monthDayLabel(newDate)}には、もう日記があります（1日1件）。日付は元のままにしました。その日の日記はカレンダーから開けます`, 'error');
         dateInput.value = currentEntry.date;
         return;
       }
@@ -1902,6 +2041,7 @@ function renderEditor() {
   }
   // 古い blob: URL は関数の先頭で捨てている。いまの本文の画像を出す
   hydrateImages(editor);
+  hydrateFiles(editor);
 
   /* 本文のリンクの扱い。
      ふつうに押したときは「開かない」だけにして、カーソルは既定どおり置く。
@@ -1923,7 +2063,18 @@ function renderEditor() {
     return (a && editor.contains(a)) ? a : null;
   };
   editor.addEventListener('click', (ev) => {
-    if (anchorFromEvent(ev)) ev.preventDefault();   // 編集中に開いてしまわない
+    // チェックボックスの四角（li の左の余白）を押したら、済み／まだ を切り替える
+    const li = ev.target && ev.target.closest ? ev.target.closest('ul.todo > li') : null;
+    if (li && editor.contains(li) && rteHitTodoBox(li, ev)) { ev.preventDefault(); rteToggleTodo(li); return; }
+    // ファイルのカード: 開く／保存 を選ぶ
+    const card = ev.target && ev.target.closest ? ev.target.closest('.dy-file') : null;
+    if (card && editor.contains(card)) { ev.preventDefault(); openFileMenu(card); return; }
+    const a = anchorFromEvent(ev);
+    if (!a) return;
+    ev.preventDefault();   // 編集中に開いてしまわない
+    // Google のカードは押すと「開く・編集」を選べる。ふつうのリンクは Ctrl（⌘）+クリックで開く
+    if (a.classList.contains('gcard')) openLinkMenu(a, openLinkEditorFor);
+    else if (ev.ctrlKey || ev.metaKey) openSafeLink(a.getAttribute('href'));
   });
   editor.addEventListener('dblclick', (ev) => {
     const a = anchorFromEvent(ev);
@@ -1958,13 +2109,27 @@ function renderEditor() {
   });
   editor.addEventListener('drop', (ev) => {
     const fs = ev.dataTransfer && ev.dataTransfer.files;
-    const imgs = fs ? Array.from(fs).filter(f => /^image\//i.test(f.type || '')) : [];
-    if (!imgs.length) return;
+    const all = fs ? Array.from(fs) : [];
+    if (!all.length) return;
     ev.preventDefault();
-    insertImageFiles(imgs);
+    // 落とした位置にカーソルを置いてから入れる（取れなければ元のカーソル位置）
+    try {
+      const doc = editor.ownerDocument;
+      const r = doc.caretRangeFromPoint ? doc.caretRangeFromPoint(ev.clientX, ev.clientY) : null;
+      if (r && editor.contains(r.startContainer)) rteSetSelection(r);
+    } catch (e) {}
+    const imgs = all.filter(f => /^image\//i.test(f.type || ''));
+    const others = all.filter(f => !imgs.includes(f));
+    (async () => {
+      if (imgs.length) await insertImageFiles(imgs);
+      if (others.length) await insertFiles(others);
+    })().catch(e => console.warn('[diary] ドロップ', e));
   });
 
-  editor.addEventListener('input', () => {
+  editor.addEventListener('input', (ev) => {
+    // チェックボックスで改行すると、ブラウザは「済み」の印ごと次の行を作る。新しい行は「まだ」にする
+    if (ev && ev.inputType === 'insertParagraph') rteFixNewTodoItem(editor);
+    if (editor.querySelector('a.gcard')) decorateGcards(editor);
     // 折りたたみ用のゼロ幅スペースは保存対象から除外
     currentEntry.content = serializeEditor(editor);
     currentEntry.contentFormat = 'html';
@@ -1978,8 +2143,21 @@ function renderEditor() {
   editor.addEventListener('paste', (e) => {
     const cd = e.clipboardData;
     if (!cd) return;
+    // 画像でないファイル（エクスプローラー・Finder でコピーした Excel など）はファイルのカードにする
+    const otherFiles = clipboardOtherFiles(cd);
+    if (otherFiles.length) {
+      e.preventDefault();
+      const imgFiles = clipboardImageFiles(cd);
+      (async () => {
+        if (imgFiles.length) await insertImageFiles(imgFiles);
+        await insertFiles(otherFiles);
+      })().catch(err => console.warn('[diary] ファイルの貼り付け', err));
+      return;
+    }
     const html = cd.getData('text/html');
     const plain = cd.getData('text/plain');
+    // ここから下で本文を書き換える分は、元に戻せるよう先に控える（ブラウザ任せの貼り付けは beforeinput で控える）
+    const record = () => rteRecord(editor, 'cmd');
     // 画像はブラウザ既定に任せると <img src="data:…"> が本文に直接入り、
     // localStorage を一気に食い潰す。必ず自前で受け取って、実体は
     // IndexedDB へ、本文には id だけを置く。
@@ -1990,9 +2168,9 @@ function renderEditor() {
       // 元アプリが画像とHTMLを同時に置くことがある（Excel等）。その場合の画像は
       // 見た目の複製なので、HTML側に img が無ければ文字だけ取り込む。
       const wantImage = files.length > 0 && (!html || /<img\b/i.test(html));
-      const pasted = html ? sanitizeHtml(html)
+      const pasted = html ? sanitizeHtml(html, { paste: true })
                    : (plain ? escapeHtml(plain).replace(/\n/g, '<br>') : '');
-      if (pasted) insertHtmlAtCursor(pasted);
+      if (pasted) { record(); insertHtmlAtCursor(pasted); hydrateFiles(editor); }
       if (wantImage) {
         // 一緒に貼った文字はここで確定させる。画像が1枚も取り込めなかった場合、
         // insertImageFiles は本文を保存しないので、文字だけ未保存で残ってしまう
@@ -2007,13 +2185,17 @@ function renderEditor() {
       const asUrl = normalizeUrlInput(plain);
       if (plain && !/\s/.test(plain.trim()) && urlIsAllowed(asUrl) && /^https?:/i.test(asUrl)) {
         e.preventDefault();
+        record();
         const range = rteGetRange();
         const label = range && !range.collapsed ? String(range.toString() || '') : '';
         const a = editor.ownerDocument.createElement('a');
         a.setAttribute('href', asUrl);
         a.setAttribute('target', '_blank');
         a.setAttribute('rel', 'noopener noreferrer');
-        a.textContent = label || asUrl;
+        // Google のドキュメント・スプレッドシートなどは、種類の分かるカードにする（リンクのまま）
+        const gk = googleLinkKind(asUrl);
+        a.textContent = label || (gk ? GCARD_LABEL[gk] : asUrl);
+        if (gk) a.className = 'gcard gcard-' + gk;
         if (range) { range.deleteContents(); range.insertNode(a); }
         try {
           const sel2 = window.getSelection();
@@ -2022,11 +2204,15 @@ function renderEditor() {
           sel2.removeAllRanges(); sel2.addRange(after);
         } catch (err) {}
         rteNormalize(editor);
-        if (!label) showToast('リンクにしました。🔗ボタンで表示名を付けられます', 'info');
+        if (gk) decorateGcards(editor);
+        if (!label) showToast(gk ? `${GCARD_LABEL[gk]}のカードにしました。🔗ボタンで表示名を付けられます` : 'リンクにしました。🔗ボタンで表示名を付けられます', 'info');
       } else {
         if (!html) return; // ふつうの文章はブラウザ既定のままでよい
         e.preventDefault();
-        insertHtmlAtCursor(sanitizeHtml(html));
+        record();
+        // Word・Excel・Googleドキュメント・Webページの HTML も、決まった書式だけ残して入れる
+        insertHtmlAtCursor(sanitizeHtml(html, { paste: true }));
+        hydrateFiles(editor);
       }
     }
     currentEntry.content = serializeEditor(editor);
@@ -2035,6 +2221,43 @@ function renderEditor() {
     markDirty();
     scheduleAutoSave();
   });
+
+  // 元に戻す・やり直し・書式のショートカット。ツールバーの書式は DOM を直接書き換えるので、
+  // ブラウザの元に戻す（Ctrl+Z）と混ぜると本文が崩れる。本文の元に戻すは全部こちらで持つ
+  editor.addEventListener('beforeinput', (ev) => {
+    const t = ev.inputType || '';
+    if (t === 'historyUndo') { ev.preventDefault(); rteUndo(); return; }
+    if (t === 'historyRedo') { ev.preventDefault(); rteRedo(); return; }
+    rteRecord(editor, /^insert(Paragraph|LineBreak)$/.test(t) ? 'line' : /^delete/.test(t) ? 'del' : /^(insertFrom|format)/.test(t) ? 'cmd' : 'type');
+  });
+  editor.addEventListener('keydown', (ev) => {
+    if (ev.isComposing || ev.keyCode === 229) return;   // 日本語の変換中は触らない
+    const mod = (ev.ctrlKey || ev.metaKey) && !ev.altKey;
+    const k = String(ev.key || '').toLowerCase();
+    if (mod && k === 'z') { ev.preventDefault(); if (ev.shiftKey) rteRedo(); else rteUndo(); return; }
+    if (mod && k === 'y') { ev.preventDefault(); rteRedo(); return; }
+    // ブラウザ任せの太字（<b>）ではなく、ツールバーと同じ書き方にそろえる
+    if (mod && !ev.shiftKey && (k === 'b' || k === 'i' || k === 'u')) { ev.preventDefault(); rteToggleInline(k === 'b' ? 'STRONG' : k === 'i' ? 'EM' : 'U'); return; }
+    const r = rteGetRange();
+    const li = r ? rteClosestAny(editor, r.startContainer, ['LI']) : null;
+    // チェックボックスの行で Ctrl+Enter → 済み／まだ
+    if (mod && ev.key === 'Enter' && li && li.parentNode && li.parentNode.classList && li.parentNode.classList.contains('todo')) { ev.preventDefault(); rteToggleTodo(li); return; }
+    // 箇条書きの中の Tab は字下げ（外では Tab で次の欄へ移れるよう、触らない）
+    if (ev.key === 'Tab' && !ev.ctrlKey && !ev.metaKey && !ev.altKey && li) { ev.preventDefault(); rteIndent(ev.shiftKey ? -1 : 1); return; }
+    // カードを選んで Enter／スペース → 開く・保存のメニュー
+    const card = ev.target && ev.target.closest ? ev.target.closest('.dy-file') : null;
+    if (card && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); openFileMenu(card); }
+  });
+
+  // ツールバー。マウスで押してもカーソル（選んだ文字）が本文から外れないようにする
+  const bar = document.getElementById('rteBar');
+  bar.addEventListener('mousedown', (ev) => { if (ev.target.closest('button')) ev.preventDefault(); });
+  bar.addEventListener('click', (ev) => {
+    const b = ev.target.closest('button[data-cmd]');
+    if (b && !b.disabled) rteCommand(b.dataset.cmd, b);
+  });
+  rteLastRange = null;
+  rteHistReset();
 
   renderTags();
   updateCharCount();
@@ -2049,8 +2272,9 @@ function renderEditor() {
      function updateCharCount() {
   const editor = document.getElementById('contentEditor');
   // \u300C\u753B\u50CF\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u300D\u306E\u672D\u306F\u672C\u6587\u3067\u306F\u306A\u3044\u306E\u3067\u3001\u6587\u5B57\u6570\u306B\u6570\u3048\u306A\u3044
+  // ファイルのカード（名前・大きさの表示）も本文の文字ではないので数えない
   const noteLen = editor
-    ? Array.from(editor.querySelectorAll('[data-imgnote]')).reduce((n, e) => n + (e.textContent || '').length, 0)
+    ? Array.from(editor.querySelectorAll('[data-imgnote], .dy-file')).reduce((n, e) => n + (e.innerText || e.textContent || '').length, 0)
     : 0;
   const count = editor
     ? Math.max(0, (editor.innerText || '').replace(/\u200B/g, '').length - noteLen)
@@ -2066,45 +2290,130 @@ function renderEditor() {
             return 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
         }
 
-        async function createNewEntry() {
-            if (appLocked) { openUnlockModal(); return; }
-            const dateValue = document.getElementById('entryDate').value;
-            const titleValue = document.getElementById('entryTitle').value;
-            if (!dateValue) { showToast('日付を選択してください', 'error'); return; }
-            if (!titleValue.trim()) { showToast('タイトルを入力してください', 'error'); return; }
-            // 1日1件に統一（カレンダー/選択が1件前提のため）：#11
-            const existing = entries.find(e => e.date === dateValue);
-            if (existing) {
-                closeModal('newEntryModal');
-                loadEntry(existing);
-                renderCalendar();
-                renderEntriesList();
-                showToast('その日付には既に日記があります。開きました', 'warning');
-                return;
+        /* ── 今日を書く（押したらすぐ書ける）─────────────────────────────
+           以前は「新規作成」から日付とタイトルを入れる画面を出していた。どこから書けばよいか
+           分かりにくく、タイトルを入れないと作れなかった。いまは押すだけで、その日の日記があれば開き、
+           無ければ「今日の出来事」で作って、本文にカーソルを置く（1日1件はそのまま）。 */
+        let writeBusy = null;
+        function writeToday() { return writeOnDate(localDateStr()); }
+        function writeOnDate(dateStr) {
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || ''))) return Promise.resolve(false);
+            // ロック中は先に解除してもらう（解除できたら、続けてその日を開く）
+            if (appLocked) { pendingWriteDate = dateStr; openUnlockModal(); return Promise.resolve(false); }
+            // 2度押しで同じ日の日記を2件作らない
+            if (writeBusy) return writeBusy;
+            const kbd = holdKeyboard();
+            writeBusy = openOrCreateEntry(dateStr)
+                .catch(err => { console.error(err); showToast('日記を開けませんでした', 'error'); return false; })
+                .finally(() => {
+                    writeBusy = null;
+                    if (kbd && document.activeElement === kbd) kbd.blur();
+                });
+            return writeBusy;
+        }
+        async function openOrCreateEntry(dateStr) {
+            // いま開いている日なら、本文へ戻るだけ（描き直すと元に戻すの履歴が消える）
+            if (currentEntry && currentEntry.date === dateStr && document.getElementById('contentEditor')) {
+                rteFocusBody(true);
+                return true;
             }
-            const newEntry = {
-                id: genId(),
-                date: dateValue,
-                title: titleValue,
-                content: '',
-                contentFormat: 'html',
-                tags: [],
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString()
-            };
-            entries.push(newEntry);
-            // 保存できていないのに「作成しました」と出すと、消えたことに気づけない
-            if (!(await saveEntriesToStorage())) {
-                entries = entries.filter(e => e !== newEntry);
-                return;
+            if (!(await ensureSavedOrConfirmLoseChanges('移動'))) return false;
+            // 別のタブで同じ日の日記を書いていたら、新しく作らずにそれを開く
+            if (!(await absorbOtherTab())) return false;
+            let entry = entries.find(e => e.date === dateStr);
+            const created = !entry;
+            if (created) {
+                const now = new Date().toISOString();
+                const fresh = { id: genId(), date: dateStr, title: DEFAULT_ENTRY_TITLE, content: '', contentFormat: 'html', tags: [], createdAt: now, updatedAt: now };
+                entries.push(fresh);
+                // 保存できていないのに開くと、書いた文章ごと消えたことに気づけない（成功とも言わない）
+                if (!(await saveEntriesToStorage())) {
+                    entries = entries.filter(e => e !== fresh);
+                    return false;
+                }
+                entry = entries.find(e => e.id === fresh.id) || entries.find(e => e.date === dateStr) || fresh;
             }
-            closeModal('newEntryModal');
-            loadEntry(newEntry);
+            // カレンダーもその月を出す
+            const ymd = dateStr.split('-').map(Number);
+            currentYear = ymd[0]; currentMonth = ymd[1] - 1;
+            loadEntry(entry);
             renderCalendar();
             renderEntriesList();
-            showToast('新規作成しました', 'success');
-            updateBackupReminder();
+            rteFocusBody(!created);
+            if (created) {
+                showToast(`${monthDayLabel(dateStr)}の日記をはじめました`, 'success');
+                updateBackupReminder();
+            }
+            return true;
         }
+        /** 本文にカーソルを置く（atEnd: 書いてある文の続きから） */
+        function rteFocusBody(atEnd) {
+            const ed = document.getElementById('contentEditor');
+            if (!ed) return;
+            try { ed.focus({ preventScroll: true }); } catch (e) { ed.focus(); }
+            const r = document.createRange();
+            if (!atEnd) { r.selectNodeContents(ed); r.collapse(true); rteSetSelection(r); return; }
+            // 最後の行の終わりへ。ファイルのカード（書き換えのできない所）の中には置かない
+            // （中に置くと、次に入れたものがカードの中に入り、保存のときに消えてしまう）
+            let box = ed, last = ed.lastChild;
+            while (last && last.nodeType === 1 && !/^(BR|IMG|HR|TABLE)$/.test(last.tagName) && last.getAttribute('contenteditable') !== 'false') { box = last; last = last.lastChild; }
+            if (!last) r.setStart(box, 0);
+            else if (last.nodeType === 3) r.setStart(last, last.nodeValue.length);
+            else if (last.tagName === 'BR') r.setStartBefore(last);
+            else r.setStartAfter(last);
+            r.collapse(true);
+            rteSetSelection(r);
+        }
+        /** iPhone は、押したその場（同期）で入力欄にフォーカスしないとキーボードを出さない。
+         *  日記の用意（保存）を待つ間は見えない入力欄で受けておき、本文に渡す */
+        function holdKeyboard() {
+            try {
+                if (!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches)) return null;
+                let k = document.getElementById('kbdHold');
+                if (!k) {
+                    k = document.createElement('input');
+                    k.id = 'kbdHold'; k.type = 'text'; k.className = 'kbd-hold';
+                    k.tabIndex = -1; k.autocomplete = 'off';
+                    k.setAttribute('aria-hidden', 'true');
+                    document.body.appendChild(k);
+                }
+                k.focus({ preventScroll: true });
+                return k;
+            } catch (e) { return null; }
+        }
+        // 「11月9日」
+        function monthDayLabel(dateStr) {
+            const p = String(dateStr || '').split('-').map(Number);
+            return p.length === 3 && p[1] && p[2] ? `${p[1]}月${p[2]}日` : String(dateStr || '');
+        }
+        function updateWriteTodayLabel() {
+            const el = document.getElementById('writeTodayDate');
+            if (el) el.textContent = monthDayLabel(localDateStr());
+            syncFabToday();
+        }
+        // 今日の日記を開いているあいだは、スマホの右下の＋を隠す（押しても同じ日記が開くだけで、
+        // 本文の下のタグ欄や保存ボタンに重なって邪魔になる）
+        function syncFabToday() {
+            document.body.classList.toggle('on-today', !!(currentEntry && currentEntry.date === localDateStr()));
+        }
+        // PC のショートカット: Alt+N で今日を書く（ほかのショートカットと重ならない）
+        document.addEventListener('keydown', (e) => {
+            if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing || e.code !== 'KeyN') return;
+            if (document.querySelector('.modal.active')) return;
+            e.preventDefault();
+            writeToday();
+        });
+        // スマホで書いている間（本文・タイトル・タグを触っている間）は、右下の＋を隠す（キーボードの上で本文に重ねない）
+        document.addEventListener('focusin', (e) => {
+            const sec = document.getElementById('editorSection');
+            document.body.classList.toggle('writing', !!(sec && e.target && sec.contains(e.target)));
+        });
+        document.addEventListener('focusout', (e) => {
+            const sec = document.getElementById('editorSection');
+            if (!(sec && e.relatedTarget && sec.contains(e.relatedTarget))) document.body.classList.remove('writing');
+        });
+        // 日付が変わってから戻ってきたときも、ボタンの日付を今日にする
+        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') updateWriteTodayLabel(); });
 
        /** 保存できた画像は「未保存」の札を外す。付けっぱなしだと、
         *  差し替えて使わなくなった画像がいつまでも掃除されない。 */
@@ -2251,6 +2560,24 @@ function renderEditor() {
                 el.setAttribute('data-did', did);
                 if (alt) el.setAttribute('alt', alt);
             });
+            // \u30D5\u30A1\u30A4\u30EB\u306E\u30AB\u30FC\u30C9\u306F\u3001\u753B\u9762\u7528\u306E\u98FE\u308A\uFF08\u30A2\u30A4\u30B3\u30F3\u30FB\u5927\u304D\u3055\u30FB\u62BC\u305B\u308B\u5370\uFF09\u3092\u5916\u3057\u3066\u76EE\u5370\u3060\u3051\u306B\u3059\u308B
+            tmp.querySelectorAll('.dy-file').forEach(el => {
+                const fid = el.getAttribute('data-fid') || '';
+                if (!FID_RE.test(fid)) return;
+                // カードの中に紛れ込んだ別のカードや画像は、消さずにカードのうしろへ出す
+                Array.from(el.querySelectorAll('.dy-file, img')).reverse().forEach(x => el.after(x));
+                const name = el.getAttribute('data-name') || '';
+                const size = el.getAttribute('data-size') || '';
+                const s = el.ownerDocument.createElement('span');
+                s.className = 'dy-file';
+                s.setAttribute('data-fid', fid);
+                if (name) s.setAttribute('data-name', name);
+                if (/^\d{1,12}$/.test(size)) s.setAttribute('data-size', size);
+                s.textContent = name || '\u30D5\u30A1\u30A4\u30EB';
+                el.replaceWith(s);
+            });
+            tmp.querySelectorAll('[contenteditable]').forEach(el => el.removeAttribute('contenteditable'));
+            tmp.querySelectorAll('a[data-same]').forEach(el => el.removeAttribute('data-same'));
             return tpl.innerHTML.replace(/\u200B/g, '');
         }
 
@@ -2372,6 +2699,7 @@ function renderEditor() {
             //   ここを省くと、ツールバーの🖼️から入れたとき選択が一覧に残ったままで、
             //   画像が一覧のDOMへ入り本文には何も残らない（それでも成功と表示していた）
             rteEnsureRangeInEditor(editor);
+            rteRecord(editor, 'cmd');
 
             let added = 0, keptGif = 0, skipped = 0;
             const fails = [];   // 失敗の理由をためる
@@ -2443,12 +2771,256 @@ function renderEditor() {
             inp.click();
         }
 
+        /* ── ファイル（Excel・Word・PowerPoint・PDF・CSV・テキスト・zip など）──────────────
+           写真と同じ置き場（DiaryImagesDB）に、id を f… にして1つずつ置く。本文には
+           <span class="dy-file" data-fid data-name data-size>名前</span> の目印だけを残す。
+           - 暗号化がONなら写真と同じ鍵で包む（imgEncode）。鍵を変えたときの包み直し・Drive へ1つずつ
+             置く同期（dy-file-<id>）・書き出し・使われなくなったものの片付けも、写真と同じ道を通る
+           - 名前と大きさは本文の目印に持つ（端末の記録は写真と同じ形のまま。☁のまとめて書き出すでも運べる）
+           - 新しいタブで開くのは、中でスクリプトが動かない形式（PDF・画像・音・動画・テキスト）だけ。
+             HTML・SVG などを同じオリジンのタブで開くと、そこから日記を読めてしまうので保存（ダウンロード）にする */
+        const FILE_MAX_BYTES = 25 * 1024 * 1024;
+        const FILE_TYPES = {
+            pdf: 'application/pdf', txt: 'text/plain', csv: 'text/csv', tsv: 'text/tab-separated-values', json: 'application/json',
+            zip: 'application/zip', xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+            mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav', mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm'
+        };
+        // 新しいタブで開いてよい形式（中でスクリプトが動かないもの）
+        const FILE_OPEN_RE = /^(application\/pdf|image\/(png|jpeg|gif|webp|avif|bmp)|audio\/(mpeg|mp4|aac|wav|x-wav|ogg|webm|flac)|video\/(mp4|webm|ogg|quicktime)|text\/plain)$/;
+        function fileId() {
+            return 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        }
+        function fileExt(name) {
+            const m = /\.([a-z0-9]{1,8})$/i.exec(String(name || ''));
+            return m ? m[1].toLowerCase() : '';
+        }
+        function fileIcon(name) {
+            const x = fileExt(name);
+            if (/^(xlsx?|xlsm|csv|tsv|ods|numbers)$/.test(x)) return '📊';
+            if (/^(docx?|docm|odt|rtf|pages)$/.test(x)) return '📝';
+            if (/^(pptx?|pptm|odp|key)$/.test(x)) return '📽';
+            if (x === 'pdf') return '📕';
+            return '📎';
+        }
+        /** 新しいタブに渡す形式。開けない（保存だけにする）ものは null。
+         *  端末の記録の形式（type）が分かればそれで、分からないときだけ名前の拡張子で決める
+         *  （text/html と書かれたものは、名前が .pdf でも開かない） */
+        function fileOpenType(name, type) {
+            let t = String(type || '').toLowerCase().split(';')[0].trim();
+            if (!t || t === 'application/octet-stream') t = FILE_TYPES[fileExt(name)] || '';
+            if (!FILE_OPEN_RE.test(t)) return null;
+            return t === 'text/plain' ? 'text/plain;charset=utf-8' : t;
+        }
+        function formatBytes(n) {
+            n = Number(n) || 0;
+            if (n < 1024) return n + ' B';
+            if (n < 1024 * 1024) return (n < 10240 ? (n / 1024).toFixed(1) : Math.round(n / 1024)) + ' KB';
+            return (n / 1048576).toFixed(1) + ' MB';
+        }
+        /** 保存するときの名前（フォルダの区切りや使えない文字は _ に） */
+        function safeFileName(name) {
+            const s = String(name || '').replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, '_').replace(/^[.\s]+/, '').trim().slice(0, 180);
+            return s || 'ファイル';
+        }
+        function fileCardHtml(id, name, size) {
+            return `<span class="dy-file" data-fid="${id}" data-name="${escapeAttr(name)}" data-size="${Number(size) || 0}">${escapeHtml(name)}</span>`;
+        }
+        /** 本文のファイルの目印を、押せるカード（アイコン・名前・大きさ）にする。保存する形は serializeEditor で元に戻す */
+        function hydrateFiles(root) {
+            if (!root) return;
+            root.querySelectorAll('span.dy-file').forEach(el => {
+                const fid = el.getAttribute('data-fid') || '';
+                if (!FID_RE.test(fid)) return;
+                if (el.getAttribute('contenteditable') === 'false' && el.querySelector('.dyf-name')) return;   // 飾り済み
+                const name = el.getAttribute('data-name') || (el.textContent || '').trim() || 'ファイル';
+                const size = Number(el.getAttribute('data-size') || 0);
+                el.textContent = '';
+                const ic = document.createElement('span'); ic.className = 'dyf-ic'; ic.setAttribute('aria-hidden', 'true'); ic.textContent = fileIcon(name);
+                const nm = document.createElement('span'); nm.className = 'dyf-name'; nm.textContent = name;
+                el.append(ic, nm);
+                if (size > 0) { const sz = document.createElement('span'); sz.className = 'dyf-size'; sz.textContent = formatBytes(size); el.appendChild(sz); }
+                el.setAttribute('contenteditable', 'false');
+                el.setAttribute('role', 'button');
+                el.setAttribute('tabindex', '0');
+                el.setAttribute('title', '押すと「開く」「保存」を選べます');
+                el.setAttribute('aria-label', `ファイル ${name}${size > 0 ? '（' + formatBytes(size) + '）' : ''}`);
+            });
+            decorateGcards(root);
+        }
+        /** クリップボードから画像でないファイルを取り出す（エクスプローラー・Finder でコピーしたものなど） */
+        function clipboardOtherFiles(cd) {
+            const out = [];
+            const seen = new Set();
+            const push = f => {
+                if (!f || /^image\//i.test(f.type || '')) return;
+                const k = (f.name || '') + ':' + f.size + ':' + f.type;
+                if (seen.has(k)) return;
+                seen.add(k); out.push(f);
+            };
+            try { if (cd.files) Array.prototype.forEach.call(cd.files, push); } catch (e) {}
+            try {
+                if (cd.items) Array.prototype.forEach.call(cd.items, it => {
+                    if (it && it.kind === 'file' && !/^image\//i.test(it.type || '')) { try { push(it.getAsFile()); } catch (e) {} }
+                });
+            } catch (e) {}
+            return out;
+        }
+        /** ファイルを本文に入れる（ツールバーの📎・ドロップ・貼り付け）。入れた数を返す */
+        async function insertFiles(files) {
+            const all = Array.from(files || []).filter(Boolean);
+            if (!all.length) return 0;
+            if (appLocked) { showToast('ロックを解除してからファイルを入れてください', 'error'); return 0; }
+            // 別のタブで鍵が変わった古いタブ。古い鍵で書くと、新しい鍵では開けなくなる
+            if (storageConflict) { showToast(storageConflict, 'error'); return 0; }
+            const editor = document.getElementById('contentEditor');
+            if (!editor || !currentEntry) { showToast('先に日記を開いてください', 'error'); return 0; }
+            const entryId = currentEntry.id;
+            const stillHere = () => !!currentEntry && currentEntry.id === entryId
+                && document.getElementById('contentEditor') === editor && editor.isConnected;
+            try { await imgDbPromise; }
+            catch (e) { showToast('ファイルの保存先を開けませんでした。このアプリを開いている他のタブを閉じて、ページを再読み込みしてください', 'error'); return 0; }
+            // 大きすぎるものは入れない（同期や書き出しで何度も往復するため）
+            const tooBig = all.filter(f => f.size > FILE_MAX_BYTES);
+            const list = all.filter(f => f.size <= FILE_MAX_BYTES);
+            if (tooBig.length) {
+                showToast(`${tooBig.map(f => `「${f.name || 'ファイル'}」（${formatBytes(f.size)}）`).join('・')}は大きすぎるため入れませんでした。1つ ${formatBytes(FILE_MAX_BYTES)} までです`, 'error');
+            }
+            if (!list.length) return 0;
+            rteRestoreRange(editor);   // 本文の中のカーソル位置に入れる（外れていれば最後の位置）
+            rteRecord(editor, 'cmd');
+            let added = 0, skipped = 0;
+            const fails = [];
+            const busy = showBusyToast(list.length > 1 ? `ファイルを${list.length}つ入れています…` : 'ファイルを入れています…');
+            try {
+                for (let i = 0; i < list.length; i++) {
+                    const f = list[i];
+                    if (!stillHere()) { skipped = list.length - i; break; }
+                    const name = String(f.name || 'ファイル').slice(0, 200);
+                    // 形式が空のもの（拡張子をブラウザが知らない）は、名前から決める（決まらなければ octet-stream）
+                    const type = f.type || FILE_TYPES[fileExt(name)] || 'application/octet-stream';
+                    const blob = f.type ? f : new Blob([f], { type });
+                    const id = fileId();
+                    try {
+                        const rec = await imgEncode(blob);
+                        await imgPut({ id, ...rec, size: blob.size });
+                    } catch (e) {
+                        console.warn('[diary] ファイルを保存できません', e);
+                        fails.push(name); continue;
+                    }
+                    if (!stillHere()) { try { await imgDelete(id); } catch (e2) {} skipped = list.length - i; break; }
+                    // 本文に入らなかったら「入れました」と言わない。実体も残さない
+                    if (!insertHtmlAtCursor(fileCardHtml(id, name, blob.size) + '\u200B')) {
+                        try { await imgDelete(id); } catch (e2) {}
+                        fails.push(name); continue;
+                    }
+                    pendingImageIds.add(id);
+                    added++;
+                    hydrateFiles(editor);
+                    syncEditorContent();
+                }
+            } finally {
+                busy.done();
+            }
+            if (skipped) showToast(`本文が切り替わったため、残りのファイル${skipped}つは入れませんでした。もう一度入れてください`, 'warning');
+            if (fails.length) showToast(`ファイル${fails.length}つを入れられませんでした。端末の保存容量が足りないかもしれません。不要なファイルや他サイトのデータを整理してください`, 'error');
+            if (added) showToast(added > 1 ? `ファイルを${added}つ入れました` : 'ファイルを入れました。押すと開く・保存を選べます', 'success');
+            return added;
+        }
+        function pickFiles() {
+            const inp = document.createElement('input');
+            inp.type = 'file'; inp.multiple = true;
+            inp.onchange = () => { insertFiles(inp.files); };
+            inp.click();
+        }
+        /** 端末からファイルの中身を読む。返り値 { blob } か { msg }（読めない理由） */
+        async function fileLoad(fid) {
+            let rec = null;
+            try { rec = await imgGet(fid); } catch (e) { rec = null; }
+            if (!rec) return { msg: 'ファイルが見つかりません。ほかの端末で入れたものは、同期が終わると開けます' };
+            try {
+                const blob = await imgDecode(rec);
+                if (blob) return { blob };
+            } catch (e) {
+                if (String(e && e.message) === 'LOCKED') return { msg: '🔒 ロックを解除すると開けます' };
+            }
+            return { msg: 'ファイルを読めませんでした（別のパスフレーズで入れたものかもしれません）' };
+        }
+        /** 保存（ダウンロード）。中身は octet-stream にして、ブラウザに解釈させない */
+        function fileDownload(blob, name) {
+            const url = URL.createObjectURL(new Blob([blob], { type: 'application/octet-stream' }));
+            const a = document.createElement('a');
+            a.href = url; a.download = safeFileName(name); a.rel = 'noopener';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
+        }
+        async function fileSave(fid, name) {
+            const got = await fileLoad(fid);
+            if (!got.blob) { showToast(got.msg, 'error'); return false; }
+            fileDownload(got.blob, name);
+            return true;
+        }
+        /** 新しいタブで開く。開けない形式なら保存にする */
+        async function fileOpen(fid, name) {
+            // ポップアップとして止められないよう、押したその場（同期）で窓だけ先に開いておく
+            let w = null;
+            try { w = window.open('', '_blank'); } catch (e) { w = null; }
+            const got = await fileLoad(fid);
+            if (!got.blob) { try { if (w) w.close(); } catch (e) {} showToast(got.msg, 'error'); return false; }
+            const t = fileOpenType(name, got.blob.type);
+            if (!t) {
+                try { if (w) w.close(); } catch (e) {}
+                fileDownload(got.blob, name);
+                showToast('この形式は新しいタブでは開けないため、保存しました', 'info');
+                return false;
+            }
+            const url = URL.createObjectURL(new Blob([got.blob], { type: t }));
+            setTimeout(() => URL.revokeObjectURL(url), 5 * 60 * 1000);
+            if (w) {
+                try { w.opener = null; w.location.href = url; return true; } catch (e) {}
+            }
+            // 窓を開けなかった（ポップアップが止められた）ときは保存にする
+            fileDownload(got.blob, name);
+            showToast('新しいタブを開けなかったため、保存しました', 'info');
+            return false;
+        }
+        function openFileMenu(card) {
+            const fid = card.getAttribute('data-fid') || '';
+            if (!FID_RE.test(fid)) return;
+            const name = card.getAttribute('data-name') || 'ファイル';
+            const size = Number(card.getAttribute('data-size') || 0);
+            const canOpen = !!fileOpenType(name, '');
+            const items = [];
+            if (canOpen) items.push({ label: '↗ 開く（新しいタブ）', run: () => { fileOpen(fid, name); } });
+            items.push({ label: '⬇ 保存（ダウンロード）', run: () => { fileSave(fid, name); } });
+            items.push({ label: '✕ 本文から外す', run: () => fileRemoveCard(card) });
+            rteOpenMenu(card, items, {
+                keepRange: false,
+                label: 'ファイル',
+                head: `${fileIcon(name)} ${escapeHtml(name)}<small>${size ? formatBytes(size) + '・' : ''}${canOpen ? '開くか保存するかを選べます' : 'この形式はブラウザでは開かず、保存してから開きます'}</small>`
+            });
+        }
+        function fileRemoveCard(card) {
+            const editor = rteEditor();
+            if (!editor || !editor.contains(card)) return;
+            rteRecord(editor, 'cmd');
+            card.remove();
+            syncEditorContent();
+            showToast('ファイルを本文から外しました（↶ 元に戻す で戻せます）', 'info');
+        }
+
         /* ── どの日記からも参照されなくなった画像を捨てる ───────────── */
+        // 画像（data-did="i…"）とファイル（data-fid="f…"）の id。どちらも同じ置き場にあり、
+        // 掃除・書き出し・Drive への同期は同じ規則で扱う
         function contentImageIds(html) {
             const out = [];
-            const re = /data-did="([^"]+)"/g;
+            const re = /data-(did|fid)="([^"]+)"/g;
             let m;
-            while ((m = re.exec(String(html || '')))) { if (DID_RE.test(m[1])) out.push(m[1]); }
+            while ((m = re.exec(String(html || '')))) { if ((m[1] === 'did' ? DID_RE : FID_RE).test(m[2])) out.push(m[2]); }
             return out;
         }
         /** localStorage にいま入っている本文から画像idを拾う。
@@ -2570,6 +3142,7 @@ function rteTextNodes(editor, range) {
   let n;
   while ((n = tw.nextNode())) {
     if (!n.nodeValue || !n.nodeValue.length) continue;
+    if (n.parentNode && n.parentNode.closest && n.parentNode.closest('[contenteditable="false"], [data-imgnote]')) continue;
     if (rteIntersects(range, n)) out.push(n);
   }
   return out;
@@ -2613,13 +3186,13 @@ function rteSplitOutOf(wrapper, node) {
 
   const out = doc.createDocumentFragment();
   if (pathChild.previousSibling) {
-    const lw = doc.createElement(wrapper.tagName);
+    const lw = wrapper.cloneNode(false);   // class（色・大きさ）も引き継ぐ
     while (wrapper.firstChild && wrapper.firstChild !== pathChild) lw.appendChild(wrapper.firstChild);
     out.appendChild(lw);
   }
   out.appendChild(pathChild); // move the node's subtree out as-is
   if (wrapper.firstChild) {    // whatever remains is after pathChild
-    const rw = doc.createElement(wrapper.tagName);
+    const rw = wrapper.cloneNode(false);
     while (wrapper.firstChild) rw.appendChild(wrapper.firstChild);
     out.appendChild(rw);
   }
@@ -2636,15 +3209,18 @@ function rteUnwrapNode(editor, node, tagName) {
 }
 
 // Toggle an inline tag over an explicit range (mutates DOM; no selection change).
+// 太字は <b>、斜体は <i>、取消線は <strike>/<del> で書かれた古い本文・貼り付けも同じものとして扱う
+// （以前は <b> の文字を太字ボタンで戻せなかった）
 function rteApplyInlineToRange(editor, range, tagName) {
   rteNormalizeBoundaries(range);
   const nodes = rteTextNodes(editor, range);
   if (!nodes.length) return;
-  const allFormatted = nodes.every(n => rteInlineAncestor(editor, n, tagName));
-  if (allFormatted) {
-    nodes.forEach(n => rteUnwrapNode(editor, n, tagName));
+  const tags = RTE_INLINE_ALIAS[tagName] || [tagName];
+  const has = n => rteClosestAny(editor, n, tags);
+  if (nodes.every(has)) {
+    nodes.forEach(n => rteUnwrapMatching(editor, n, el => tags.includes(el.tagName)));
   } else {
-    nodes.forEach(n => { if (!rteInlineAncestor(editor, n, tagName)) rteWrap(editor, n, tagName); });
+    nodes.forEach(n => { if (!has(n)) rteWrap(editor, n, tagName); });
   }
 }
 
@@ -2657,7 +3233,8 @@ function rteOffset(editor, container, offset) {
 }
 
 // Map a character offset back to a {node, offset} text position.
-function rteFindOffset(editor, target) {
+// preferNext: 2つの文字の境目（行の終わり＝次の行の始め）なら、次の文字の始めにする（範囲の始まり用）
+function rteFindOffset(editor, target, preferNext) {
   let p = 0;
   const doc = editor.ownerDocument;
   const w = doc.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null);
@@ -2665,7 +3242,7 @@ function rteFindOffset(editor, target) {
   while ((node = w.nextNode())) {
     const l = node.nodeValue.length;
     last = node;
-    if (p + l >= target) return { node, offset: target - p };
+    if (preferNext ? p + l > target : p + l >= target) return { node, offset: target - p };
     p += l;
   }
   if (last) return { node: last, offset: last.nodeValue.length };
@@ -2674,12 +3251,16 @@ function rteFindOffset(editor, target) {
 
 function rteSetSelectionByOffsets(editor, start, end) {
   const doc = editor.ownerDocument;
-  const s = rteFindOffset(editor, start);
+  // 範囲の始まりが行の境目なら次の行の始めに置く（前の行の終わりからにすると、改行まで選んでしまう）
+  const s = rteFindOffset(editor, start, end > start);
   const e = rteFindOffset(editor, end);
   const r = doc.createRange();
+  // 書き換えのできない所（ファイルのカードの中の文字）に当たったら、そのカードの外へ
+  const lockOf = (n) => (n && n.parentNode && n.parentNode.closest) ? n.parentNode.closest('[contenteditable="false"]') : null;
   try {
-    r.setStart(s.node, s.offset);
-    r.setEnd(e.node, e.offset);
+    const ls = lockOf(s.node), le = lockOf(e.node);
+    if (ls && editor.contains(ls)) { if (s.offset === 0 && end > start) r.setStartBefore(ls); else r.setStartAfter(ls); } else r.setStart(s.node, s.offset);
+    if (le && editor.contains(le)) r.setEndAfter(le); else r.setEnd(e.node, e.offset);
   } catch (_) { return; }
   rteSetSelection(r);
 }
@@ -2687,11 +3268,25 @@ function rteSetSelectionByOffsets(editor, start, end) {
 // Tidy the tree: drop empty inline elements, merge adjacent same-tag inlines.
 function rteNormalize(editor) {
   const inlineSet = new Set(['STRONG', 'EM', 'S', 'B', 'I', 'U']);
+  // 色・大きさの span と蛍光ペンの mark（ファイルのカードや画像の札の span は触らない）
+  const vocab = el => el.tagName === 'MARK' || (el.tagName === 'SPAN' && el.attributes.length === 1 && el.classList.length > 0
+    && Array.from(el.classList).every(c => /^(fc|fs)-/.test(c)));
   let changed = true, guard = 0;
   while (changed && guard++ < 100) {
     changed = false;
-    const els = Array.from(editor.querySelectorAll('strong,em,s,b,i,u,a'));
+    const els = Array.from(editor.querySelectorAll('strong,em,s,b,i,u,a,span,mark'));
     for (const el of els) {
+      if ((el.tagName === 'SPAN' || el.tagName === 'MARK') && !vocab(el)) continue;
+      if (vocab(el)) {
+        if (!el.textContent && !el.firstElementChild) { el.remove(); changed = true; continue; }
+        const nx = el.nextSibling;
+        if (nx && nx.nodeType === 1 && nx.tagName === el.tagName && vocab(nx) && nx.className === el.className) {
+          while (nx.firstChild) el.appendChild(nx.firstChild);
+          nx.remove();
+          changed = true;
+        }
+        continue;
+      }
       // 中身が本当に空の飾りだけを畳む。textContent だけで判断すると、
       // 画像1枚を囲んだリンク（textContent は空）を中身ごと消してしまい、
       // 「画像を選んでリンクにしたら写真が消えた」ことになる
@@ -2788,48 +3383,31 @@ function rteInsertEmptyInline(editor, tagName) {
 function rteToggleInline(tagName) {
   const editor = rteEditor();
   if (!editor) return;
-  editor.focus();
-  const range = rteGetRange();
+  const range = rteRestoreRange(editor);
   if (!range) return;
-  if (range.collapsed) { rteInsertEmptyInline(editor, tagName); syncEditorContent(); return; }
+  rteRecord(editor, 'cmd');
+  if (range.collapsed) {
+    // 太字の中で押したら、続けて打つ文字は太字にしない（以前は何も起きなかった）
+    const tags = RTE_INLINE_ALIAS[tagName] || [tagName];
+    if (rteClosestAny(editor, range.startContainer, tags)) rteCaretOutOf(editor, range, el => tags.includes(el.tagName));
+    else rteInsertEmptyInline(editor, tagName);
+    syncEditorContent();
+    rteUpdateBarState();
+    return;
+  }
   const startOff = rteOffset(editor, range.startContainer, range.startOffset);
   const endOff = rteOffset(editor, range.endContainer, range.endOffset);
   rteApplyInlineToRange(editor, range, tagName);
   rteNormalize(editor);
   rteSetSelectionByOffsets(editor, startOff, endOff);
   syncEditorContent();
+  rteUpdateBarState();
 }
 
+// 旧来の入口。いまは行ごとに包む rteToggleList / rteToggleQuote に任せる
+// （以前はカーソルが行の要素の外にあると、本文全体を1つのリスト・引用にしていた）
 function rteToggleBlock(kind) {
-  const editor = rteEditor();
-  if (!editor) return;
-  editor.focus();
-  const range = rteGetRange();
-  if (!range) return;
-
-  const probe = kind === 'ul' ? 'LI' : 'BLOCKQUOTE';
-  const existing = rteClosest(editor, range.startContainer, probe);
-  if (existing) {
-    rteUnwrapBlock(editor, existing, kind);
-    rteNormalize(editor);
-    syncEditorContent();
-    return;
-  }
-
-  let workRange = range;
-  let expanded = false;
-  if (range.collapsed) {
-    const block = rteClosestBlock(editor, range.startContainer) || editor;
-    workRange = editor.ownerDocument.createRange();
-    workRange.selectNodeContents(block);
-    expanded = true;
-  }
-  const startOff = rteOffset(editor, workRange.startContainer, workRange.startOffset);
-  const endOff = rteOffset(editor, workRange.endContainer, workRange.endOffset);
-  rteWrapBlockRange(editor, workRange, kind);
-  rteNormalize(editor);
-  if (!expanded) rteSetSelectionByOffsets(editor, startOff, endOff);
-  syncEditorContent();
+  return kind === 'ul' ? rteToggleList('ul') : rteToggleQuote();
 }
 
 /* ── リンク ────────────────────────────────────────────────
@@ -2908,6 +3486,14 @@ function submitLink() {
   }
   closeModal('linkModal');
   editor.focus();
+  if (linkEditRange) { try { rteSetSelection(linkEditRange); } catch (e) {} }
+  rteRecord(editor, 'cmd');
+  // Google のドキュメント類は種類の分かるカードにする（表示名が無ければ種類の名前）
+  const gk = googleLinkKind(url);
+  const setCard = (el) => {
+    if (gk) el.className = 'gcard gcard-' + gk;
+    else if (el.classList.contains('gcard')) el.removeAttribute('class');
+  };
 
   const a = editor.ownerDocument.createElement('a');
   a.setAttribute('href', url);
@@ -2921,21 +3507,23 @@ function submitLink() {
     linkEditAnchor.setAttribute('rel', 'noopener noreferrer');
     // 画像などを含むリンクは中身を文字で置き換えない（写真が消えてしまう）。
     // 表示テキストを空のまま OK したときは、いまの中身をそのまま残す
-    if (!linkEditAnchor.firstElementChild) linkEditAnchor.textContent = text || url;
+    if (!linkEditAnchor.firstElementChild) linkEditAnchor.textContent = text || (gk ? GCARD_LABEL[gk] : url);
     else if (text) linkEditAnchor.textContent = text;
+    setCard(linkEditAnchor);
   } else {
     const range = linkEditRange;
     if (!range) return;
     try { rteSetSelection(range); } catch (e) {}
     if (range.collapsed || text) {
       // 表示テキストが決まっているなら、選択範囲ごと差し替える
-      a.textContent = text || url;
+      a.textContent = text || (gk ? GCARD_LABEL[gk] : url);
       range.deleteContents();
       range.insertNode(a);
     } else {
       a.appendChild(range.extractContents());
       range.insertNode(a);
     }
+    setCard(a);
     // リンクの直後にカーソルを置く（続けて書けるように）
     try {
       const sel = window.getSelection();
@@ -2946,6 +3534,7 @@ function submitLink() {
   }
   linkEditRange = null; linkEditAnchor = null;
   rteNormalize(editor);
+  decorateGcards(editor);
   syncEditorContent();
 }
 
@@ -2953,6 +3542,7 @@ function removeLinkAtCursor() {
   const editor = rteEditor();
   closeModal('linkModal');
   if (!editor || !linkEditAnchor || !editor.contains(linkEditAnchor)) return;
+  rteRecord(editor, 'cmd');
   const parent = linkEditAnchor.parentNode;
   while (linkEditAnchor.firstChild) parent.insertBefore(linkEditAnchor.firstChild, linkEditAnchor);
   parent.removeChild(linkEditAnchor);
@@ -2977,6 +3567,8 @@ function rteEnsureRangeInEditor(editor) {
     const r0 = sel0.getRangeAt(0);
     if (editor.contains(r0.commonAncestorContainer)) keep = r0.cloneRange();
   }
+  // ファイルを選ぶ画面などで選択が外れていたら、最後に本文で選んでいた位置へ戻す
+  if (!keep && rteLastRange && editor.contains(rteLastRange.startContainer) && editor.contains(rteLastRange.endContainer)) keep = rteLastRange.cloneRange();
   try { editor.focus({ preventScroll: true }); } catch (e) { editor.focus(); }
   const sel = window.getSelection();
   if (keep) {
@@ -3001,6 +3593,9 @@ function insertHtmlAtCursor(html) {
   }
   if (!range) range = rteEnsureRangeInEditor(editor);
   if (!range) return false;
+  // ファイルのカードなど書き換えのできない所の中には入れない（カードの中に入ると保存のときに消える）
+  const lock = (range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentNode).closest('[contenteditable="false"]');
+  if (lock && editor && editor.contains(lock)) { range.setStartAfter(lock); range.collapse(true); }
   range.deleteContents();
 
   const tpl = document.createElement('template');
@@ -3016,6 +3611,7 @@ function insertTable(rows, cols) {
   const editor = document.getElementById('contentEditor');
   if (!editor) return;
   rteEnsureRangeInEditor(editor);   // 本文の外に差し込まないように
+  rteRecord(editor, 'cmd');
 
   let html = '<table><tbody>';
   for (let r = 0; r < rows; r++) {
@@ -3034,6 +3630,666 @@ function insertTablePrompt() {
   const c = parseInt(prompt('列数', '2'), 10);
   if (!r || !c || r < 1 || c < 1 || r > 20 || c > 20) return;
   insertTable(r, c);
+}
+
+/* ── 書式（OneNote の「ホーム」の最小限）─────────────────────────────────
+   見出し・文字の大きさ・文字の色・蛍光ペン・下線・番号付き・チェックボックス・字下げ・書式を消す。
+   本文には決まった名前の class だけを残す（span.fc-red / mark.hl-yellow / span.fs-l / ul.todo / .ind-2）。
+   好きな style をそのまま持つと、サニタイズで残す範囲が決められず、紙の色を変えたときに読めなくなる。 */
+const RTE_INLINE_ALIAS = { STRONG: ['STRONG', 'B'], EM: ['EM', 'I'], S: ['S', 'STRIKE', 'DEL'], U: ['U'] };
+const RTE_COLORS = [['red', '赤'], ['orange', 'オレンジ'], ['green', '緑'], ['blue', '青'], ['purple', '紫'], ['gray', 'グレー']];
+const RTE_HIGHLIGHTS = [['yellow', '黄'], ['green', '緑'], ['pink', 'ピンク'], ['blue', '水色']];
+const RTE_SIZES = [['s', '小'], ['', '標準'], ['l', '大'], ['xl', '特大']];
+const RTE_LINE_TAGS = /^(DIV|P|H[1-6]|PRE)$/;          // 1行（段落）にあたる要素
+const RTE_BOX_TAGS = /^(LI|BLOCKQUOTE|TD|TH)$/;        // 行を入れる箱
+const RTE_STOP_TAGS = /^(DIV|P|H[1-6]|PRE|LI|BLOCKQUOTE|TD|TH|UL|OL|TABLE|HR)$/;
+
+// 本文で最後に選んでいた範囲。スマホではツールバーやメニューを押すと本文から選択が外れるので、
+// 押したときはこれを戻して使う（リンクのダイアログと同じ考え方）
+let rteLastRange = null;
+document.addEventListener('selectionchange', () => {
+  const r = rteGetRange();
+  if (!r) return;
+  rteLastRange = r.cloneRange();
+  rteScheduleBarState();
+});
+/** 書式をかける範囲を返す。本文の中に選択が無ければ、最後に本文で選んでいた範囲を戻す（無ければ末尾） */
+function rteRestoreRange(editor) {
+  let want = rteGetRange();
+  want = want ? want.cloneRange()
+    : (rteLastRange && editor.contains(rteLastRange.startContainer) && editor.contains(rteLastRange.endContainer)) ? rteLastRange.cloneRange() : null;
+  if (document.activeElement !== editor) { try { editor.focus({ preventScroll: true }); } catch (e) { editor.focus(); } }
+  if (want) { try { rteSetSelection(want); } catch (e) {} return rteGetRange() || rteEnsureRangeInEditor(editor); }
+  return rteEnsureRangeInEditor(editor);
+}
+function rteClosestMatch(editor, node, pred) {
+  let el = (node && node.nodeType === Node.TEXT_NODE) ? node.parentNode : node;
+  while (el && el !== editor) {
+    if (el.nodeType === 1 && pred(el)) return el;
+    el = el.parentNode;
+  }
+  return null;
+}
+function rteClosestAny(editor, node, tags) { return rteClosestMatch(editor, node, el => tags.includes(el.tagName)); }
+/** node を、pred に当たる祖先の外へ出す（前後は同じ要素の写しに残す） */
+function rteUnwrapMatching(editor, node, pred) {
+  let w = rteClosestMatch(editor, node, pred), guard = 0;
+  while (w && guard++ < 50) { rteSplitOutOf(w, node); w = rteClosestMatch(editor, node, pred); }
+}
+/** カーソル（折りたたんだ範囲）を、pred に当たる飾りの外へ出す。続けて打つ文字に飾りが付かない */
+function rteCaretOutOf(editor, range, pred) {
+  const z = editor.ownerDocument.createTextNode('\u200B');
+  range.insertNode(z);
+  rteUnwrapMatching(editor, z, pred);
+  const r = editor.ownerDocument.createRange();
+  r.setStart(z, 1); r.collapse(true);
+  rteSetSelection(r);
+}
+function rteInsertEmptyEl(editor, el) {
+  const range = rteGetRange();
+  if (!range) return;
+  el.appendChild(editor.ownerDocument.createTextNode('\u200B'));
+  range.deleteContents();
+  range.insertNode(el);
+  const r = editor.ownerDocument.createRange();
+  r.setStart(el.firstChild, 1); r.collapse(true);
+  rteSetSelection(r);
+}
+
+/* ---- 元に戻す・やり直し ----
+   打った文字も書式も、本文の HTML とカーソル位置を控えて戻す。続けて打っている間（1秒以内）は1回にまとめる */
+const RTE_HIST_MAX = 100;
+let rteHist = { undo: [], redo: [], at: 0, kind: '' };
+function rteHistReset() { rteHist = { undo: [], redo: [], at: 0, kind: '' }; rteUpdateUndoButtons(); }
+function rteSnap(editor) {
+  const r = rteGetRange();
+  return { html: editor.innerHTML, s: r ? rteOffset(editor, r.startContainer, r.startOffset) : null, e: r ? rteOffset(editor, r.endContainer, r.endOffset) : null };
+}
+/** 本文を書き換える直前に呼ぶ（kind: 'type' 打鍵 / 'del' 削除 / 'line' 改行 / 'cmd' ツールバーなど） */
+function rteRecord(editor, kind) {
+  if (!editor) return;
+  const now = Date.now();
+  if ((kind === 'type' || kind === 'del') && rteHist.kind === kind && now - rteHist.at < 1000) { rteHist.at = now; return; }
+  const snap = rteSnap(editor);
+  const top = rteHist.undo[rteHist.undo.length - 1];
+  if (!top || top.html !== snap.html) {
+    rteHist.undo.push(snap);
+    if (rteHist.undo.length > RTE_HIST_MAX) rteHist.undo.shift();
+  }
+  rteHist.redo = [];
+  rteHist.at = now; rteHist.kind = kind;
+  rteUpdateUndoButtons();
+}
+function rteApplySnap(editor, snap) {
+  editor.innerHTML = snap.html;
+  if (snap.s != null) {
+    try { editor.focus({ preventScroll: true }); } catch (e) {}
+    rteSetSelectionByOffsets(editor, snap.s, snap.e);
+  }
+  hydrateImages(editor);
+  hydrateFiles(editor);
+  syncEditorContent();
+}
+function rteUndo() {
+  const editor = rteEditor();
+  if (!editor || !rteHist.undo.length) return;
+  rteHist.redo.push(rteSnap(editor));
+  rteApplySnap(editor, rteHist.undo.pop());
+  rteHist.kind = '';
+  rteUpdateUndoButtons();
+}
+function rteRedo() {
+  const editor = rteEditor();
+  if (!editor || !rteHist.redo.length) return;
+  rteHist.undo.push(rteSnap(editor));
+  rteApplySnap(editor, rteHist.redo.pop());
+  rteHist.kind = '';
+  rteUpdateUndoButtons();
+}
+function rteUpdateUndoButtons() {
+  const u = document.querySelector('#rteBar [data-cmd="undo"]');
+  const r = document.querySelector('#rteBar [data-cmd="redo"]');
+  if (u) u.disabled = !rteHist.undo.length;
+  if (r) r.disabled = !rteHist.redo.length;
+}
+
+/* ---- 行（段落）の扱い ---- */
+/** 書き換えの前後でカーソル（選択）を保つ。要素を作り直したときは restore.map に 旧→新 を入れる */
+function rteKeepSelection(editor) {
+  const r = rteGetRange();
+  if (!r) { const f = () => {}; f.map = new Map(); return f; }
+  // 要素の境目にある点は、隣の文字の中の点に直しておく（要素を包み直すと番号がずれるため）
+  const pt = (c, o) => {
+    if (c.nodeType === 1) {
+      const nx = c.childNodes[o], pv = c.childNodes[o - 1];
+      if (nx && nx.nodeType === 3) return [nx, 0];
+      if (pv && pv.nodeType === 3) return [pv, pv.nodeValue.length];
+    }
+    return [c, o];
+  };
+  const [sc, so] = pt(r.startContainer, r.startOffset), [ec, eo] = pt(r.endContainer, r.endOffset);
+  const offs = [rteOffset(editor, r.startContainer, r.startOffset), rteOffset(editor, r.endContainer, r.endOffset)];
+  const map = new Map();
+  const restore = () => {
+    const s = map.get(sc) || sc, e = map.get(ec) || ec;
+    const len = n => n.nodeType === 3 ? n.nodeValue.length : n.childNodes.length;
+    if (editor.contains(s) && editor.contains(e)) {
+      try {
+        const nr = editor.ownerDocument.createRange();
+        nr.setStart(s, Math.min(so, len(s)));
+        nr.setEnd(e, Math.min(eo, len(e)));
+        rteSetSelection(nr);
+        return;
+      } catch (err) {}
+    }
+    rteSetSelectionByOffsets(editor, offs[0], offs[1]);
+  };
+  restore.map = map;
+  return restore;
+}
+/** (container, offset) の点がある「行」の要素を返す。行の要素が無い（地の文が箱の中にじかに
+ *  並んでいる）ときは、その一続き（<br> まで）を div で包んで作る。行にできないところは null */
+function rteLineAt(editor, container, offset) {
+  const doc = editor.ownerDocument;
+  let node = container;
+  if (node.nodeType === 1 && !RTE_LINE_TAGS.test(node.tagName) && node.childNodes.length) {
+    node = node.childNodes[Math.min(offset, node.childNodes.length - 1)];
+  }
+  if (node === editor && !editor.childNodes.length) {
+    const d = doc.createElement('div');
+    d.appendChild(doc.createElement('br'));
+    editor.appendChild(d);
+    return d;
+  }
+  let el = node, child = node;
+  while (el && el !== editor) {
+    if (el.nodeType === 1 && RTE_LINE_TAGS.test(el.tagName)) return el;
+    if (el.nodeType === 1 && RTE_BOX_TAGS.test(el.tagName)) break;
+    child = el; el = el.parentNode;
+  }
+  if (!el) return null;
+  if (child === el) {   // 箱そのもの（空の li など）
+    if (!el.childNodes.length) el.appendChild(doc.createElement('br'));
+    child = el.firstChild;
+  }
+  if (child.nodeType === 1 && RTE_STOP_TAGS.test(child.tagName)) return null;   // 表・リストの外枠など
+  const isBr = n => n && n.nodeType === 1 && n.tagName === 'BR';
+  const isStop = n => n && n.nodeType === 1 && RTE_STOP_TAGS.test(n.tagName);
+  let first = child, last = child;
+  if (!isBr(child)) {
+    while (first.previousSibling && !isStop(first.previousSibling) && !isBr(first.previousSibling)) first = first.previousSibling;
+    while (last.nextSibling && !isStop(last.nextSibling)) { last = last.nextSibling; if (isBr(last)) break; }
+  }
+  const d = doc.createElement('div');
+  el.insertBefore(d, first);
+  for (let n = first; n;) { const nx = n.nextSibling; d.appendChild(n); if (n === last) break; n = nx; }
+  return d;
+}
+/** 範囲にかかる行を、文書の順に返す（必要なら行の要素を作る） */
+function rteLinesInRange(editor, range) {
+  const pts = [[range.startContainer, range.startOffset]];
+  if (!range.collapsed) rteTextNodes(editor, range).forEach(t => pts.push([t, 0]));
+  const out = [];
+  for (const [c, o] of pts) {
+    if (!editor.contains(c) && c !== editor) continue;
+    const l = rteLineAt(editor, c, o);
+    if (l && !out.includes(l)) out.push(l);
+  }
+  return out;
+}
+/** 行の要素を別の要素に作り直す（字下げの class は引き継ぐ） */
+function rteRetag(el, tag) {
+  if (el.tagName === tag.toUpperCase()) return el;
+  const n = el.ownerDocument.createElement(tag);
+  const keep = Array.from(el.classList).filter(c => /^ind-[1-6]$/.test(c));
+  if (keep.length) n.className = keep.join(' ');
+  while (el.firstChild) n.appendChild(el.firstChild);
+  el.parentNode.replaceChild(n, el);
+  return n;
+}
+/** カーソルのある行の要素名（作らずに見るだけ） */
+function rteCurrentLineTag(editor) {
+  const r = rteGetRange() || (rteLastRange && editor.contains(rteLastRange.startContainer) ? rteLastRange : null);
+  if (!r) return '';
+  const l = rteClosestMatch(editor, r.startContainer, el => RTE_LINE_TAGS.test(el.tagName));
+  return l ? l.tagName : '';
+}
+/** 見出し（h2 大・h3 中・h4 小）と本文（div）の切り替え */
+function rteSetHeading(tag) {
+  const editor = rteEditor();
+  if (!editor) return;
+  const range = rteRestoreRange(editor);
+  if (!range) return;
+  rteRecord(editor, 'cmd');
+  const restore = rteKeepSelection(editor);
+  rteLinesInRange(editor, range).forEach(l => {
+    if (l.tagName === 'PRE') return;
+    if (tag === 'div') { if (/^H[1-6]$/.test(l.tagName)) restore.map.set(l, rteRetag(l, 'div')); }
+    else restore.map.set(l, rteRetag(l, tag));
+  });
+  rteNormalize(editor);
+  restore();
+  syncEditorContent();
+  rteUpdateBarState();
+}
+
+/* ---- 色・蛍光ペン・文字の大きさ（class の付いた span / mark）---- */
+function rteKindPred(kind) {
+  if (kind === 'hl') return el => el.tagName === 'MARK';
+  const re = kind === 'fc' ? /^fc-/ : /^fs-/;
+  return el => el.tagName === 'SPAN' && Array.from(el.classList).some(c => re.test(c));
+}
+/** kind: 'fc' 文字の色 / 'hl' 蛍光ペン / 'fs' 大きさ。value が空なら外す（自動・なし・標準） */
+function rteApplyClass(kind, value) {
+  const editor = rteEditor();
+  if (!editor) return;
+  const range = rteRestoreRange(editor);
+  if (!range) return;
+  rteRecord(editor, 'cmd');
+  const pred = rteKindPred(kind);
+  const make = () => {
+    const el = editor.ownerDocument.createElement(kind === 'hl' ? 'mark' : 'span');
+    el.className = kind + '-' + value;
+    return el;
+  };
+  if (range.collapsed) {
+    // 文字を選んでいないときは、続けて打つ文字にかける
+    if (rteClosestMatch(editor, range.startContainer, pred)) rteCaretOutOf(editor, range, pred);
+    if (value) rteInsertEmptyEl(editor, make());
+    syncEditorContent();
+    return;
+  }
+  const startOff = rteOffset(editor, range.startContainer, range.startOffset);
+  const endOff = rteOffset(editor, range.endContainer, range.endOffset);
+  rteNormalizeBoundaries(range);
+  rteTextNodes(editor, range).forEach(n => {
+    rteUnwrapMatching(editor, n, pred);
+    if (value) { const w = make(); n.parentNode.insertBefore(w, n); w.appendChild(n); }
+  });
+  rteNormalize(editor);
+  rteSetSelectionByOffsets(editor, startOff, endOff);
+  syncEditorContent();
+}
+
+/* ---- 箇条書き・番号付き・チェックボックス・引用・字下げ ---- */
+function rteListKind(list) {
+  if (!list || !/^(UL|OL)$/.test(list.tagName)) return '';
+  return list.tagName === 'OL' ? 'ol' : list.classList.contains('todo') ? 'todo' : 'ul';
+}
+/** kind: 'ul' 箇条書き / 'ol' 番号付き / 'todo' チェックボックス。同じ種類の中で押すと外す */
+function rteToggleList(kind) {
+  const editor = rteEditor();
+  if (!editor) return;
+  const range = rteRestoreRange(editor);
+  if (!range) return;
+  rteRecord(editor, 'cmd');
+  const restore = rteKeepSelection(editor);
+  const li = rteClosestAny(editor, range.startContainer, ['LI']);
+  if (li && rteListKind(li.parentNode)) {
+    const list = li.parentNode;
+    if (rteListKind(list) === kind) {
+      rteUnwrapBlock(editor, li, 'ul');
+    } else {
+      // 種類だけ替える（中身はそのまま）
+      const nl = editor.ownerDocument.createElement(kind === 'ol' ? 'ol' : 'ul');
+      if (kind === 'todo') nl.className = 'todo';
+      while (list.firstChild) nl.appendChild(list.firstChild);
+      list.parentNode.replaceChild(nl, list);
+      restore.map.set(list, nl);
+      if (kind !== 'todo') Array.from(nl.children).forEach(x => x.removeAttribute('data-done'));
+    }
+  } else {
+    let lines = rteLinesInRange(editor, range);
+    if (!lines.length) return;
+    const parent = lines[0].parentNode;
+    lines = lines.filter(l => l.parentNode === parent);
+    const list = editor.ownerDocument.createElement(kind === 'ol' ? 'ol' : 'ul');
+    if (kind === 'todo') list.className = 'todo';
+    parent.insertBefore(list, lines[0]);
+    lines.forEach(l => {
+      const item = editor.ownerDocument.createElement('li');
+      // 見出しの行は見出しのまま項目に入れる。ふつうの行は中身だけ
+      if (/^H[1-6]$/.test(l.tagName)) item.appendChild(l);
+      else { while (l.firstChild) item.appendChild(l.firstChild); restore.map.set(l, item); l.remove(); }
+      if (!item.firstChild) item.appendChild(editor.ownerDocument.createElement('br'));
+      list.appendChild(item);
+    });
+  }
+  rteNormalize(editor);
+  restore();
+  syncEditorContent();
+  rteUpdateBarState();
+}
+function rteToggleQuote() {
+  const editor = rteEditor();
+  if (!editor) return;
+  const range = rteRestoreRange(editor);
+  if (!range) return;
+  rteRecord(editor, 'cmd');
+  const restore = rteKeepSelection(editor);
+  const bq = rteClosestAny(editor, range.startContainer, ['BLOCKQUOTE']);
+  if (bq) {
+    rteUnwrapBlock(editor, bq, 'blockquote');
+  } else {
+    let lines = rteLinesInRange(editor, range);
+    if (!lines.length) return;
+    const parent = lines[0].parentNode;
+    lines = lines.filter(l => l.parentNode === parent);
+    const q = editor.ownerDocument.createElement('blockquote');
+    parent.insertBefore(q, lines[0]);
+    lines.forEach(l => q.appendChild(l));
+  }
+  rteNormalize(editor);
+  restore();
+  syncEditorContent();
+  rteUpdateBarState();
+}
+/** 字下げ（dir=1）・字下げ解除（dir=-1）。箇条書きの中では入れ子にする／外す。外では行に ind-N を付ける */
+function rteIndent(dir) {
+  const editor = rteEditor();
+  if (!editor) return;
+  const range = rteRestoreRange(editor);
+  if (!range) return;
+  const doc = editor.ownerDocument;
+  const li = rteClosestAny(editor, range.startContainer, ['LI']);
+  rteRecord(editor, 'cmd');
+  const restore = rteKeepSelection(editor);
+  if (li && rteListKind(li.parentNode)) {
+    const list = li.parentNode;
+    if (dir > 0) {
+      const prev = li.previousElementSibling;
+      if (!prev || prev.tagName !== 'LI') { restore(); return; }   // 先頭の項目は入れ子にできない
+      let sub = prev.lastElementChild;
+      if (!sub || sub.tagName !== list.tagName || sub.className !== list.className) { sub = list.cloneNode(false); prev.appendChild(sub); }
+      sub.appendChild(li);
+    } else {
+      // 後ろの項目は、この項目の下（入れ子）か、外したあとの新しいリストに残す
+      const after = [];
+      for (let n = li.nextSibling; n; n = n.nextSibling) after.push(n);
+      const outer = list.parentNode;
+      if (outer && outer.tagName === 'LI' && editor.contains(outer)) {
+        if (after.length) { const tail = list.cloneNode(false); after.forEach(x => tail.appendChild(x)); li.appendChild(tail); }
+        outer.parentNode.insertBefore(li, outer.nextSibling);
+      } else {
+        // いちばん外の項目は、箇条書きをやめてふつうの行にする
+        const div = doc.createElement('div');
+        while (li.firstChild) div.appendChild(li.firstChild);
+        if (!div.firstChild) div.appendChild(doc.createElement('br'));
+        list.parentNode.insertBefore(div, list.nextSibling);
+        if (after.length) { const tail = list.cloneNode(false); after.forEach(x => tail.appendChild(x)); div.parentNode.insertBefore(tail, div.nextSibling); }
+        restore.map.set(li, div);
+        li.remove();
+      }
+      if (!list.children.length) list.remove();
+    }
+  } else {
+    rteLinesInRange(editor, range).forEach(l => {
+      const m = /(?:^|\s)ind-([1-6])(?:\s|$)/.exec(l.className || '');
+      const next = Math.max(0, Math.min(6, (m ? Number(m[1]) : 0) + dir));
+      Array.from(l.classList).filter(c => /^ind-/.test(c)).forEach(c => l.classList.remove(c));
+      if (next) l.classList.add('ind-' + next);
+      if (!l.classList.length) l.removeAttribute('class');
+    });
+  }
+  rteNormalize(editor);
+  restore();
+  syncEditorContent();
+}
+/** チェックボックスの四角（項目の左の余白・1行目）を押したか */
+function rteHitTodoBox(li, ev) {
+  try {
+    const r = li.getBoundingClientRect();
+    const cs = getComputedStyle(li);
+    const pad = parseFloat(cs.paddingLeft) || 24;
+    const fs = parseFloat(cs.fontSize) || 16;
+    return ev.clientX - r.left <= pad + 2 && ev.clientY - r.top <= fs * 1.7;
+  } catch (e) { return false; }
+}
+function rteToggleTodo(li) {
+  const editor = rteEditor();
+  if (!editor || !li || !editor.contains(li)) return;
+  rteRecord(editor, 'cmd');
+  if (li.hasAttribute('data-done')) li.removeAttribute('data-done');
+  else li.setAttribute('data-done', '1');
+  syncEditorContent();
+}
+/** チェックボックスで改行してできた新しい項目は「まだ」にする（ブラウザは前の項目の印ごと写す） */
+function rteFixNewTodoItem(editor) {
+  const r = rteGetRange();
+  const li = r ? rteClosestAny(editor, r.startContainer, ['LI']) : null;
+  if (!li || !li.parentNode || !li.parentNode.classList.contains('todo')) return;
+  // 行の終わりで改行すると下に、行の始めで改行すると上に、空の項目ができる
+  [li, li.previousElementSibling].forEach(x => {
+    if (x && x.tagName === 'LI' && x.hasAttribute('data-done') && !(x.textContent || '').replace(/\u200B/g, '').trim()) x.removeAttribute('data-done');
+  });
+}
+/** 書式を消す: 太字・斜体・下線・取消線・色・蛍光ペン・大きさ、見出しと字下げ（リンク・リスト・引用は残す）。
+ *  文字を選んでいなければ、カーソルのある行 */
+function rteClearFormat() {
+  const editor = rteEditor();
+  if (!editor) return;
+  const range = rteRestoreRange(editor);
+  if (!range) return;
+  rteRecord(editor, 'cmd');
+  const isFmt = el => /^(STRONG|B|EM|I|U|S|STRIKE|DEL|MARK|FONT)$/.test(el.tagName)
+    || (el.tagName === 'SPAN' && Array.from(el.classList).some(c => /^(fc|fs)-/.test(c)));
+  const startOff = rteOffset(editor, range.startContainer, range.startOffset);
+  const endOff = rteOffset(editor, range.endContainer, range.endOffset);
+  const lines = rteLinesInRange(editor, range);
+  let nodes;
+  if (range.collapsed) {
+    nodes = [];
+    lines.forEach(l => {
+      const tw = editor.ownerDocument.createTreeWalker(l, NodeFilter.SHOW_TEXT, null);
+      let t; while ((t = tw.nextNode())) nodes.push(t);
+    });
+  } else {
+    rteNormalizeBoundaries(range);
+    nodes = rteTextNodes(editor, range);
+  }
+  nodes.forEach(n => { if (editor.contains(n)) rteUnwrapMatching(editor, n, isFmt); });
+  lines.forEach(l => {
+    if (!editor.contains(l)) return;
+    Array.from(l.classList).filter(c => /^ind-/.test(c)).forEach(c => l.classList.remove(c));
+    if (!l.classList.length) l.removeAttribute('class');
+    if (/^H[1-6]$/.test(l.tagName)) rteRetag(l, 'div');
+  });
+  rteNormalize(editor);
+  rteSetSelectionByOffsets(editor, startOff, endOff);
+  syncEditorContent();
+  rteUpdateBarState();
+}
+
+/* ---- ツールバーの状態（カーソルの位置の書式を押した状態で見せる）---- */
+let rteBarStateTimer = 0;
+function rteScheduleBarState() {
+  if (rteBarStateTimer) return;
+  rteBarStateTimer = requestAnimationFrame(() => { rteBarStateTimer = 0; rteUpdateBarState(); });
+}
+function rteUpdateBarState() {
+  const bar = document.getElementById('rteBar'), editor = rteEditor();
+  if (!bar || !editor) return;
+  const r = rteGetRange();
+  if (!r) return;
+  const n = r.startContainer;
+  const set = (cmd, on) => { const b = bar.querySelector(`[data-cmd="${cmd}"]`); if (b) b.setAttribute('aria-pressed', on ? 'true' : 'false'); };
+  set('bold', !!rteClosestAny(editor, n, RTE_INLINE_ALIAS.STRONG));
+  set('italic', !!rteClosestAny(editor, n, RTE_INLINE_ALIAS.EM));
+  set('underline', !!rteClosestAny(editor, n, RTE_INLINE_ALIAS.U));
+  set('strike', !!rteClosestAny(editor, n, RTE_INLINE_ALIAS.S));
+  const li = rteClosestAny(editor, n, ['LI']);
+  const kind = li ? rteListKind(li.parentNode) : '';
+  set('ul', kind === 'ul'); set('ol', kind === 'ol'); set('todo', kind === 'todo');
+  set('quote', !!rteClosestAny(editor, n, ['BLOCKQUOTE']));
+}
+
+/* ---- ツールバーから開く小さなメニュー ---- */
+let rtePop = null;
+function rteClosePop() {
+  if (!rtePop) return;
+  const p = rtePop;
+  rtePop = null;
+  try { p.el.remove(); } catch (e) {}
+  document.removeEventListener('pointerdown', p.outside, true);
+  document.removeEventListener('keydown', p.key, true);
+  window.removeEventListener('resize', p.close);
+  if (p.anchor && p.anchor.removeAttribute) p.anchor.removeAttribute('aria-expanded');
+}
+/** anchor の下にメニューを出す。items: [{ label | html, checked?, run }]。opts.head は説明（HTML。呼ぶ側でエスケープ済み） */
+function rteOpenMenu(anchor, items, opts = {}) {
+  rteClosePop();
+  // 開いたときの本文の選択を控えておき、項目を押したら戻してから書式をかける
+  // （スマホではメニューを押すまでに本文の選択が外れたり、先頭に動いたりする）
+  const ed0 = rteEditor();
+  let saved = opts.keepRange === false ? null : rteGetRange();
+  if (!saved && opts.keepRange !== false && rteLastRange && ed0 && ed0.contains(rteLastRange.startContainer)) saved = rteLastRange;
+  saved = saved ? saved.cloneRange() : null;
+  const el = document.createElement('div');
+  el.className = 'rte-pop';
+  el.setAttribute('role', 'menu');
+  if (opts.label) el.setAttribute('aria-label', opts.label);
+  if (opts.head) { const h = document.createElement('div'); h.className = 'pop-head'; h.innerHTML = opts.head; el.appendChild(h); }
+  items.forEach(it => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('role', it.checked === undefined ? 'menuitem' : 'menuitemradio');
+    if (it.checked !== undefined) b.setAttribute('aria-checked', it.checked ? 'true' : 'false');
+    if (it.value !== undefined) b.dataset.v = it.value;
+    if (it.html) b.innerHTML = it.html; else b.textContent = it.label;
+    b.addEventListener('mousedown', ev => ev.preventDefault());   // 本文の選択を外さない
+    b.addEventListener('click', ev => {
+      ev.preventDefault();
+      rteClosePop();
+      const ed = rteEditor();
+      if (saved && ed && ed.contains(saved.startContainer) && ed.contains(saved.endContainer)) {
+        try { ed.focus({ preventScroll: true }); rteSetSelection(saved); } catch (e) {}
+      }
+      it.run();
+    });
+    el.appendChild(b);
+  });
+  document.body.appendChild(el);
+  // ボタンの下に出す（下に入らなければ上）。画面の外にははみ出さない
+  const r = anchor.getBoundingClientRect();
+  const w = el.offsetWidth, h = el.offsetHeight;
+  const left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8));
+  let top = r.bottom + 4;
+  if (top + h > window.innerHeight - 8 && r.top - h - 4 >= 8) top = r.top - h - 4;
+  el.style.left = left + 'px';
+  el.style.top = Math.max(8, top) + 'px';
+  const close = () => rteClosePop();
+  const outside = ev => { if (!el.contains(ev.target) && !(anchor.contains && anchor.contains(ev.target))) rteClosePop(); };
+  const key = ev => {
+    if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); rteClosePop(); try { anchor.focus({ preventScroll: true }); } catch (e) {} return; }
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      const bs = Array.from(el.querySelectorAll('button'));
+      const i = bs.indexOf(document.activeElement);
+      const n = bs[(i + (ev.key === 'ArrowDown' ? 1 : -1) + bs.length) % bs.length];
+      if (n) { ev.preventDefault(); n.focus(); }
+    }
+  };
+  document.addEventListener('pointerdown', outside, true);
+  document.addEventListener('keydown', key, true);
+  window.addEventListener('resize', close);
+  rtePop = { el, anchor, outside, key, close };
+  if (anchor.setAttribute) anchor.setAttribute('aria-expanded', 'true');
+  return el;
+}
+function rteMenuHeading(btn) {
+  const cur = rteCurrentLineTag(rteEditor());
+  rteOpenMenu(btn, [
+    { html: '<span class="pv-h2">大見出し</span>', checked: cur === 'H2', run: () => rteSetHeading('h2') },
+    { html: '<span class="pv-h3">中見出し</span>', checked: cur === 'H3', run: () => rteSetHeading('h3') },
+    { html: '<span class="pv-h4">小見出し</span>', checked: cur === 'H4', run: () => rteSetHeading('h4') },
+    { label: '本文', checked: !/^H[1-6]$/.test(cur), run: () => rteSetHeading('div') }
+  ], { label: '見出し' });
+}
+function rteMenuSize(btn) {
+  rteOpenMenu(btn, RTE_SIZES.map(([v, n]) => ({
+    html: `<span class="pv-fs-${v || 'm'}">${n}</span>`, value: v, run: () => rteApplyClass('fs', v)
+  })), { label: '文字の大きさ' });
+}
+function rteMenuColor(btn) {
+  rteOpenMenu(btn, [{ html: '<span class="sw" style="background: var(--color-text);"></span>自動（元の色）', value: '', run: () => rteApplyClass('fc', '') }]
+    .concat(RTE_COLORS.map(([v, n]) => ({
+      html: `<span class="sw" style="background: var(--fc-${v});"></span><span style="color: var(--fc-${v}); font-weight: 700;">${n}</span>`, value: v,
+      run: () => { rteApplyClass('fc', v); const i = btn.querySelector('i'); if (i) i.style.background = `var(--fc-${v})`; }
+    }))), { label: '文字の色' });
+}
+function rteMenuHighlight(btn) {
+  rteOpenMenu(btn, RTE_HIGHLIGHTS.map(([v, n]) => ({
+    html: `<span class="sw" style="background: var(--hl-${v});"></span>${n}`, value: v,
+    run: () => { rteApplyClass('hl', v); const i = btn.querySelector('i'); if (i) i.style.background = `var(--hl-${v})`; }
+  })).concat([{ html: '<span class="sw" style="background: transparent;"></span>なし（消す）', value: '', run: () => rteApplyClass('hl', '') }]), { label: '蛍光ペン' });
+}
+function rteCommand(cmd, btn) {
+  // 同じボタンをもう一度押したらメニューを閉じる
+  if (rtePop && rtePop.anchor === btn) { rteClosePop(); return; }
+  switch (cmd) {
+    case 'undo': return rteUndo();
+    case 'redo': return rteRedo();
+    case 'heading': return rteMenuHeading(btn);
+    case 'size': return rteMenuSize(btn);
+    case 'bold': return rteToggleInline('STRONG');
+    case 'italic': return rteToggleInline('EM');
+    case 'underline': return rteToggleInline('U');
+    case 'strike': return rteToggleInline('S');
+    case 'color': return rteMenuColor(btn);
+    case 'highlight': return rteMenuHighlight(btn);
+    case 'ul': case 'ol': case 'todo': return rteToggleList(cmd);
+    case 'indent': return rteIndent(1);
+    case 'outdent': return rteIndent(-1);
+    case 'quote': return rteToggleQuote();
+    case 'table': return insertTablePrompt();
+    case 'link': return rteCreateLink();
+    case 'image': return pickImages();
+    case 'file': return pickFiles();
+    case 'clear': return rteClearFormat();
+  }
+}
+
+/* ---- Google のドキュメント・スプレッドシート・スライド・フォーム・ドライブのリンク ----
+   ふつうの安全なリンク（http(s) だけ・新しいタブ）のまま、種類の分かるカードにする（class は href から決め直す） */
+const GCARD_LABEL = { doc: 'Googleドキュメント', sheet: 'Googleスプレッドシート', slide: 'Googleスライド', form: 'Googleフォーム', drive: 'Googleドライブのファイル' };
+const GCARD_ICON = { doc: '📝', sheet: '📊', slide: '📽', form: '📋', drive: '📁' };
+function googleLinkKind(url) {
+  let u;
+  try { u = new URL(String(url || '')); } catch (e) { return null; }
+  if (!/^https?:$/.test(u.protocol)) return null;
+  const h = u.hostname.toLowerCase();
+  const p = u.pathname.replace(/^\/a\/[^/]+/, '').replace(/^\/u\/\d+/, '');
+  if (h === 'docs.google.com') {
+    if (/^\/document\//.test(p)) return 'doc';
+    if (/^\/spreadsheets\//.test(p)) return 'sheet';
+    if (/^\/presentation\//.test(p)) return 'slide';
+    if (/^\/forms\//.test(p)) return 'form';
+    return null;
+  }
+  if (h === 'forms.gle') return 'form';
+  if (h === 'drive.google.com' && (/^\/file\/d\//.test(p) || (p === '/open' && u.searchParams.get('id')))) return 'drive';
+  return null;
+}
+/** 表示名が種類の名前と同じカード（表示名を付けていない）は、種類の名前を2度出さない（画面だけの印） */
+function decorateGcards(root) {
+  if (!root) return;
+  root.querySelectorAll('a.gcard').forEach(a => {
+    const k = googleLinkKind(a.getAttribute('href'));
+    a.toggleAttribute('data-same', !k || (a.textContent || '').trim() === GCARD_LABEL[k]);
+  });
+}
+/** http(s)・mailto・tel だけを新しいタブで開く（開いた先からこの画面は触らせない） */
+function openSafeLink(href) {
+  const u = String(href || '').trim();
+  if (!urlIsAllowed(u)) { showToast('このリンクは開けません', 'error'); return; }
+  try { window.open(u, '_blank', 'noopener,noreferrer'); } catch (e) {}
+}
+function openLinkMenu(a, openEditor) {
+  const href = a.getAttribute('href') || '';
+  const k = googleLinkKind(href);
+  rteOpenMenu(a, [
+    { label: '↗ 開く（新しいタブ）', run: () => openSafeLink(href) },
+    { label: '✎ 表示名・リンクを編集', run: () => openEditor(a) }
+  ], { keepRange: false, label: 'リンク', head: `${k ? GCARD_ICON[k] + ' ' + escapeHtml(GCARD_LABEL[k]) : '🔗 リンク'}<small>${escapeHtml((a.textContent || '').trim() || href)}</small>` });
 }
 
 
@@ -3203,11 +4459,98 @@ function insertTablePrompt() {
             md += `生成日時: ${new Date().toLocaleString('ja-JP')}\n\n`;
             sorted.forEach(entry => {
                 md += `## ${formatDate(entry.date)} - ${entry.title}\n\n`;
-                md += `${entry.content || ''}\n\n`;
+                md += `${entryMarkdown(entry)}\n\n`;
                 if (entry.tags && entry.tags.length > 0) { md += `**タグ:** ${entry.tags.map(t => `#${t}`).join(' ')}\n\n`; }
                 md += `---\n\n`;
             });
             return { filename: `diary_backup_${dateStr}.md`, mime: 'text/markdown', text: md };
+        }
+
+        /* ── Markdown（読取用）の本文 ───────────────────────────────────
+           以前は本文の HTML をそのまま入れていた。見出しは日記ごとの「## 日付 - タイトル」の下に入るよう
+           大＝###・中＝####・小＝##### にし、太字・斜体・取消線・リンク・箇条書き・番号・
+           チェックボックス（- [ ] / - [x]）・引用・表は Markdown に直す。色・蛍光ペン・大きさ・下線は
+           文字だけ残す。ファイルは「📎 名前」、画像は「🖼️ 画像」（中身は JSON の書き出しに入る） */
+        const MD_BLOCK_RE = /^(DIV|P|H[1-6]|UL|OL|LI|BLOCKQUOTE|TABLE|HR|PRE)$/;
+        function entryMarkdown(entry) {
+            if (entry.contentFormat === 'plain') return String(entry.content || '');
+            const tpl = document.createElement('template');
+            tpl.innerHTML = sanitizeHtml(entry.content || '');
+            return mdBlocks(tpl.content).replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+        }
+        function mdBlocks(parent) {
+            let out = '', run = '';
+            const flush = () => { const t = run.replace(/\u200B/g, ''); if (t.trim()) out += t.replace(/\s+$/, '') + '\n'; run = ''; };
+            Array.from(parent.childNodes).forEach(n => {
+                if (n.nodeType === 1 && MD_BLOCK_RE.test(n.tagName)) { flush(); out += mdBlock(n); }
+                else run += mdInline(n);
+            });
+            flush();
+            return out;
+        }
+        function mdBlock(el) {
+            const t = el.tagName;
+            if (/^H[1-6]$/.test(t)) {
+                const txt = mdInline(el).replace(/\s*\n\s*/g, ' ').trim();
+                return txt ? `\n${'#'.repeat(t === 'H1' || t === 'H2' ? 3 : t === 'H3' ? 4 : 5)} ${txt}\n\n` : '';
+            }
+            if (t === 'DIV') return mdBlocks(el) || (el.querySelector('br') ? '\n' : '');   // 空けた行も残す
+            if (t === 'P') return mdBlocks(el) + '\n';
+            if (t === 'HR') return '\n---\n\n';
+            if (t === 'PRE') return '\n```\n' + (el.textContent || '').replace(/\u200B/g, '') + '\n```\n\n';
+            if (t === 'BLOCKQUOTE') return mdBlocks(el).trim().split('\n').map(l => '> ' + l).join('\n') + '\n\n';
+            if (t === 'UL' || t === 'OL') return mdList(el) + '\n';
+            if (t === 'LI') return '- ' + mdBlocks(el).trim() + '\n';
+            if (t === 'TABLE') return mdTable(el) + '\n';
+            return mdBlocks(el);
+        }
+        function mdList(list) {
+            const todo = list.tagName === 'UL' && list.classList.contains('todo');
+            let i = 0, out = '';
+            Array.from(list.children).forEach(li => {
+                if (li.tagName !== 'LI') return;
+                i++;
+                const mark = todo ? (li.hasAttribute('data-done') ? '- [x] ' : '- [ ] ') : list.tagName === 'OL' ? `${i}. ` : '- ';
+                const pad = list.tagName === 'OL' ? ' '.repeat(mark.length) : '  ';
+                const lines = mdBlocks(li).replace(/\n+$/, '').split('\n');
+                out += mark + (lines[0] || '').trim() + '\n';
+                lines.slice(1).forEach(l => { out += (l.trim() ? pad + l : '') + '\n'; });
+            });
+            return out;
+        }
+        function mdTable(table) {
+            const rows = Array.from(table.querySelectorAll('tr')).filter(tr => tr.closest('table') === table);
+            const cells = rows.map(tr => Array.from(tr.children).filter(c => /^(TD|TH)$/.test(c.tagName))
+                .map(c => mdInline(c).replace(/\s*\n\s*/g, ' ').replace(/\|/g, '\\|').trim()));
+            const w = Math.max(0, ...cells.map(r => r.length));
+            if (!w) return '';
+            const line = r => '| ' + Array.from({ length: w }, (_, i) => r[i] || '').join(' | ') + ' |';
+            return [line(cells[0]), '| ' + Array(w).fill('---').join(' | ') + ' |'].concat(cells.slice(1).map(line)).join('\n') + '\n';
+        }
+        function mdInline(n) {
+            if (n.nodeType === 3) return n.nodeValue.replace(/\u200B/g, '').replace(/\u00a0/g, ' ');
+            if (n.nodeType !== 1) return '';
+            const t = n.tagName;
+            const kids = () => Array.from(n.childNodes).map(mdInline).join('');
+            // 飾りの記号は文字のすぐ外に付ける（空白を挟むと Markdown として効かない）
+            const wrap = (mk) => { const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(kids()); return m[2] ? `${m[1]}${mk}${m[2]}${mk}${m[3]}` : m[0]; };
+            if (t === 'BR') return '\n';
+            if (t === 'STRONG' || t === 'B') return wrap('**');
+            if (t === 'EM' || t === 'I') return wrap('*');
+            if (t === 'S' || t === 'STRIKE' || t === 'DEL') return wrap('~~');
+            if (t === 'CODE') return wrap('`');
+            if (t === 'IMG') return n.getAttribute('data-did') ? '🖼️ 画像' : '';
+            if (t === 'SPAN' && n.classList.contains('dy-file')) return '📎 ' + (n.getAttribute('data-name') || (n.textContent || '').trim() || 'ファイル');
+            if (t === 'A') {
+                const href = n.getAttribute('href') || '';
+                const text = kids().replace(/\s*\n\s*/g, ' ').trim() || href;
+                if (!href) return text;
+                const link = `[${text.replace(/([\[\]])/g, '\\$1')}](${href.replace(/ /g, '%20').replace(/\)/g, '%29')})`;
+                const k = n.classList.contains('gcard') ? googleLinkKind(href) : null;
+                return k ? (text === GCARD_LABEL[k] ? `${GCARD_ICON[k]} ${link}` : `${GCARD_ICON[k]} ${GCARD_LABEL[k]}: ${link}`) : link;
+            }
+            if (/^(DIV|P|LI|H[1-6]|BLOCKQUOTE|TR)$/.test(t)) return kids() + '\n';
+            return kids();   // 色・大きさの span、蛍光ペンの mark、下線の u などは文字だけ
         }
 
         // 同期/アップロード用のオブジェクト。暗号化が有効なら暗号化ブロブを返す。
@@ -3233,13 +4576,13 @@ function insertTablePrompt() {
                     const rec = await imgGet(id);
                     const blob = rec ? await imgDecode(rec) : null;   // 暗号化してあっても平文で書き出す
                     if (!blob) throw new Error('NOIMG');              // （書き出し全体を後で暗号化するため）
-                    const type = blob.type || 'image/jpeg';
+                    const type = blob.type || (FID_RE.test(id) ? 'application/octet-stream' : 'image/jpeg');
                     const dataUrl = await blobToDataUrl(blob);
                     imgDataUrlCache.set(id, { type, dataUrl });
                     out.push({ id, type, dataUrl });
                 } catch (e) {
                     const sp = spare.get(id);
-                    if (sp) { out.push({ id, type: sp.type || 'image/jpeg', dataUrl: sp.dataUrl }); continue; }
+                    if (sp) { out.push({ id, type: sp.type || (FID_RE.test(id) ? 'application/octet-stream' : 'image/jpeg'), dataUrl: sp.dataUrl }); continue; }
                     missing++;
                 }
             }
@@ -3261,13 +4604,18 @@ function insertTablePrompt() {
         async function restoreImages(list) {
             let failed = 0;
             for (const f of (list || [])) {
-                if (!f || !DID_RE.test(f.id || '') || !f.dataUrl) continue;
+                if (!f || typeof f.dataUrl !== 'string') continue;
+                const isFile = FID_RE.test(f.id || '');
+                if (!isFile && !DID_RE.test(f.id || '')) continue;
                 // data: の画像だけを読む。それ以外の URL を fetch すると、細工された同期データ・
-                // バックアップで外へ通信させられる（どの写真を持っているかが漏れる）
-                if (!/^data:image\//i.test(f.dataUrl)) { console.warn('[diary] 画像ではないデータを読み飛ばしました', f.id); continue; }
+                // バックアップで外へ通信させられる（どの写真を持っているかが漏れる）。
+                // ファイル（f…）は形式を問わないが、data: であることは同じく確かめる
+                if (!(isFile ? /^data:[^,]*,/i : /^data:image\//i).test(f.dataUrl)) { console.warn('[diary] 画像ではないデータを読み飛ばしました', f.id); continue; }
                 try {
                     if (await imgUsableCached(f.id)) continue;
-                    const blob = await (await fetch(f.dataUrl)).blob();
+                    let blob = await (await fetch(f.dataUrl)).blob();
+                    // 形式の書かれていないファイルを画像（image/jpeg）扱いにしない
+                    if (isFile && !blob.type) blob = new Blob([blob], { type: 'application/octet-stream' });
                     const rec = await imgEncode(blob);
                     await imgPut({ id: f.id, ...rec, size: blob.size });
                 } catch (e) { console.warn('[diary] 画像を戻せませんでした', f.id, e); failed++; }
@@ -3534,15 +4882,28 @@ function insertTablePrompt() {
         }
 
         // 取り込んだHTMLを安全化（許可属性のみ・危険タグ/イベント/スキームを除去）：#5
-        const SANITIZE_ALLOWED_ATTR = new Set(['href', 'target', 'rel', 'data-did', 'alt']);
+        const SANITIZE_ALLOWED_ATTR = new Set(['href', 'target', 'rel', 'data-did', 'alt', 'class', 'data-fid', 'data-name', 'data-size', 'data-done']);
+        // 書式は決まった名前の class だけで表す。要素ごとに残してよい名前（それ以外の class は捨てる）
+        const SANITIZE_CLASS = {
+            SPAN: /^(fc-(red|orange|green|blue|purple|gray)|fs-(s|l|xl)|dy-file)$/,   // 文字の色・大きさ・ファイルの目印
+            MARK: /^hl-(yellow|green|pink|blue)$/,                                    // 蛍光ペン
+            UL: /^todo$/,                                                             // チェックボックス
+            A: /^gcard$/                                                              // Google のカード（種類は href から付け直す）
+        };
+        const SANITIZE_IND_RE = /^ind-[1-6]$/;                                        // 行の字下げ（div・p・見出し）
         const SANITIZE_DANGEROUS_TAGS = 'script,style,iframe,object,embed,link,meta,base,form,input,textarea,button,select,option,svg,math,noscript,title,frame,frameset,applet,audio,video,source,track,picture,canvas';
         const DID_RE = /^i[a-z0-9]{4,32}$/;
-        function sanitizeHtml(dirty) {
+        const FID_RE = /^f[a-z0-9]{4,32}$/;   // 本文に入れたファイル（中身は画像と同じ置き場）
+        // opts.paste: 貼り付けた HTML（Word・Excel・Googleドキュメント・Webページ）。style の太字・斜体・下線・
+        //   取消線だけをタグに置き換えて残し、色や大きさなどの style は捨てる。保存済みの本文には使わない
+        //   （ブラウザが編集中に付けた style が、開き直したら急に太字になる、を起こさないため）
+        function sanitizeHtml(dirty, opts) {
             // <template> はパース時にスクリプト実行・リソース読込をしない安全なコンテナ
             const tpl = document.createElement('template');
             tpl.innerHTML = String(dirty == null ? '' : dirty);
             const root = tpl.content;
             root.querySelectorAll(SANITIZE_DANGEROUS_TAGS).forEach(el => el.remove());
+            if (opts && opts.paste) sanitizePasteStyles(root);
             // 画像は「端末内に保存したもの」だけ許す。src は必ず捨てる。
             // 外部URLを残すと開くたびに通信が起きるし、data: URL を残すと
             // 本文ごと localStorage に入って容量を食い潰す。
@@ -3567,14 +4928,66 @@ function insertTablePrompt() {
                         if (!ok) el.removeAttribute(attr.name);
                     }
                 });
+                // class は決まった名前だけ
+                if (el.hasAttribute('class')) {
+                    const re = /^(DIV|P|H[1-6])$/.test(el.tagName) ? SANITIZE_IND_RE : SANITIZE_CLASS[el.tagName];
+                    const keep = re ? Array.from(el.classList).filter(c => re.test(c)) : [];
+                    if (keep.length) el.setAttribute('class', keep.join(' ')); else el.removeAttribute('class');
+                }
+                // ファイルの目印は id・名前・大きさだけ。id の形が違えば目印として扱わない
+                const card = el.tagName === 'SPAN' && el.classList.contains('dy-file');
+                if (card && FID_RE.test(el.getAttribute('data-fid') || '')) {
+                    const nm = el.getAttribute('data-name');
+                    if (nm != null) { const v = nm.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 200); if (v) el.setAttribute('data-name', v); else el.removeAttribute('data-name'); }
+                    const sz = el.getAttribute('data-size');
+                    if (sz != null && !/^\d{1,12}$/.test(sz)) el.removeAttribute('data-size');
+                } else {
+                    if (card) { el.classList.remove('dy-file'); if (!el.classList.length) el.removeAttribute('class'); }
+                    ['data-fid', 'data-name', 'data-size'].forEach(a => el.removeAttribute(a));
+                }
+                // チェックボックスの「済み」は項目にだけ（値は 1）
+                if (el.hasAttribute('data-done') && !(el.tagName === 'LI' && el.getAttribute('data-done') === '1')) el.removeAttribute('data-done');
                 if (el.tagName === 'A') {
                     el.setAttribute('target', '_blank');
                     el.setAttribute('rel', 'noopener noreferrer');
+                    // Google のカードの種類は href から決め直す（見た目だけ別の種類を名乗らせない）
+                    if (el.classList.contains('gcard')) {
+                        const k = googleLinkKind(el.getAttribute('href'));
+                        if (k) el.className = 'gcard gcard-' + k; else el.removeAttribute('class');
+                    }
                 }
             });
             const out = document.createElement('div');
             out.appendChild(root.cloneNode(true));
             return out.innerHTML;
+        }
+
+        /** 貼り付けの HTML の下ごしらえ（sanitizeHtml の paste のときだけ） */
+        function sanitizePasteStyles(root) {
+            const unwrap = el => { const p = el.parentNode; if (!p) return; while (el.firstChild) p.insertBefore(el.firstChild, el); p.removeChild(el); };
+            // Word の条件付きコメントや、o:p のような名前空間つきの要素は外す（文字は残す）
+            const cms = [];
+            const tw = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT, null);
+            let c;
+            while ((c = tw.nextNode())) cms.push(c);
+            cms.forEach(n => n.remove());
+            Array.from(root.querySelectorAll('*')).filter(el => el.tagName.indexOf(':') >= 0).forEach(unwrap);
+            Array.from(root.querySelectorAll('[style]')).forEach(el => {
+                const st = String(el.getAttribute('style') || '').toLowerCase();
+                // Googleドキュメントは全体を <b style="font-weight:normal"> で包んでくる。そのままだと全部が太字になる
+                if ((el.tagName === 'B' || el.tagName === 'STRONG') && /font-weight\s*:\s*(normal|[1-4]00)\b/.test(st)) { unwrap(el); return; }
+                if (el.tagName !== 'SPAN') return;
+                const wraps = [];
+                if (/font-weight\s*:\s*(bold|bolder|[6-9]00)\b/.test(st)) wraps.push('strong');
+                if (/font-style\s*:\s*italic/.test(st)) wraps.push('em');
+                if (/text-decoration[^;]*underline/.test(st)) wraps.push('u');
+                if (/text-decoration[^;]*line-through/.test(st)) wraps.push('s');
+                wraps.forEach(tag => {
+                    const w = el.ownerDocument.createElement(tag);
+                    while (el.firstChild) w.appendChild(el.firstChild);
+                    el.appendChild(w);
+                });
+            });
         }
 
         // インポート/同期で外部から来たエントリを安全化・正規化（#5）
@@ -3590,14 +5003,6 @@ function insertTablePrompt() {
                 createdAt: entry.createdAt || new Date().toISOString(),
                 updatedAt: entry.updatedAt || entry.createdAt || new Date().toISOString()
             };
-        }
-
-        function openNewEntryModal() {
-            // カレンダーのセルを選んだ直後だけ、その日を既定にする（選んだ日に書きたいはず）。
-            // 一覧から日記を開いた場合は今日に戻す（B-6）
-            document.getElementById('entryDate').value = newEntryDefaultDate || localDateStr();
-            document.getElementById('entryTitle').value = '';
-            openModal('newEntryModal');
         }
 
         let lastFocusedBeforeModal = null;
@@ -3621,6 +5026,8 @@ function insertTablePrompt() {
         function closeModal(modalId) {
             const modal = document.getElementById(modalId);
             if (!modal) return;
+            // 解除をやめたら、「今日を書く」の続きもやめる
+            if (modalId === 'unlockModal' && appLocked) pendingWriteDate = null;
             modal.classList.remove('active');
             if (lastFocusedBeforeModal && typeof lastFocusedBeforeModal.focus === 'function') {
                 lastFocusedBeforeModal.focus({ preventScroll: true });
@@ -3697,6 +5104,8 @@ function insertTablePrompt() {
                 renderEditor();
                 updateBackupReminder(); // ロック中は隠していたので、解除時に出し直す
                 showToast('ロックを解除しました', 'success');
+                // ロック中に「今日を書く」を押していたら、続けてその日を開く
+                if (pendingWriteDate) { const d = pendingWriteDate; pendingWriteDate = null; writeOnDate(d); }
                 // パスフレーズの変更の途中で止まっていたら、画像の書き直しの続きをする
                 resumeImgRekey().catch(e => console.warn('[diary] 画像の包み直し', e));
                 // Drive が他の端末の salt で暗号化されていても、同じパスフレーズなら聞き直さずに開けるよう、
@@ -4088,8 +5497,13 @@ async function driveRemoveQuiet(D, tok, id) {
      版を30日ほど残すので、書き換えると平文や古い鍵の版が残ってしまう
    - 必ず新しいファイルを作ってから古い方を消す。途中で止まっても、どちらかは Drive に残る
    - どの写真がどのファイルかは diary:gd:img に覚える（無い・別の置き場のときは一覧から作る）
-   - diary.json には写真を入れず imgExternal: 1 を付ける。写真を中に入れていた旧版の diary.json も読める */
+   - diary.json には写真を入れず imgExternal: 1 を付ける。写真を中に入れていた旧版の diary.json も読める
+   - 本文に入れたファイル（id が f…）も同じ規則で、名前だけ dy-file-<id> にする。中身は1行目に
+     {"dyfile":1,…}（形式。暗号化したときは salt・iter・iv も）、改行のあとに中身そのもの（平文でも同じ形。
+     ファイルは '{' で始まることがあるので、写真のように先頭の1文字で見分けない） */
 const DRIVE_IMG_PREFIX = 'dy-img-';
+const DRIVE_FILE_PREFIX = 'dy-file-';
+function driveBlobName(id) { return (FID_RE.test(id) ? DRIVE_FILE_PREFIX : DRIVE_IMG_PREFIX) + id; }
 const DRIVE_IMG_MAP_KEY = 'diary:gd:img';      // { 画像id: { fid, ks } }
 const DRIVE_IMG_GC_KEY = 'diary:gd:imggc';     // Drive の写真を最後に掃除した時刻
 const DRIVE_IMG_GC_AGE_MS = 30 * 24 * 3600 * 1000;
@@ -4111,15 +5525,17 @@ function usedImageIds() {
   entries.forEach(e => contentImageIds(e && e.content).forEach(id => ids.add(id)));
   return ids;
 }
-/** Drive の写真ファイルを全部一覧する。返り値 { byId: {画像id: [{fid, ks, at}]} } */
+/** Drive の写真ファイル（とファイルのファイル）を全部一覧する。返り値 { byId: {画像id: [{fid, ks, at}]} } */
 async function driveListImgs(D, tok) {
-  const files = await D.list(tok, { q: "name contains '" + DRIVE_IMG_PREFIX + "' and trashed=false", space: 'appDataFolder', fields: 'id,name,modifiedTime,appProperties' });
   const byId = Object.create(null);
-  files.forEach(f => {
-    const id = String(f.name || '').indexOf(DRIVE_IMG_PREFIX) === 0 ? f.name.slice(DRIVE_IMG_PREFIX.length) : '';
-    if (!DID_RE.test(id)) return;
-    (byId[id] = byId[id] || []).push({ fid: f.id, ks: (f.appProperties && f.appProperties.ks) || '', at: Date.parse(f.modifiedTime || '') || 0 });
-  });
+  for (const [prefix, re] of [[DRIVE_IMG_PREFIX, DID_RE], [DRIVE_FILE_PREFIX, FID_RE]]) {
+    const files = await D.list(tok, { q: "name contains '" + prefix + "' and trashed=false", space: 'appDataFolder', fields: 'id,name,modifiedTime,appProperties' });
+    files.forEach(f => {
+      const id = String(f.name || '').indexOf(prefix) === 0 ? f.name.slice(prefix.length) : '';
+      if (!re.test(id)) return;
+      (byId[id] = byId[id] || []).push({ fid: f.id, ks: (f.appProperties && f.appProperties.ks) || '', at: Date.parse(f.modifiedTime || '') || 0 });
+    });
+  }
   return { byId };
 }
 /** 1枚の写真に複数のファイルがあるときに使うもの: いまの鍵（want）のものを優先し、次に新しいもの */
@@ -4164,10 +5580,7 @@ async function driveImgUnpack(blob) {
     const nl = buf.indexOf(0x0a);
     if (nl > 0 && nl < 4096) { try { head = JSON.parse(ENC.dec.decode(buf.subarray(0, nl))); } catch (e) { head = null; } }
     if (!head || head.dyimg !== 1) throw new Error('IMG_CORRUPT');
-    const keys = [];
-    if (cryptoKey && encMeta && encMeta.salt === head.salt) keys.push(cryptoKey);
-    driveRemoteKeys.forEach(k => { if (k.salt === head.salt) keys.push(k.key); });
-    if (imgRekeyFromKey && imgRekeyFromSalt === head.salt) keys.push(imgRekeyFromKey);
+    const keys = driveKeysForSalt(head.salt);
     for (const k of keys) {
       try {
         const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ENC.unb64(head.iv) }, k, buf.subarray(nl + 1));
@@ -4177,6 +5590,44 @@ async function driveImgUnpack(blob) {
     throw new Error('IMG_LOCKED');
   }
   return new Blob([buf], { type: /^image\//i.test(blob.type || '') ? blob.type : 'image/jpeg' });
+}
+/** Drive 上の暗号文を開ける鍵（この端末の鍵・Drive の鍵・包み直し中の元の鍵）を salt で選ぶ */
+function driveKeysForSalt(salt) {
+  const keys = [];
+  if (cryptoKey && encMeta && encMeta.salt === salt) keys.push(cryptoKey);
+  driveRemoteKeys.forEach(k => { if (k.salt === salt) keys.push(k.key); });
+  if (imgRekeyFromKey && imgRekeyFromSalt === salt) keys.push(imgRekeyFromKey);
+  return keys;
+}
+/** 写真・ファイルの id に合わせて包む／戻す（写真は driveImgPack / driveImgUnpack のまま） */
+async function driveBlobPack(id, blob, encTo) {
+  if (!FID_RE.test(id)) return driveImgPack(blob, encTo);
+  const head = { dyfile: 1, v: 1, type: blob.type || 'application/octet-stream' };
+  let body = blob;
+  if (encTo) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    body = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, encTo.key, await blob.arrayBuffer());
+    Object.assign(head, { salt: encTo.salt, iter: encTo.iter, iv: ENC.b64(iv) });
+  }
+  return { content: new Blob([JSON.stringify(head) + '\n', body], { type: 'application/octet-stream' }), mime: 'application/octet-stream', ks: encTo ? encTo.salt : 'plain' };
+}
+async function driveBlobUnpack(id, blob) {
+  if (!FID_RE.test(id)) return driveImgUnpack(blob);
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  const nl = buf.indexOf(0x0a);
+  let head = null;
+  if (nl > 0 && nl < 4096) { try { head = JSON.parse(ENC.dec.decode(buf.subarray(0, nl))); } catch (e) { head = null; } }
+  if (!head || head.dyfile !== 1) throw new Error('IMG_CORRUPT');
+  const type = /^[\w.+-]+\/[\w.+-]+$/.test(String(head.type || '')) ? head.type : 'application/octet-stream';
+  const body = buf.subarray(nl + 1);
+  if (!head.salt) return new Blob([body], { type });
+  for (const k of driveKeysForSalt(head.salt)) {
+    try {
+      const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ENC.unb64(head.iv) }, k, body);
+      return new Blob([pt], { type });
+    } catch (e) {}
+  }
+  throw new Error('IMG_LOCKED');
 }
 /** 同時に n 件まで並べて走らせる。失敗があれば、全部終わってから最初の失敗を投げる */
 async function runLimited(items, n, fn) {
@@ -4202,10 +5653,10 @@ async function drivePushImgs(D, tok, encTo, map) {
     let blob = null;
     try { const rec = await imgGet(id); blob = rec ? await imgDecode(rec) : null; } catch (e) { blob = null; }
     // 端末に無ければ、Drive にある古い守り方のものを開けるなら、それを包み直す
-    if (!blob && cur) { try { blob = await driveImgUnpack(await D.download(tok, cur.fid, 'blob')); } catch (e) { blob = null; } }
+    if (!blob && cur) { try { blob = await driveBlobUnpack(id, await D.download(tok, cur.fid, 'blob')); } catch (e) { blob = null; } }
     if (!blob) { if (!cur) missing++; return; }   // 古い守り方のものしか無いなら、それを残す（消すより良い）
-    const p = await driveImgPack(blob, encTo);
-    const made = await D.upload(tok, { name: DRIVE_IMG_PREFIX + id, space: 'appDataFolder', content: p.content, mime: p.mime, appProperties: { ks: p.ks } });
+    const p = await driveBlobPack(id, blob, encTo);
+    const made = await D.upload(tok, { name: driveBlobName(id), space: 'appDataFolder', content: p.content, mime: p.mime, appProperties: { ks: p.ks } });
     map[id] = { fid: made.id, ks: p.ks };
     saveDriveImgMap(map);
     // 作り直せてから古いファイルを消す（平文や古い鍵の版を Drive に残さない）
@@ -4223,7 +5674,7 @@ async function driveFetchImgs(D, tok, map) {
   let got = 0, failed = 0, gone = false;
   await runLimited(need, 3, async (id) => {
     try {
-      const plain = await driveImgUnpack(await D.download(tok, map[id].fid, 'blob'));
+      const plain = await driveBlobUnpack(id, await D.download(tok, map[id].fid, 'blob'));
       const rec = await imgEncode(plain);
       await imgPut({ id, ...rec, size: plain.size });
       got++;
