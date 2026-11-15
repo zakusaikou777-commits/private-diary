@@ -211,6 +211,13 @@
         .toggle-input:checked + .toggle-slider::before { transform: translateX(16px); }
         .sync-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 4px 8px; border-radius: 99px; background-color: rgba(94, 82, 64, 0.1); color: var(--color-text-secondary); margin-left: 8px; }
         .sync-badge.active { background-color: rgba(33, 128, 141, 0.15); color: var(--color-primary); font-weight: 600; }
+        /* Drive との同期の様子（v49）。押すと、ログインが切れていればつなぎ直して同期する */
+        .drive-chip { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 12px; line-height: 1.2; padding: 5px 10px; min-height: 30px; border-radius: 99px; border: 1px solid var(--color-border); background-color: var(--color-surface); color: var(--color-text-secondary); margin-left: 8px; cursor: pointer; white-space: nowrap; }
+        .drive-chip[hidden] { display: none; }
+        .drive-chip.ok { color: var(--color-success); border-color: rgba(33, 128, 141, 0.35); }
+        .drive-chip.need { color: var(--color-warning); border-color: var(--color-warning); font-weight: 600; }
+        .drive-chip.err { color: var(--color-error); border-color: var(--color-error); font-weight: 600; }
+        .drive-chip.busy { opacity: 0.8; }
         @media (max-width: 767px) {
             html, body { height: auto; min-height: 100%; }
             .container { height: auto; min-height: 100vh; }
@@ -370,6 +377,7 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
             <div style="display: flex; align-items: center;">
                 <h1>📔 日記帳 Pro</h1>
                 <div id="syncStatus" class="sync-badge" style="display: none;">🔄 自動同期中</div>
+                <button type="button" id="driveChip" class="drive-chip" hidden onclick="driveChipTap()">☁</button>
             </div>
             <div class="header-actions">
                 <button class="btn btn-secondary btn-sm" onclick="openSecurityModal()">🔐 セキュリティ</button>
@@ -612,7 +620,7 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
                             <label class="toggle-switch">
                                 <input type="checkbox" id="autoSyncDrive" class="toggle-input" onchange="toggleAutoSyncDrive()">
                                 <span class="toggle-slider"></span>
-                                <span style="font-size: 13px;">保存時にDriveへ自動同期</span>
+                                <span style="font-size: 13px;">自動同期（保存したとき・開いたとき。入口の☁の「自動同期」と同じスイッチ）</span>
                             </label>
                         </div>
                         <div class="form-group">
@@ -1323,7 +1331,7 @@ window.addEventListener('beforeunload', (e) => {
                 if (document.getElementById('autoSyncA')) {
                     document.getElementById('autoSyncA').checked = autoSyncAEnabled;
                 }
-                autoSyncDriveEnabled = localStorage.getItem('autoSyncDrive') === 'true';
+                autoSyncDriveEnabled = readDriveAuto();
                 if (document.getElementById('autoSyncDrive')) {
                     document.getElementById('autoSyncDrive').checked = autoSyncDriveEnabled;
                 }
@@ -1360,7 +1368,9 @@ window.addEventListener('beforeunload', (e) => {
             // 全件書き出しで相手の日記を消してしまう（#2）。
             // ただし掃除と並走させない。Driveから受け取った画像を、それを使う日記が
             // entries に入るより先に「未参照」と判定して消してしまうため
-            if (autoSyncDriveEnabled) imgReady.then(() => drivePullAndMerge(true)).catch(() => {});
+            // 開いたら Drive の新しい分を取り込み、送っていない変更があれば送る（v49。スイッチは入口と共通）
+            paintDriveChip();
+            imgReady.then(() => driveSyncOnOpen({ force: true })).catch(() => {});
         }
 
         function looksLikeHtml(s) {
@@ -1519,9 +1529,19 @@ window.addEventListener('beforeunload', (e) => {
         }
         window.addEventListener('storage', (e) => {
             if (e.key === 'diaryEntries' || e.key === null) { onOtherTabSaved().catch(err => console.warn('[diary] 別のタブの取り込み', err)); return; }
-            if (e.key === 'autoSyncDrive') {
-                autoSyncDriveEnabled = e.newValue === 'true';
+            // 自動同期のスイッチは入口（☁）と共通。入口で切り替えたら、ここにもすぐ効かせる
+            if (e.key === AUTO_SHARED_KEY) {
+                const was = autoSyncDriveEnabled;
+                autoSyncDriveEnabled = readDriveAuto();
                 const cb = document.getElementById('autoSyncDrive'); if (cb) cb.checked = autoSyncDriveEnabled;
+                paintDriveChip();
+                if (autoSyncDriveEnabled && !was) driveSyncOnOpen({ force: true });
+                return;
+            }
+            // 入口やほかのタブが Google につないだら、送っていない変更をすぐ送る
+            if (e.key === 'shared:gd:token' || e.key === DRIVE_PENDING_KEY) {
+                paintDriveChip();
+                if (e.key === 'shared:gd:token' && driveHasToken() && drivePendingAt()) driveSyncOnOpen({});
                 return;
             }
             if (e.key === 'diaryLastBackup') { try { updateBackupReminder(); } catch (_) {} }
@@ -1645,7 +1665,8 @@ window.addEventListener('beforeunload', (e) => {
         }
 
         async function selectDate(dateStr) {
-
+            // 日記を開いたら Drive の新しい分を取り込む（ログインが切れていれば、押した直後のここでつなぎ直す）
+            driveSyncOnOpen({ gesture: true });
             if (!(await ensureSavedOrConfirmLoseChanges('日付移動'))) return;
             selectedDate = dateStr;
             renderCalendar();
@@ -1695,6 +1716,7 @@ window.addEventListener('beforeunload', (e) => {
                     // 一覧のタグを押したときは、日記を開くのではなく絞り込みに使う
                     const chip = ev.target.closest && ev.target.closest('.entry-tag');
                     if (chip) { ev.stopPropagation(); toggleTagFilter(chip.dataset.tag); return; }
+                    driveSyncOnOpen({ gesture: true });   // 開いたら取り込む（await の前に）
                     if (!(await ensureSavedOrConfirmLoseChanges('切り替え'))) return;
                     loadEntry(entry);
                 };
@@ -2303,6 +2325,8 @@ function renderEditor() {
             // 2度押しで同じ日の日記を2件作らない
             if (writeBusy) return writeBusy;
             const kbd = holdKeyboard();
+            // 開く前に Drive の新しい分を取り込みはじめる（ほかの端末で書いた同じ日の日記を、別の1件にしない）
+            driveSyncOnOpen({ gesture: true });
             writeBusy = openOrCreateEntry(dateStr)
                 .catch(err => { console.error(err); showToast('日記を開けませんでした', 'error'); return false; })
                 .finally(() => {
@@ -2320,6 +2344,10 @@ function renderEditor() {
             if (!(await ensureSavedOrConfirmLoseChanges('移動'))) return false;
             // 別のタブで同じ日の日記を書いていたら、新しく作らずにそれを開く
             if (!(await absorbOtherTab())) return false;
+            // まだこの端末に無い日なら、Drive の取り込みを少しだけ待つ（ほかの端末で書いた日記があれば、それを開く）
+            if (!entries.some(e => e.date === dateStr) && driveOpenBusy) {
+                await Promise.race([driveOpenBusy, new Promise(r => setTimeout(r, DRIVE_OPEN_WAIT_MS))]);
+            }
             let entry = entries.find(e => e.date === dateStr);
             const created = !entry;
             if (created) {
@@ -2422,6 +2450,8 @@ function renderEditor() {
        }
        async function saveEntry(quiet = false) {
   if (!currentEntry) return true;
+  // 「💾 保存」を押したとき: Google のログインが切れていれば、押した直後のここでつなぎ直す（await の前）
+  if (!quiet) driveAskOnGesture();
 
   const gen = editGen;
   currentEntry.updatedAt = new Date().toISOString();
@@ -2447,7 +2477,7 @@ function renderEditor() {
 
   // 自動同期（フォルダ／Drive）
   if (autoSyncAEnabled && syncFolderHandleA) exportToSyncFolderA('json', true);
-  if (autoSyncDriveEnabled) drivePushAll(true);
+  driveAutoPush();
   return true;
 }
 
@@ -2493,7 +2523,7 @@ function renderEditor() {
             else showToast('削除しましたが、削除の記録を端末に保存できませんでした（保存容量の上限）。容量を空けないまま閉じると、次の同期で日記が戻ってくることがあります', 'error');
             // 削除も保存と同じ経路で同期する。しないと削除が他端末へ伝わらない
             if (autoSyncAEnabled && syncFolderHandleA) exportToSyncFolderA('json', true);
-            if (autoSyncDriveEnabled) drivePushAll(true);
+            driveAutoPush();
         }
 
         function renderTags() {
@@ -4832,7 +4862,7 @@ function openLinkMenu(a, openEditor) {
                     // 戻した日記を覚えておく。Driveにだけ残っている（この端末がまだ知らない）墓標にも、
                     // 次の同期で負けないようにするため（applyRestored）
                     if (restoredIds.length) addRestored(restoredIds, restoreAt);
-                    if (autoSyncDriveEnabled) drivePushAll(true);
+                    driveAutoPush();
                     showToast(`インポート完了: ${imported}件` + (d.merged ? `（同じ日付${d.merged}件を統合）` : ''), 'success');
                     // 黙って欠けさせない。容量不足などで戻せなかった画像は必ず伝える
                     if (imgFailed) showToast(`画像${imgFailed}枚を端末に戻せませんでした。端末の空き容量を確かめて、もう一度取り込んでください`, 'error');
@@ -5113,7 +5143,7 @@ function openLinkMenu(a, openEditor) {
                 await deriveOwnRemoteKey(pass, encMeta.salt);
                 // 起動時の自動取り込みはロック中でスキップされている。鍵が揃った
                 // いまが最初の取り込み機会（トークンが無ければ静かに諦める）
-                if (autoSyncDriveEnabled) drivePullAndMerge(true).catch(() => {});
+                driveSyncOnOpen({ force: true });
             } catch (err) {
                 console.error(err);
                 showToast(err && err.message === 'BAD_ITER' ? BAD_ITER_MSG : 'パスフレーズが違います', 'error');
@@ -5212,7 +5242,7 @@ function openLinkMenu(a, openEditor) {
                 // 握り潰さない。書き直せなかった画像は控えから次に続きをするが、そのことは必ず伝える
                 if (!r.done) showToast(`${r.failed ? `画像${r.failed}枚` : '一部の画像'}を新しいパスフレーズで保存し直せませんでした。次に開いたときに続きを行います（空き容量をご確認ください）`, 'error');
                 // Drive の写しも新しい鍵で書き直しておく（古い鍵の暗号文を残さない）
-                if (autoSyncDriveEnabled) drivePushAll(true);
+                driveAutoPush();
             } catch (err) {
                 if (!switched) { cryptoKey = prevKey; encEnabled = wasEnabled; encMeta = prevMeta; imgRekeyFromKey = null; imgRekeyFromSalt = null; }
                 console.error(err);
@@ -5840,6 +5870,12 @@ function entryContentAsHtml(e) {
   if (!e) return '';
   return e.contentFormat === 'plain' ? escapeHtml(e.content || '').replace(/\n/g, '<br>') : (e.content || '');
 }
+/** 本文が空か（空の段落・改行・空白だけ。画像・ファイル・表・線があれば空ではない） */
+function htmlIsBlank(html) {
+  const h = String(html || '');
+  if (/<(img|hr|table|video|audio|iframe)\b|dy-file|data-did=|data-fid=/i.test(h)) return false;
+  return !h.replace(/<[^>]*>/g, '').replace(/&nbsp;|&#160;|\u00a0|\s/gi, '');
+}
 function dedupeEntriesByDate(list) {
   const byDate = new Map();
   const out = [];
@@ -5855,7 +5891,13 @@ function dedupeEntriesByDate(list) {
     const other = t2 > t1 ? cur : e;
     const bHtml = entryContentAsHtml(base);
     const oHtml = entryContentAsHtml(other);
-    if (oHtml && oHtml !== bHtml && bHtml.indexOf(oHtml) === -1) {
+    // 「今日を書く」で作っただけの空の日記に、ほかの端末で書いた同じ日の日記が届いたときは、
+    // 区切り（統合: …）を入れずにそのまま中身を使う。題名も、決まりの「今日の出来事」のままなら向こうのものにする
+    if (htmlIsBlank(bHtml) && !htmlIsBlank(oHtml)) {
+      base.content = other.content;
+      base.contentFormat = other.contentFormat || 'html';
+      if ((!base.title || base.title === DEFAULT_ENTRY_TITLE) && other.title) base.title = other.title;
+    } else if (oHtml && oHtml !== bHtml && bHtml.indexOf(oHtml) === -1 && !htmlIsBlank(oHtml)) {
       const label = escapeHtml('（統合: ' + (other.title || '別の日記') + '）');
       base.content = bHtml + '<hr><div>' + label + '</div>' + oHtml;
       base.contentFormat = 'html';
@@ -5975,6 +6017,7 @@ function driveReady(quiet) {
 
 async function drivePullAndMerge(quiet = false) {
   syncInFlight++;   // 取り込み中は掃除を止める（受け取った画像を先に消してしまうため）
+  paintDriveChip();
   try {
     if (!driveReady(quiet)) return;
     if (quiet && !driveHasToken()) return; // 静かな取り込みは認証を求めない（期限切れも含む）
@@ -6035,6 +6078,7 @@ async function drivePullAndMerge(quiet = false) {
       // ただし開いていた日記自体が消えた場合は rebind 側で描き直し済み
       if (!lostCurrent && !isDirty) renderEditor();
       setDriveSyncProblem(null);
+      driveNoteSynced();
       if (!quiet || r.added || r.updated) {
         showToast(`Drive: 追加${r.added} 更新${r.updated}` + (d.merged ? ` 同日統合${d.merged}` : ''), 'success');
       }
@@ -6065,6 +6109,7 @@ async function drivePullAndMerge(quiet = false) {
     showToast(m === 'cancelled' ? 'ロック解除をキャンセルしました' : m === 'BAD_ITER' ? BAD_ITER_MSG : (driveErrMsg(err) || 'Drive 読み込み失敗'), m === 'cancelled' ? 'warning' : 'error');
   } finally {
     syncInFlight--;
+    paintDriveChip();
   }
 }
 
@@ -6163,6 +6208,7 @@ async function drivePushRun(quiet = false) {
 
 async function drivePushAllOnce(quiet) {
   syncInFlight++;   // 送信中は掃除を止める（相手から受け取った画像を消さないため）
+  paintDriveChip();
   try {
     if (!driveReady(quiet)) return;
     if (quiet && !driveHasToken()) {
@@ -6271,6 +6317,8 @@ async function drivePushAllOnce(quiet) {
     if (missing) {
       driveWarn('imgMissing', `本文で使っている画像${missing}枚が見つかりません（バックアップから戻すと復活することがあります）`, quiet);
     }
+    // ここまでに保存された変更は、これから書く diary.json に入る（このあとの変更は次の同期で送る）
+    const sentUpTo = Date.now();
     const obj = await buildSyncObject(tombs, null, encTo, true);
     // 平文から暗号化へ（または別の鍵へ）変わるときは、書き換えずに作り直す（古い版を Drive に残さない）
     const recreate = !!(fileId && encTo && rawRemote && (!isEncBlob(rawRemote) || rawRemote.salt !== encTo.salt));
@@ -6283,6 +6331,8 @@ async function drivePushAllOnce(quiet) {
     if (!encTo || encTo.mine) clearDriveReplace();   // Drive はこの端末の設定どおりになった
     markBackupDone();
     setDriveSyncProblem(null);
+    driveClearPending(sentUpTo);
+    driveNoteSynced();
     if (remoteBroken) {
       driveWarn('remoteCorrupt', 'Drive上の日記が壊れていたため、この端末の内容で作り直しました', quiet);
     }
@@ -6319,6 +6369,7 @@ async function drivePushAllOnce(quiet) {
     }
   } finally {
     syncInFlight--;
+    paintDriveChip();
   }
 }
 
@@ -6390,6 +6441,7 @@ async function driveRebuildRemote(quiet = false) {
       if (!encTo || encTo.mine) clearDriveReplace();
       markBackupDone();
       setDriveSyncProblem(null);
+      driveNoteSynced();
       if (!quiet) showToast('Driveを作り直しました', 'success');
       return true;
     });
@@ -6402,9 +6454,174 @@ async function driveRebuildRemote(quiet = false) {
 
 function toggleAutoSyncDrive() {
   autoSyncDriveEnabled = document.getElementById('autoSyncDrive').checked;
-  localStorage.setItem('autoSyncDrive', autoSyncDriveEnabled);
-  showToast(autoSyncDriveEnabled ? 'Drive自動同期 ON' : 'Drive自動同期 OFF', 'success');
+  // 入口（☁）の「自動同期」と同じスイッチ。旧版のキーにも書いておく（同じ端末に古い版のタブが残っていても食い違わない）
+  try {
+    localStorage.setItem(AUTO_SHARED_KEY, autoSyncDriveEnabled ? '1' : '0');
+    localStorage.setItem('autoSyncDrive', String(autoSyncDriveEnabled));
+  } catch (e) {}
+  showToast(autoSyncDriveEnabled ? '自動同期 ON（ほかのアプリも）' : '自動同期 OFF（ほかのアプリも）', 'success');
+  paintDriveChip();
+  if (autoSyncDriveEnabled) driveSyncOnOpen({ force: true, gesture: true });
 }
+
+/* ── 自動同期（v49）─────────────────────────────────────────────
+   以前の日記帳は、自分だけのスイッチ（autoSyncDrive・はじめはOFF）を見ていた。入口（☁）の
+   「自動同期: ON」では日記帳は同期されず、そのスイッチは入口の中では隠れていて ON にする手立ても無かった。
+   保存しても Drive へ送らず、開いても取り込まないまま、「今すぐ全部同期」を押したときだけ同期していた。
+   いまは入口と同じスイッチ（shared:nksync:auto・はじめはON）に従い、
+     ・保存・削除したら送る（打っている間は20秒に1回まで。drivePushAll）
+     ・日記帳を開いた・タブに戻った・アプリに戻ったときに取り込む（30秒に1回まで）
+     ・日記を開く・今日を書く・「💾 保存」を押したときも取り込む／送る
+   Google のログイン（トークン）は1時間で切れ、取り直すにはログイン画面を出すしかない（出せるのは押した直後だけ）。
+   切れていたら、日記を開く・今日を書く・保存を押したときにつなぎ直す（1時間に1回、Google の小さな画面が出る）。
+   打っている間の自動保存や、開いただけのときには出さない（入力の途中や、何もしていないのに画面を奪わない）。
+   送れていない変更は diary:gd:pending に時刻で残し、上の「☁」に出す（押せばつなぎ直して送る）。 */
+const AUTO_SHARED_KEY = 'shared:nksync:auto';
+const DRIVE_PENDING_KEY = 'diary:gd:pending';   // Driveへまだ送っていない変更がある（いちばん新しい保存の時刻）
+const DRIVE_LAST_KEY = 'diary:gd:last';         // 最後に Drive とやり取りできた時刻
+const DRIVE_OPEN_GAP_MS = 30000;                // 開いたときの取り込みは、これより短い間隔では繰り返さない
+const DRIVE_OPEN_WAIT_MS = 6000;                // 今日を書くとき、取り込みを待つのはここまで
+function readDriveAuto() { try { return localStorage.getItem(AUTO_SHARED_KEY) !== '0'; } catch (e) { return false; } }
+function drivePendingAt() { try { return Number(localStorage.getItem(DRIVE_PENDING_KEY)) || 0; } catch (e) { return 0; } }
+function driveMarkPending() { try { localStorage.setItem(DRIVE_PENDING_KEY, String(Date.now())); } catch (e) {} paintDriveChip(); }
+/** upTo までに保存された変更は送れた（それより後の保存は残す） */
+function driveClearPending(upTo) {
+  try { const p = drivePendingAt(); if (p && p <= upTo) localStorage.removeItem(DRIVE_PENDING_KEY); } catch (e) {}
+}
+function driveNoteSynced() {
+  drivePullLastAt = Date.now();
+  try { localStorage.setItem(DRIVE_LAST_KEY, String(Date.now())); } catch (e) {}
+}
+function driveLastAt() { try { return Number(localStorage.getItem(DRIVE_LAST_KEY)) || 0; } catch (e) { return 0; } }
+/** この端末で、日記帳を一度でも Drive と同期したか（「今すぐ全部同期」や設定の「Driveへ保存」など）。
+ *  自動で送る・取り込む・ログイン画面を出すのは、そのあとだけ。ほかのアプリ（タスクなど）のために
+ *  Google につないだだけで、日記が勝手に Drive へ送られないようにする */
+function driveWasConnected() {
+  try { return !!localStorage.getItem(DRIVE_SYNCFILE_KEY); } catch (e) { return false; }
+}
+let drivePullLastAt = 0;
+let driveOpenBusy = null;      // 開いたときの同期（終わるまでの Promise）
+let driveAskP = null;          // いま頼んでいるログイン
+let driveAskDeclined = false;  // このページで、つなぎ直しを断られた・画面を開けなかった（自分からはもう出さない）
+
+/** 保存・削除したあと: 送っていない印を付けて、自動同期なら送る */
+function driveAutoPush() {
+  driveMarkPending();
+  if (autoSyncDriveEnabled && driveWasConnected()) drivePushAll(true);
+}
+function driveCanAsk() {
+  return !driveAskDeclined && !appLocked && !!driveLib() && !!(window.NKSync && NKSync.hasClientId()) && driveWasConnected();
+}
+/** 押した直後に呼ぶ（await の前）。ログインが切れていて、つなぎ直してよいなら、ここでログイン画面を頼み、
+ *  取れたら同期する。頼んだら true */
+function driveAskOnGesture() {
+  if (!autoSyncDriveEnabled || driveAskP || driveHasToken() || !driveCanAsk() || syncBlockedReason()) return false;
+  // 押した直後でなければ頼まない（ロック解除の計算を待ったあとなど。頼んでも止められ、「断られた」扱いになってしまう）
+  try { if (navigator.userActivation && !navigator.userActivation.isActive) return false; } catch (e) {}
+  const tokP = driveToken(true);
+  driveAskP = tokP;
+  showToast('Googleのログインが切れていたので、つなぎ直して同期します', 'info');
+  const p = tokP.then(
+    () => { driveAskP = null; return driveSyncBoth(); },
+    (e) => {
+      driveAskP = null;
+      // 閉じられた・開けなかったときは、このページではもう自分からは出さない（☁を押せば出す）
+      if (/キャンセル|ポップアップ|タイムアウト/.test(String((e && e.message) || e))) driveAskDeclined = true;
+      console.warn('[diary] つなぎ直し', e);
+    });
+  driveRunOpen(p);
+  return true;
+}
+function driveRunOpen(p) {
+  const w = Promise.resolve(p)
+    .catch(e => console.warn('[diary] 開いたときの同期', e))
+    .finally(() => { if (driveOpenBusy === w) driveOpenBusy = null; paintDriveChip(); });
+  driveOpenBusy = w;
+  paintDriveChip();
+  return w;
+}
+/** 日記帳を開いた・日記を開いたときの同期。opts.gesture: 押した直後（ログインが切れていればつなぎ直してよい）。
+ *  opts.force: 間隔を空けずに取り込む */
+function driveSyncOnOpen(opts) {
+  opts = opts || {};
+  if (!autoSyncDriveEnabled || !driveLib() || !driveWasConnected()) { paintDriveChip(); return Promise.resolve(); }
+  if (driveOpenBusy) return driveOpenBusy;
+  if (!driveHasToken()) {
+    if (opts.gesture && driveAskOnGesture()) return driveOpenBusy || Promise.resolve();
+    paintDriveChip();
+    return Promise.resolve();
+  }
+  if (!opts.force && !drivePendingAt() && Date.now() - drivePullLastAt < DRIVE_OPEN_GAP_MS) return Promise.resolve();
+  return driveRunOpen(driveSyncBoth());
+}
+/** 取り込んで、送っていない変更があれば送る（送るときは Drive の分を混ぜてから書くので、取り込みも済む） */
+async function driveSyncBoth() {
+  drivePullLastAt = Date.now();
+  if (syncBlockedReason() || !driveHasToken()) return;
+  if (drivePendingAt()) {
+    if (drivePushQuietTimer) { clearTimeout(drivePushQuietTimer); drivePushQuietTimer = null; }
+    await drivePushRun(true);
+  } else {
+    await drivePullAndMerge(true);
+  }
+  // 日記の無い日を開いていて、その日の日記がほかの端末から届いたら、それを開く
+  // （カレンダーで選んだ、まだ日記の無い日。newEntryDefaultDate はそのときだけ入る）
+  if (!currentEntry && newEntryDefaultDate && !isDirty) {
+    const e = entries.find(x => x.date === newEntryDefaultDate);
+    if (e) loadEntry(e);
+  }
+}
+/** 上の「☁」を押したとき: つなぎ直して（要るときだけログイン画面）、取り込んでから送る */
+function driveChipTap() {
+  if (!driveReady(false)) return;
+  const blocked = syncBlockedReason();
+  if (blocked) { showToast(blocked, 'error'); return; }
+  driveAskDeclined = false;
+  // ★クリックの中で（await の前に）頼む。drivePullAndMerge(false) は最初の await の前にトークンを頼む
+  const p = drivePullAndMerge(false).then(() => { if (driveHasToken()) return drivePushRun(true); });
+  driveRunOpen(p);
+}
+/** 「☁」の表示。自動同期がOFF・一度もつないでいないときは出さない */
+function paintDriveChip() {
+  const el = document.getElementById('driveChip');
+  if (!el) return;
+  const show = autoSyncDriveEnabled && !!driveLib() && driveWasConnected();
+  el.hidden = !show;
+  if (!show) return;
+  const pend = drivePendingAt();
+  let txt, cls, tip;
+  if (syncInFlight > 0 || driveOpenBusy || driveAskP) {
+    txt = '☁ 同期中…'; cls = 'busy'; tip = 'Google ドライブと同期しています';
+  } else if (driveSyncProblem) {
+    txt = '⚠ 同期が止まっています'; cls = 'err'; tip = driveSyncProblem;
+  } else if (!driveHasToken()) {
+    txt = pend ? '☁ 未送信あり（押して同期）' : '☁ 押して同期'; cls = 'need';
+    tip = 'Googleのログインが切れています（1時間で切れます）。押すとつなぎ直して同期します';
+  } else if (pend) {
+    txt = '☁ 送信待ち'; cls = 'busy'; tip = 'まもなく Google ドライブへ送ります';
+  } else {
+    const t = driveLastAt();
+    txt = '☁ 同期済み'; cls = 'ok';
+    tip = t ? '最後の同期: ' + new Date(t).toLocaleString('ja-JP') + '（押すと今すぐ同期）' : '押すと今すぐ同期';
+  }
+  if (el.textContent !== txt) el.textContent = txt;
+  el.className = 'drive-chip ' + cls;
+  el.title = tip;
+  el.setAttribute('aria-label', txt.replace(/^\S+\s/, '') + '。' + tip);
+}
+// ログインの期限は時間で切れるので、ときどき描き直す
+setInterval(() => { try { paintDriveChip(); } catch (e) {} }, 60000);
+// アプリ・タブに戻ってきたら取り込む（スマホで裏に回していたあいだに、ほかの端末で書いた分）
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  paintDriveChip();
+  driveSyncOnOpen({});
+});
+// 入口（index.html）で日記帳のタブに切り替えたとき（iframe は読み込んだまま残るので、ここで知らせてもらう）
+window.addEventListener('message', (e) => {
+  if (e.origin !== location.origin || !e.data || !e.data.nkShown) return;
+  driveSyncOnOpen({});
+});
 
 
 
@@ -6524,9 +6741,17 @@ function toggleAutoSyncDrive() {
   try{ document.documentElement.classList.add('nk-embed'); }catch(e){}
 
   function lastBackup(){ try{ return localStorage.getItem('diaryLastBackup')||''; }catch(e){ return ''; } }
-  function autoOn(){ try{ return localStorage.getItem('autoSyncDrive')==='true'; }catch(e){ return false; } }
+  // 自動同期のスイッチは入口と共通（v49。以前は日記帳だけの autoSyncDrive を見ていた）
+  function autoOn(){ try{ return localStorage.getItem('shared:nksync:auto')!=='0'; }catch(e){ return false; } }
   function status(){
     var lb=lastBackup();
+    // 送れていない日記がある（ログインが切れている）なら、入口の☁にも出す。「今すぐ全部同期」で送れる
+    try{
+      if(autoOn() && typeof window.drivePendingAt==='function' && window.drivePendingAt()
+         && typeof window.driveHasToken==='function' && !window.driveHasToken()
+         && typeof window.driveWasConnected==='function' && window.driveWasConnected())
+        return {phase:'error', at:lb?new Date(lb).getTime():0, msg:'未送信の日記があります（「今すぐ全部同期」で送れます）'};
+    }catch(e){}
     if(!autoOn() && !lb) return {phase:'off', at:0, msg:''};
     var at=lb?new Date(lb).getTime():0;
     var days=at?Math.floor((Date.now()-at)/86400000):999;
