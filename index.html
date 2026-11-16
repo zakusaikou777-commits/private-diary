@@ -312,7 +312,14 @@ body.nk-dark .knnew{opacity:.12}
     }
     var fr = document.querySelectorAll('.appframe');
     for(var j=0;j<fr.length;j++){ fr[j].classList.toggle('active', fr[j].id===('frame-'+app)); }
+    var wasLoaded = !!loaded[app];
     load(app);
+    // 読み込み済みのタブに戻ったことを知らせる（タブは裏で開いたまま残るので、中からは分からない）。
+    // 日記帳はここで Drive の新しい分を取り込む（v49）。知らないタブは受け流す
+    if(wasLoaded){
+      var cur = document.getElementById('frame-'+app);
+      try{ if(cur && cur.contentWindow) cur.contentWindow.postMessage({nkShown:true}, location.origin); }catch(e){}
+    }
     nkDarkApply();   // 暗室から離れたらタブ帯を明るく戻す（戻ってきて、まだ暗転中ならまた暗く）
   }
   /* ── 暗室の暗転に合わせてタブ帯を暗くする ──────────────────

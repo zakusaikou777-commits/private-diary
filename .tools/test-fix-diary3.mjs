@@ -52,6 +52,9 @@ async function open(ctx) {
   });
   page.on("pageerror", (e) => pageErrors.push(e.message));
   page.setDefaultTimeout(8000);   // 修正前のページで待ち続けない
+  // ここでは手で同期する流れを確かめる。v49 から自動同期がはじめからONになったので、裏で走る自動の同期と
+  // 競らないよう、何も決めていない端末はOFFで始める（自動同期は test-fix-diary-sync.mjs で確かめる）
+  await page.addInitScript(() => { try { if (localStorage.getItem("shared:nksync:auto") === null) localStorage.setItem("shared:nksync:auto", "0"); } catch (e) {} });
   await page.goto(srv.url + "diary.html");
   await page.waitForFunction(() => typeof storageReady !== "undefined" && storageReady === true
     && document.getElementById("calendarDays").children.length > 0 && !!(window.google && google.accounts && google.accounts.oauth2));

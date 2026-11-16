@@ -44,6 +44,9 @@ async function open(ctx) {
     } catch (e) {}
   });
   page.on("pageerror", (e) => pageErrors.push(e.message));
+  // ここでは手で同期する流れを確かめる。v49 から自動同期がはじめからONになったので、裏で走る自動の同期と
+  // 競らないよう、何も決めていない端末はOFFで始める（自動同期は test-fix-diary-sync.mjs で確かめる）
+  await page.addInitScript(() => { try { if (localStorage.getItem("shared:nksync:auto") === null) localStorage.setItem("shared:nksync:auto", "0"); } catch (e) {} });
   await page.goto(srv.url + "diary.html");
   // Google のログイン部品（偽物）は async で後から読まれる。読まれる前に同期すると「未読込」で失敗する
   await page.waitForFunction(() => typeof storageReady !== "undefined" && storageReady === true
