@@ -9,6 +9,7 @@
    w3 スマホ: 右下の＋（書いている間は隠す・ツールバーや保存ボタンに重ならない）、ツールバーは1行で横に流れる
    w4 日付を変えても1日1件（もう一方の日記も、動かした日記も消えない）
    w5 ロック中は先に解除。解除したら続けて今日を開く（やめたら開かない）
+   w6 並び: カレンダーは検索・タグより上（PC とスマホ）。リスト表示では検索・タグが一覧のすぐ上。カレンダーで検索するとリストに切り替える
    t1 ツールバーの各書式 → 決まった形の HTML。保存して開き直しても同じ
    t2 色・蛍光ペンのメニューを開いても選択が保たれる（PC とスマホ）
    t3 チェックボックス（押して済み → 開き直しても済み。改行した次の項目は「まだ」）
@@ -368,6 +369,36 @@ if (want("w5")) {
 function isEncStored(raw) { try { const o = JSON.parse(raw); return o && o.__enc__ === 1 && !!o.ct; } catch (e) { return false; } }
 
 /* ── t1. ツールバーの各書式 ── */
+if (want("w6")) {
+  console.log("w6) 並び: カレンダーはタグより上");
+  await section("w6", async () => {
+    for (const [label, opts] of [["PC", PC], ["スマホ", PHONE]]) {
+      const ctx = await newDevice(browser, { contextOptions: opts });
+      const p = await open(ctx);
+      await p.evaluate(async () => {
+        const tags = ["土庄港フェリーターミナル", "徳島大学", "猫", "病院", "妖怪美術館", "旅", "仕事", "家族", "買い物", "映画", "読書", "うどん"];
+        ["2026-11-09", "2026-11-12", "2026-11-14"].forEach((d, i) => entries.push({ id: genId(), date: d, title: "並び" + i, content: "<p>本文</p>", contentFormat: "html", tags: tags.slice(i * 4, i * 4 + 4), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+        await saveEntriesToStorage(); renderCalendar(); renderEntriesList();
+      });
+      const top = (sel) => p.evaluate((q) => { const el = document.querySelector(q); return el && el.offsetParent !== null ? el.getBoundingClientRect().top : null; }, sel);
+      const cal = await top("#calendarView"), search = await top("#searchInput"), tag = await top("#tagArea");
+      ok(cal !== null && search !== null && tag !== null && cal < search && search < tag, `w6 ${label}: カレンダー → 検索 → タグ の順`, { cal, search, tag });
+      // リスト表示: カレンダーは隠れ、検索・タグは一覧のすぐ上
+      await p.click('.view-tab[data-view="list"]');
+      const s2 = await top("#searchInput"), t2 = await top("#tagArea"), l2 = await top("#listView");
+      ok((await top("#calendarView")) === null && s2 < t2 && t2 < l2, `w6 ${label}: リスト表示では 検索 → タグ → 一覧`, { s2, t2, l2 });
+      // カレンダー表示で検索すると、結果の見えるリストへ切り替える
+      await p.click('.view-tab[data-view="calendar"]');
+      await p.fill("#searchInput", "並び1");
+      await p.dispatchEvent("#searchInput", "keyup");
+      const st = await p.evaluate(() => ({ view: currentView, items: Array.from(document.querySelectorAll("#entriesList .entry-title")).map((e) => e.textContent) }));
+      ok(st.view === "list" && st.items.length === 1 && st.items[0] === "並び1", `w6 ${label}: カレンダーで検索すると、リストに結果が出る`, st);
+      ok(p.errs.length === 0, `w6 ${label}: エラーなし`, p.errs);
+      await ctx.close();
+    }
+  });
+}
+
 if (want("t1")) {
   console.log("t1) ツールバーの書式");
   await section("t1", async () => {
