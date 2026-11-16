@@ -120,6 +120,9 @@
         .search-box { margin-bottom: var(--space-16); }
         .search-box input { width: 100%; padding: var(--space-8) var(--space-12); border: 1px solid var(--color-border); border-radius: var(--radius-base); font-size: 14px; background-color: var(--color-background); color: var(--color-text); }
         .search-box input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(33, 128, 141, 0.1); }
+        /* タグ名で絞り込む欄も、上の検索欄と同じ見た目に（飾りが無く、白い小さな枠だけになっていた） */
+        .tag-search { display: block; width: 100%; box-sizing: border-box; padding: var(--space-6) var(--space-12); margin: var(--space-4) 0 var(--space-8); border: 1px solid var(--color-border); border-radius: var(--radius-base); font: inherit; font-size: 14px; background-color: var(--color-background); color: var(--color-text); }
+        .tag-search:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(33, 128, 141, 0.1); }
         .filter-section { margin-bottom: var(--space-16); }
         .filter-label { font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--color-text-secondary); margin-bottom: var(--space-8); display: block; }
         .tag-filter-list { display: flex; flex-wrap: wrap; gap: var(--space-6); margin-bottom: var(--space-12); }
@@ -399,27 +402,13 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
                 <button type="button" class="write-today" id="writeTodayBtn" onclick="writeToday()" title="今日の日記を開く・書きはじめる（Alt+N）">✏ 今日を書く <span class="wt-date" id="writeTodayDate"></span></button>
                 <!-- 探すためのものを画面の上に置く。以前は統計と空のエディタが上を
                      占めていて、スマホではタグに届くまで2画面ぶんスクロールが要り、
-                     機能があっても事実上使えなかった。 -->
+                     機能があっても事実上使えなかった。
+                     並びは「表示切替 → カレンダー → 検索・タグ → リスト」（v50）。タグが増えると、
+                     タグの下にあったカレンダーが画面の外へ押し出されていた。リスト表示ではカレンダーが
+                     隠れるので、検索・タグはそのまま一覧のすぐ上に来る。 -->
                 <div class="view-tabs" role="tablist" aria-label="表示切替">
                     <button class="view-tab" type="button" role="tab" data-view="list" aria-selected="false" onclick="switchView('list')">📋 リスト</button>
                     <button class="view-tab active" type="button" role="tab" data-view="calendar" aria-selected="true" onclick="switchView('calendar')">📅 カレンダー</button>
-                </div>
-
-                <div class="find-box">
-                    <div class="search-box">
-                        <input type="text" id="searchInput" placeholder="🔍 タイトル/本文検索..." onkeyup="filterEntries()">
-                    </div>
-                    <div class="tag-area" id="tagArea">
-                        <div class="tag-area-head">
-                            <span class="filter-label">タグで探す</span>
-                            <span class="tag-tools">
-                                <button type="button" id="tagModeBtn" class="tag-mode" onclick="toggleTagMode()" title="複数選んだときの絞り込み方">どれか</button>
-                                <button type="button" id="tagClearBtn" class="tag-clear" onclick="clearTagFilter()">解除</button>
-                            </span>
-                        </div>
-                        <input type="text" id="tagSearchInput" class="tag-search" placeholder="タグ名で絞り込む" oninput="renderTagFilter()">
-                        <div class="tag-filter-list" id="tagFilterList"></div>
-                    </div>
                 </div>
 
                 <div id="calendarView" class="calendar-container active">
@@ -437,6 +426,23 @@ body{ font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",
                         <div class="calendar-day-header">金</div>
                         <div class="calendar-day-header">土</div>
                         <div id="calendarDays"></div>
+                    </div>
+                </div>
+
+                <div class="find-box">
+                    <div class="search-box">
+                        <input type="text" id="searchInput" placeholder="🔍 タイトル/本文検索..." onkeyup="filterEntries()">
+                    </div>
+                    <div class="tag-area" id="tagArea">
+                        <div class="tag-area-head">
+                            <span class="filter-label">タグで探す</span>
+                            <span class="tag-tools">
+                                <button type="button" id="tagModeBtn" class="tag-mode" onclick="toggleTagMode()" title="複数選んだときの絞り込み方">どれか</button>
+                                <button type="button" id="tagClearBtn" class="tag-clear" onclick="clearTagFilter()">解除</button>
+                            </span>
+                        </div>
+                        <input type="text" id="tagSearchInput" class="tag-search" placeholder="タグ名で絞り込む" oninput="renderTagFilter()">
+                        <div class="tag-filter-list" id="tagFilterList"></div>
                     </div>
                 </div>
 
@@ -1779,6 +1785,9 @@ window.addEventListener('beforeunload', (e) => {
 
         function filterEntries() {
             currentFilters.searchText = document.getElementById('searchInput').value;
+            // カレンダー表示のまま検索しても結果が見えないので、タグと同じくリストへ切り替える
+            // （検索欄はリストの上に来るので、打っている欄はそのまま見えている）
+            if (currentFilters.searchText.trim() && currentView !== 'list') switchView('list');
             renderEntriesList();
         }
 
