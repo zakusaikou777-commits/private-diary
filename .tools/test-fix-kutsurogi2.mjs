@@ -655,6 +655,31 @@ try {
     await P.q('#postSeg [data-po=""]');
     ok(JSON.parse(await P.cfg()).posture === "", "「指定しない」に戻せる");
   });
+
+  /* ── L. のこり時間（v54）: 行の始まりだけでなく、沈黙のあいだも1秒ごとに減る ── */
+  await section("[L] のこり時間が1秒ごとに減る（沈黙のあいだも）・中断中は止まる", async (use) => {
+    const P = use(await openPage());
+    const left = async () => { const t = await P.text("#left"); const m = /(\d+):(\d\d)/.exec(t || ""); return m ? (+m[1]) * 60 + (+m[2]) : NaN; };
+    await P.click("startBtn");
+    await P.until("重たい");                 // 公式の行を読みはじめるまで
+    await P.run(8000);                       // 読み終わって、沈黙に入る
+    const a = await left();
+    await P.run(1000);
+    const b = await left();
+    await P.run(3000);
+    const c = await left();
+    // 行の切れ目では、読み上げの見積りとの差で1〜2秒ずれることがある
+    ok(isFinite(a) && b < a && b >= a - 2 && c < b && c >= b - 5, "沈黙のあいだも「のこり」が1秒ごとに減る（以前は行の始まりにしか書き直さず、止まって見えた）", { a, b, c });
+    await P.click("pauseBtn");
+    const p0 = await left(), t0 = await P.text("#left");
+    await P.run(5000);
+    ok((await left()) === p0 && /中断中/.test(t0), "中断中は止まり、「（中断中）」と出る", { p0, t: await P.text("#left") });
+    await P.click("pauseBtn");                // 続ける（中断した行を読み直す）
+    await P.run(2000);
+    const r = await left();
+    ok(r <= p0 + 60 && r >= p0 - 5, "続けると、読み直す行のぶんから数え直す（大きく飛ばない）", { p0, r });
+    await P.click("stopBtn"); await P.untilCard(); await P.q("#rcSkip");
+  });
 } catch (e) {
   ok(false, "検証が途中で止まりました: " + (e && e.stack || e));
 }

@@ -1324,6 +1324,7 @@ function pauseRun(){
   stopSpeech();
   try{ if(!R.preview)bgStop(); }catch(e){}
   try{ $("stage").textContent="中断中"; $("glyph").textContent="⏸"; }catch(e){}
+  try{ paintProgress(); }catch(e){}   // のこりを止めて「（中断中）」と出す
   restartArm=0; paintRunCtl();
   /* 中断したまま忘れられるのがいちばん困る。10分たったら一度だけ知らせる
      （画面ロックは外さない。外すと、そのまま終われなくなることがある）。 */
@@ -1350,6 +1351,7 @@ function resumeRun(){
   // 二重に数え、中断のたびに「のこり」が縮んでいく
   R.elapsed=totalSec(R.seq.slice(0,R.i+1));
   R.fails=0;
+  R.leftShown=null;                    // 同じ行を読み直すので、のこりは増えてよい
   step();
 }
 function restartRun(){
@@ -1360,7 +1362,7 @@ function restartRun(){
   R.tok=++tokSeq;
   // 「みじかく」で始めた練習は、やり直しても「みじかく」のまま
   R.seq=R.preview?previewSeq():buildSeq(R.quick);
-  R.i=-1; R.elapsed=0; R.total=totalSec(R.seq);
+  R.i=-1; R.elapsed=0; R.total=totalSec(R.seq); R.leftShown=null; R.stepAt=0;
   R.startedAt=Date.now(); R.pausedMs=0; R.fails=0; R.phase="run";
   R.tapLog={}; R.stg=null; R.cend=""; R.cwhy="";
   if(!R.preview){
@@ -1474,12 +1476,28 @@ function bareCancel(){
   try{ toast("画面がうまく描けていません。消去動作は読み上げでお伝えします。",9000); }catch(e){}
   go();
 }
+/* のこり時間（秒）。以前は行が始まるときだけ書き直し、しかもその行の時間を始めに一気に足していたので、
+   公式のあとの長い沈黙のあいだ「のこり」が動かず、止まって見えた（v54）。
+   R.elapsed は「いまの行が終わるまで」を足した値なので、その残りに、いまの行の残り
+   （R.stepAt から R.stepWait。読み終わったあとは沈黙の残り）を足して数える。中断中は止める */
+function remainSec(){
+  if(!R)return 0;
+  var after=Math.max(0,R.total-R.elapsed), cur=0;
+  if(R.stepAt&&isFinite(R.stepWait))cur=Math.max(0,(R.stepWait-(Date.now()-R.stepAt))/1000);
+  return after+cur;
+}
 function paintProgress(){
   if(!R)return;
-  var pct=Math.min(100,Math.round(R.elapsed/Math.max(1,R.total)*100));
-  $("barIn").style.width=(isFinite(pct)?pct:0)+"%";
-  $("left").textContent="のこり およそ "+fmt(Math.max(0,R.total-R.elapsed));
+  var left=R.paused&&R.leftShown!=null?R.leftShown:remainSec();
+  // 同じ行のあいだは増やさない（読み上げが見積りより長かったとき、読み終わりで表示が戻らないように）
+  if(R.leftI===R.i&&R.leftShown!=null&&left>R.leftShown)left=R.leftShown;
+  R.leftI=R.i; R.leftShown=left;
+  var pct=Math.min(100,Math.round((R.total-left)/Math.max(1,R.total)*100));
+  $("barIn").style.width=(isFinite(pct)?Math.max(0,pct):0)+"%";
+  $("left").textContent="のこり およそ "+fmt(left)+(R.paused?"（中断中）":"");
 }
+// 1秒ごとに書き直す（画面が見えていて、中断していないあいだ）
+setInterval(function(){ try{ if(R&&!R.paused&&!pageHidden())paintProgress(); }catch(e){} },1000);
 /* ══════ タッチで次の段階へ ══════
    目を閉じたまま進められるよう、画面のどこを触ってもいい（ボタンの上だけは別）。
    いまの段階の残りは飛ばす。消去動作の中では効かない（飛ばしてはいけないので）。 */
@@ -1540,8 +1558,8 @@ function runStep(){
     $("stage").textContent=(it.step||"")+" · タッチで次へ";
     $("glyph").textContent="👆";
     R.elapsed+=wms/1000;
+    R.stepAt=Date.now(); R.stepWait=wms; R.fails=0;   // のこりを描く前に、この行の始まりを入れる
     paintProgress();
-    R.stepAt=Date.now(); R.stepWait=wms; R.fails=0;
     // 合図の番号を進める。予備のタイマーが先に進めたあとで前の行の読み終わり（onend）や
     // 失敗（onerror）が遅れて届くと、待ちを打ち切って次の段階へ進めたり、前の行を読み直したりする。
     // 読み上げそのものは止めない（言いかけの文は最後まで言わせる）。
@@ -1561,8 +1579,8 @@ function runStep(){
   $("glyph").textContent=it.g||"";     // 前の段階の字を残さない
   var hold=holdMs(it), sp=speechMs(say), wait=hold+sp;
   R.elapsed+=wait/1000;
+  R.stepAt=Date.now(); R.stepWait=wait;   // のこりを描く前に、この行の始まりを入れる
   paintProgress();
-  R.stepAt=Date.now(); R.stepWait=wait;
   var tok=R.tok=++tokSeq, moved=false;
   var next=function(ms){
     if(!R||tok!==R.tok)return;
