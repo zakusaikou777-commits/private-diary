@@ -434,7 +434,7 @@ try {
   await section("[6] タッチで次の段階へ", async (use) => {
     const P = use(await openPage({ touch: true, cfg: { advance: "tap", steps: { heavy: true, warm: true } } }));
     await P.click("startBtn");
-    await P.run(500);
+    await P.run(1000);   // v54: 始めて0.8秒までのタッチは数えない（「はじめる」のダブルタップで導入を飛ばさない）
     ok((await P.st()).stage === "導入", "導入から始まる");
     // iPhone の Safari のように、click の来ない pointerup だけ
     await P.ev(() => document.getElementById("glyph").dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0, pointerType: "touch" })));

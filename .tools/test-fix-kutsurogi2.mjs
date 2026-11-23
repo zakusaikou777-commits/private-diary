@@ -253,6 +253,8 @@ try {
     await P.untilCard();
     await P.q('#recCard .lvrow[data-sid="heavy"] [data-lv="3"]');
     await P.q("#rcSkip");
+    await P.run(1000);                       // v54: 「記録しない」は少し間をおいた2回押し
+    await P.q("#rcSkip");
     await P.run(100);
     const s = await P.st();
     ok((await P.hist()).length === 0 && !s.card && !s.draft && /記録しませんでした/.test(s.toast), "記録せずにカードを閉じる", s);
@@ -333,7 +335,7 @@ try {
     ok(x.cancelEnd === "short" && x.cancelWhy === "stop", "印：短縮（途中でやめた）", x);
     ok(/消去動作 短縮（途中でやめた）/.test(await P.text("#recs .rec .ce")), "一覧に小さく出る", await P.text("#recs .rec .ce"));
   });
-  await section("[E2] 画面が消えて止まっていた → 短縮版", async (use) => {
+  await section("[E2] 画面が消えて止まっていた → 全部（v54。以前は短縮版）", async (use) => {
     const P = use(await openPage());
     await P.click("startBtn");
     await P.until("目を、そっと閉じてください");
@@ -343,7 +345,7 @@ try {
     const r = await P.untilCard();
     await P.q("#rcSave");
     const x = await lastRec(P);
-    ok(r.ok && !r.early && x.cancelEnd === "short" && x.cancelWhy === "stall", "印：短縮（止まっていた）", x);
+    ok(r.ok && !r.early && x.cancelEnd === "full" && x.cancelWhy === "stall", "印：最後まで（止まっていた。v54: 止まっていたあとは消去動作を全部）", x);
   });
   await section("[E3] 消去動作の最中に「やめる」を2回 → 飛ばした", async (use) => {
     const P = use(await openPage());
