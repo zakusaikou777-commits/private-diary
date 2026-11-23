@@ -194,6 +194,8 @@
         .toast.success { background-color: var(--color-success); }
         .toast.warning { background-color: var(--color-warning); }
         .toast.info { background-color: var(--color-text-secondary); }
+        .toast.toast-act-row { display: flex; align-items: center; gap: 10px; }
+        .toast .toast-act { flex: none; border: 1px solid currentColor; background: transparent; color: inherit; font: inherit; font-weight: 700; border-radius: 8px; padding: 6px 12px; cursor: pointer; }
         /* 失敗の説明は長い。読み切る前に消えないよう、幅と行送りを確保する */
         .toast { max-width: min(92vw, 460px); white-space: normal; line-height: 1.65; cursor: pointer; }
         @keyframes slideIn { from { transform: translateX(400px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
@@ -4668,6 +4670,11 @@ function openLinkMenu(a, openEditor) {
          *  external: Drive 用。写真は1枚ずつ別のファイルにしてあるので中に入れない（imgExternal: 1 を付ける）。
          *    利用者の書き出し・共有・同期フォルダは、そのファイルだけで戻せるよう写真を入れたまま
          *  戻せなかった枚数は buildSyncObject.lastMissing に入れる（呼び出し側の判断用） */
+        /* 日記の形の版（v53）。v48 で色・蛍光ペン・チェックボックス・ファイルのカードが入った（=2）。
+           これより新しい形の日記が Drive にあるとき、この版のアプリは読み込みも送信もしない。
+           知らない書式を消毒で外したまま送ると、ほかの端末の書式まで消してしまうため（アプリを更新してもらう）。
+           v52 以前のアプリはこの印を見ないので、この守りが効くのは v53 以降の端末どうし */
+        const DIARY_FORMAT = 2;
         async function buildSyncObject(tombs, fallbackImages, encTo, external) {
             const entriesData = JSON.parse(JSON.stringify(entries));
             // 本文の画像も一緒に持っていく。暗号化がONなら、この平文オブジェクトごと
@@ -4679,10 +4686,16 @@ function openLinkMenu(a, openEditor) {
             const k = (encTo !== undefined) ? encTo
                 : ((encEnabled && cryptoKey && encMeta) ? { key: cryptoKey, salt: encMeta.salt, iter: encMeta.iter } : null);
             if (k) {
-                return await ENC.encryptString(JSON.stringify(plainObj), k.key, ENC.unb64(k.salt), k.iter);
+                const blob = await ENC.encryptString(JSON.stringify(plainObj), k.key, ENC.unb64(k.salt), k.iter);
+                // 暗号文の外側にも版を書く（開けない端末でも、新しい形かどうかは分かるように）
+                return (blob && typeof blob === 'object') ? { ...blob, fmt: DIARY_FORMAT } : blob;
             }
+            plainObj.fmt = DIARY_FORMAT;
             return plainObj;
         }
+        /** Drive の日記が、この版より新しい形で書かれているか */
+        function remoteTooNew(raw) { return !!(raw && typeof raw === 'object' && Number(raw.fmt) > DIARY_FORMAT); }
+        const DRIVE_NEWER_MSG = '新しい版のアプリで書いた日記が Drive にあります。この端末のアプリを更新（開き直し）してから同期してください（古い版のまま同期すると、新しい書式が消えるため止めています）。';
 
         /* JSONの書き出しは「復元可能」と名乗る以上、画像と墓標まで入れる。
            以前は entries だけだったので、このファイルから戻すと写真が全部
@@ -4727,10 +4740,38 @@ function openLinkMenu(a, openEditor) {
 
         // ---- Phase2: mobile-friendly backup share + reminder ----
         // 端末が壊れてもデータを守るため、端末外へワンタップで送れる共有バックアップ。
+        // 用意したバックアップ（共有の画面を出せなかったとき、次に押したらすぐ共有するため。2分だけ持つ）
+        let backupPrepared = null;
+        function iosStandalone() {
+            try {
+                const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+                return ios && (navigator.standalone === true || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
+            } catch (e) { return false; }
+        }
+        /** 押すボタンの付いた知らせ（押した直後に fn を呼ぶ。共有の画面は押した直後でないと出せないため） */
+        function showActionToast(message, label, fn) {
+            const region = document.getElementById('toastRegion') || document.body;
+            const toast = document.createElement('div');
+            toast.className = 'toast warning toast-act-row';
+            toast.setAttribute('role', 'status');
+            const tx = document.createElement('span');
+            tx.textContent = message;
+            const b = document.createElement('button');
+            b.type = 'button'; b.className = 'toast-act'; b.textContent = label;
+            b.addEventListener('click', (e) => { e.stopPropagation(); try { toast.remove(); } catch (x) {} fn(); });
+            toast.appendChild(tx); toast.appendChild(b);
+            region.appendChild(toast);
+            const t2 = setTimeout(() => { try { toast.remove(); } catch (x) {} }, 120000);
+            toast.addEventListener('click', () => { clearTimeout(t2); try { toast.remove(); } catch (x) {} });
+        }
         async function shareBackup() {
             if (appLocked) { openUnlockModal(); return; }
             let text, filename;
-            try {
+            // 直前に用意したものがあれば、待たずにすぐ共有する（押した直後のうちに共有の画面を出す）
+            if (backupPrepared && Date.now() - backupPrepared.at < 120000) {
+                ({ text, filename } = backupPrepared);
+                backupPrepared = null;
+            } else try {
                 const obj = await buildSyncObject(); // 暗号化が有効なら暗号化ブロブ
                 text = JSON.stringify(obj, null, 2);
                 filename = `diary_backup_${localDateStr()}.json`;
@@ -4756,10 +4797,24 @@ function openLinkMenu(a, openEditor) {
                 }
             } catch (err) {
                 if (err && err.name === 'AbortError') return; // ユーザーがキャンセル
+                // 用意（写真を詰める）に時間がかかって「押した直後」でなくなった（iPhone など）。以前はここで
+                // ダウンロードに切り替え、保存されたか分からないまま「バックアップ済み」にしていた（v53）。
+                // 用意したものを取っておき、ボタンを押してもらってすぐ共有する
+                if (err && err.name === 'NotAllowedError') {
+                    backupPrepared = { text, filename, at: Date.now() };
+                    showActionToast('バックアップの用意ができました。「共有する」を押して保存先を選んでください。', '共有する', () => { shareBackup(); });
+                    return;
+                }
                 console.error('共有に失敗、ダウンロードに切替:', err);
             }
             // 2) フォールバック: 通常のダウンロード
             downloadFile(text, filename, 'application/json');
+            // iPhone のホーム画面アプリでは、ダウンロードが保存されないことがある。確かめられないので
+            // 「バックアップ済み」にはしない（督促を消さない）
+            if (iosStandalone()) {
+                showToast('ダウンロードを始めました。ファイルに保存できたか確かめてください（iPhone のホーム画面アプリでは保存されないことがあります）', 'warning');
+                return;
+            }
             markBackupDone();
         }
 
@@ -5307,9 +5362,15 @@ function openLinkMenu(a, openEditor) {
             if (!r.done) showToast(`${r.failed ? `画像${r.failed}枚` : '一部の画像'}の暗号化を解除できませんでした。次に開いたときに続きを行います（空き容量をご確認ください）`, 'error');
             updateEncUI();
             showToast('暗号化を解除しました（平文保存）', 'success');
+            // Drive も平文に書き直す。ふつうの同期と同じく、Drive の分（解除した鍵で開ける）を取り込んで
+            // 混ぜてから書く（v53）。以前は「作り直す」で、この端末の日記だけで置き換えていたため、
+            // ほかの端末でまだ取り込んでいない日記が Drive から一時的に消えていた
             if (autoSyncDriveEnabled) {
-                driveRebuildRemote(true).then(okDrive => {
-                    if (!okDrive) setDriveSyncProblem('Driveの日記が暗号化されたままです。設定の「Driveを作り直す」で揃えてください。');
+                if (drivePushQuietTimer) { clearTimeout(drivePushQuietTimer); drivePushQuietTimer = null; }
+                driveMarkPending();
+                drivePushRun(true).then(() => {
+                    if (drivePushBusy || drivePushPending) return;   // まだ続きがある（終わってから確かめる）
+                    if (loadDriveEnc()) setDriveSyncProblem('Driveの日記が暗号化されたままです。題名の横の「⚠」を押すか、「Driveを作り直す」で揃えてください。');
                 }).catch(() => {});
             }
         }
@@ -5683,11 +5744,19 @@ async function runLimited(items, n, fn) {
 /** 本文で使っている写真のうち、Drive に無いもの・守り方が違うものを送る（diary.json より先に）。
  *  失敗したら投げる（写真が載っていないまま diary.json だけ先に進めない）。
  *  返り値: どこにも無い（この端末にも Drive にも無い）写真の枚数 */
+// 送れなかった写真・ファイルの数（前回の送信）。☁ に「添付の送信待ち」と出す
+let driveAttFailed = 0;
+/* 写真・ファイルを送る。新しく足した1件が送れなくても（遅い回線で大きなファイルが時間切れになったなど）残りは送り、
+   日記の本文（diary.json）も送る（v53）。以前は1件の失敗で全体が止まり、遅い回線の間は本文まで
+   Drive に届かなかった。送れなかった分は、次の同期でもう一度送る（送れていない印を残す）。
+   ログインの期限切れ・権限の不足は、ほかのものも送れないので、これまでどおり全体を止める。
+   返り値: { missing: この端末にも Drive にも無い数, failed: 送れなかった数 } */
 async function drivePushImgs(D, tok, encTo, map) {
   const want = encTo ? encTo.salt : 'plain';
-  let missing = 0;
+  let missing = 0, failed = 0;
   await runLimited([...usedImageIds()], 3, async (id) => {
-    const cur = map[id];
+   const cur = map[id];
+   try {
     if (cur && cur.ks === want) return;
     let blob = null;
     try { const rec = await imgGet(id); blob = rec ? await imgDecode(rec) : null; } catch (e) { blob = null; }
@@ -5700,8 +5769,17 @@ async function drivePushImgs(D, tok, encTo, map) {
     saveDriveImgMap(map);
     // 作り直せてから古いファイルを消す（平文や古い鍵の版を Drive に残さない）
     if (cur && cur.fid && cur.fid !== made.id) await driveRemoveQuiet(D, tok, cur.fid);
+   } catch (e) {
+    // 暗号化の取り違え（平文で置かない守り）とログイン・権限の失敗は、全体を止める。
+    // Drive に前の守り方の写しがあるもの（パスフレーズの変更の途中）も止める。先に diary.json だけを
+    // 新しい鍵にすると、ほかの端末が新しい鍵で開けない写真が残ってしまう（写真を送り終えてから進める）
+    const m = String((e && e.message) || e);
+    if (cur || (e && (e.status === 401 || e.status === 403)) || /REMOTE_|NOKEY|LOCKED|cancelled|BAD_ITER/.test(m)) throw e;
+    console.warn('[diary] Drive へ送れなかった写真・ファイル', id, e);
+    failed++;
+   }
   });
-  return missing;
+  return { missing, failed };
 }
 /** 本文で使っている写真のうち、端末に無い・読めないものを Drive から受け取る（同時に3枚まで）。
  *  返り値: 受け取れなかった枚数 */
@@ -5990,8 +6068,8 @@ function driveUploadEnc(remoteRaw) {
   throw new Error('REMOTE_ENC_NOKEY');
 }
 // 鍵が無いため Drive への保存を止めたときの案内（REMOTE_LOCKED と REMOTE_ENC_NOKEY）
-const DRIVE_LOCKED_MSG = 'Drive上の日記は暗号化されていて、この端末の鍵では開けないため、同期を止めています。設定の「Driveから読み込み」でパスフレーズを入力してください（パスフレーズが分からないときは「Driveを作り直す」）。';
-const DRIVE_NOKEY_MSG = 'Drive上の日記は暗号化されていましたが、この端末には鍵がありません。平文で上書きしないよう、Driveへの保存を止めています。暗号化したまま続けるにはこの端末でも暗号化を有効にし、平文で構わなければ「Driveを作り直す」を使ってください。';
+const DRIVE_LOCKED_MSG = 'Drive上の日記は暗号化されていて、この端末の鍵では開けないため、同期を止めています。題名の横の「⚠」（または ☁ の「日記: Driveから読み込み」）を押して、パスフレーズを入力してください（パスフレーズが分からないときは「Driveを作り直す」）。';
+const DRIVE_NOKEY_MSG = 'Drive上の日記は暗号化されていましたが、この端末には鍵がありません。平文で上書きしないよう、Driveへの保存を止めています。題名の横の「⚠」（または ☁ の「日記: Driveから読み込み」）を押してパスフレーズを入力すると読み込めます。平文で構わなければ「Driveを作り直す」を使ってください。';
 
 // 静かな自動同期でも、データを失いかねない失敗は知らせる（黙って壊れない）。
 // ただし打つたびに出ると邪魔なので、同じ理由は30分に1回まで。
@@ -6048,6 +6126,7 @@ async function drivePullAndMerge(quiet = false) {
         return;
       }
       const raw = await driveDownloadDiaryById(D, tok, ff.id);
+      if (remoteTooNew(raw)) throw new Error('REMOTE_NEWER');
       // 暗号化されているかを控える（開けなくても。次にこの端末から書くとき平文で潰さないため）
       noteDriveEnc(raw);
       let data;
@@ -6087,6 +6166,7 @@ async function drivePullAndMerge(quiet = false) {
       // ただし開いていた日記自体が消えた場合は rebind 側で描き直し済み
       if (!lostCurrent && !isDirty) renderEditor();
       setDriveSyncProblem(null);
+      driveLastErr = null;
       driveNoteSynced();
       if (!quiet || r.added || r.updated) {
         showToast(`Drive: 追加${r.added} 更新${r.updated}` + (d.merged ? ` 同日統合${d.merged}` : ''), 'success');
@@ -6114,7 +6194,12 @@ async function drivePullAndMerge(quiet = false) {
       setDriveSyncProblem(DRIVE_LOCKED_MSG);
       return;
     }
-    if (quiet) return;
+    if (/REMOTE_NEWER/.test(m)) {
+      driveWarn('remoteNewer', DRIVE_NEWER_MSG, quiet);
+      setDriveSyncProblem(DRIVE_NEWER_MSG);
+      return;
+    }
+    if (quiet) { driveLastErr = driveErrMsg(err) || ('Driveから読み込めませんでした: ' + m.slice(0, 60)); return; }
     showToast(m === 'cancelled' ? 'ロック解除をキャンセルしました' : m === 'BAD_ITER' ? BAD_ITER_MSG : (driveErrMsg(err) || 'Drive 読み込み失敗'), m === 'cancelled' ? 'warning' : 'error');
   } finally {
     syncInFlight--;
@@ -6258,6 +6343,7 @@ async function drivePushAllOnce(quiet) {
         console.error('Drive上の diary.json を読めませんでした:', e);
         remoteBroken = true;
       }
+      if (remoteTooNew(rawRemote)) throw new Error('REMOTE_NEWER');
       if (rawRemote) {
         // 開けなければ例外。手動のときはパスフレーズを聞く（聞かずに止めると、再開する手立てが無い）
         noteDriveEnc(rawRemote);
@@ -6319,7 +6405,7 @@ async function drivePushAllOnce(quiet) {
     //    Drive が暗号化されていれば平文では書かない（鍵が無ければここで止まる）
     const encTo = driveUploadEnc(encRef);
     const map = await driveImgMap(D, tok, encTo ? encTo.salt : 'plain', ff.foreign);
-    const missing = await drivePushImgs(D, tok, encTo, map);
+    const { missing, failed: attFailed } = await drivePushImgs(D, tok, encTo, map);
     // ここまで来て足りない写真は、この端末にもDriveにも無いもの。送っても
     // 失われるものは無いので、同期は止めない（止めると二度と保存できなくなる）。
     // ただし本文が画像を指しているのに実体が無い、という事実は伝える
@@ -6340,7 +6426,14 @@ async function drivePushAllOnce(quiet) {
     if (!encTo || encTo.mine) clearDriveReplace();   // Drive はこの端末の設定どおりになった
     markBackupDone();
     setDriveSyncProblem(null);
-    driveClearPending(sentUpTo);
+    // 送れなかった写真・ファイルがあれば、送れていない印を残して次の同期でもう一度送る
+    driveAttFailed = attFailed;
+    if (attFailed) {
+      driveWarn('attUpload', `写真・ファイル${attFailed}件をまだ Drive へ送れていません（通信が遅い・不安定なため）。日記の本文は送りました。次の同期でもう一度送ります`, quiet);
+    } else {
+      driveClearPending(sentUpTo);
+    }
+    driveLastErr = null;
     driveNoteSynced();
     if (remoteBroken) {
       driveWarn('remoteCorrupt', 'Drive上の日記が壊れていたため、この端末の内容で作り直しました', quiet);
@@ -6370,10 +6463,16 @@ async function drivePushAllOnce(quiet) {
     } else if (/REMOTE_ENC_NOKEY/.test(m)) {
       driveWarn('remoteNoKey', 'Drive上の日記は暗号化されています。平文で上書きしないよう、保存を中止しました', quiet);
       setDriveSyncProblem(DRIVE_NOKEY_MSG);
+    } else if (/REMOTE_NEWER/.test(m)) {
+      driveWarn('remoteNewer', DRIVE_NEWER_MSG, quiet);
+      setDriveSyncProblem(DRIVE_NEWER_MSG);
     } else if (/EMPTY_OVERWRITE/.test(m)) {
       driveWarn('emptyOverwrite', 'Driveの日記を空で上書きしそうになったため中止しました', quiet);
       setDriveSyncProblem('Driveへの保存が中止されています（空で上書きしそうになりました）。');
-    } else if (!quiet) {
+    } else if (quiet) {
+      // 静かな同期の失敗も覚えておき、入口の☁に出す（以前は失敗しても「✅」のままだった）
+      driveLastErr = driveErrMsg(err) || ('同期できませんでした: ' + m.slice(0, 60));
+    } else {
       showToast(m === 'cancelled' ? 'ロック解除をキャンセルしました' : m === 'BAD_ITER' ? BAD_ITER_MSG : (driveErrMsg(err) || 'Drive 保存失敗'), m === 'cancelled' ? 'warning' : 'error');
     }
   } finally {
@@ -6509,6 +6608,14 @@ function driveWasConnected() {
   try { return !!localStorage.getItem(DRIVE_SYNCFILE_KEY); } catch (e) { return false; }
 }
 let drivePullLastAt = 0;
+let driveLastErr = null;       // 静かな同期の最後の失敗（入口の☁に出す。うまくいったら消す）
+/** 入口（index.html）の☁に出す、日記帳の同期の困りごと（無ければ null） */
+function diarySyncTrouble() {
+  if (!autoSyncDriveEnabled) return null;
+  const blocked = syncBlockedReason();
+  if (blocked && driveWasConnected()) return blocked;
+  return driveSyncProblem || driveLastErr || (driveAttFailed ? `写真・ファイル${driveAttFailed}件をまだ送れていません（通信が遅いため）` : null);
+}
 let driveOpenBusy = null;      // 開いたときの同期（終わるまでの Promise）
 let driveAskP = null;          // いま頼んでいるログイン
 let driveAskDeclined = false;  // このページで、つなぎ直しを断られた・画面を開けなかった（自分からはもう出さない）
@@ -6594,7 +6701,9 @@ function driveChipTap() {
 function paintDriveChip() {
   const el = document.getElementById('driveChip');
   if (!el) return;
-  const show = autoSyncDriveEnabled && !!driveLib() && driveWasConnected();
+  // 同期が止まっているときは、まだつないだことの無い端末でも出す（押すとパスフレーズを聞いて読み込む）。
+  // 入口の中では設定の「Driveから読み込み」が隠れていて、ほかに手立てが無かった
+  const show = autoSyncDriveEnabled && !!driveLib() && (driveWasConnected() || !!driveSyncProblem);
   el.hidden = !show;
   if (!show) return;
   const pend = drivePendingAt();
@@ -6606,6 +6715,9 @@ function paintDriveChip() {
   } else if (!driveHasToken()) {
     txt = pend ? '☁ 未送信あり（押して同期）' : '☁ 押して同期'; cls = 'need';
     tip = 'Googleのログインが切れています（1時間で切れます）。押すとつなぎ直して同期します';
+  } else if (driveAttFailed) {
+    txt = '☁ 添付の送信待ち'; cls = 'need';
+    tip = '写真・ファイル' + driveAttFailed + '件をまだ送れていません（通信が遅いため）。日記の本文は送りました。押すともう一度送ります';
   } else if (pend) {
     txt = '☁ 送信待ち'; cls = 'busy'; tip = 'まもなく Google ドライブへ送ります';
   } else {
@@ -6761,6 +6873,12 @@ window.addEventListener('message', (e) => {
          && typeof window.driveWasConnected==='function' && window.driveWasConnected())
         return {phase:'error', at:lb?new Date(lb).getTime():0, msg:'未送信の日記があります（「今すぐ全部同期」で送れます）'};
     }catch(e){}
+    // 同期が止まっている・失敗している（ロック中・暗号化の鍵・通信・送れていない添付）。以前は
+    // 最後のバックアップの日付だけを見ていて、失敗していても「✅」と出ていた（v53）
+    try{
+      var tr = typeof window.diarySyncTrouble==='function' ? window.diarySyncTrouble() : null;
+      if(tr) return {phase:'error', at:lb?new Date(lb).getTime():0, msg:String(tr).slice(0,120)};
+    }catch(e){}
     if(!autoOn() && !lb) return {phase:'off', at:0, msg:''};
     var at=lb?new Date(lb).getTime():0;
     var days=at?Math.floor((Date.now()-at)/86400000):999;
@@ -6804,6 +6922,12 @@ window.addEventListener('message', (e) => {
     // シェルの☁パネルから移設した操作
     if(d.nkSync==='markdown'){ try{ window.exportMarkdown(); }catch(err){} return; }
     if(d.nkSync==='share'){ try{ window.shareBackup(); }catch(err){} return; }
+    // 困ったとき用（入口の☁から）。トークンは入口がクリックの中で取ってある（ここは押した直後ではないため）
+    if(d.nkSync==='drivePull'){
+      try{ Promise.resolve(window.drivePullAndMerge(false)).then(function(){ if(window.driveHasToken && window.driveHasToken()) return window.drivePushRun(true); }).then(report, report); }catch(err){}
+      return;
+    }
+    if(d.nkSync==='driveRebuild'){ try{ Promise.resolve(window.driveRebuildRemote(false)).then(report, report); }catch(err){} return; }
     if(d.nkSync==='security'){ try{ window.openSecurityModal(); }catch(err){} setTimeout(reportEnc,400); return; }
     if(d.nkSync==='cid'){
       try{ localStorage.removeItem('shared:gd:token'); }catch(err){}

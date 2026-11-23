@@ -263,7 +263,13 @@ async function resurrection(pullFails) {
   gt.tasks.delete("G2");
   if (pullFails) drive.expireAll();
   await gtClickAndWait(B.page);
-  if (pullFails) drive.renew();
+  if (pullFails) {
+    drive.renew();
+    // v53: Drive に断られてトークンが捨てられたあとは、自動ではログイン画面を出さない（本物のブラウザでは
+    // 押した直後でないと止められる）。画面を押すと、つなぎ直して同期する
+    await sleep(3500);
+    await B.page.click("h1");
+  }
   if (!pullFails) c.ok(!(await lsTasks(B.page)).items.some((x) => x.id === "tx1"), "同期の前に取り込んだ墓標で、消したタスクはもう無い");
   await sleep(4500);   // 後のDrive同期
   await waitFor(() => B.page.evaluate(() => !/同期しています/.test(document.getElementById("syncMsg").textContent)), { label: "Drive同期の終わり" });

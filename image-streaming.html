@@ -581,14 +581,42 @@
     return a;
   }
 
+  /* ---------- 知らせ（保存できなかったときなど。v53） ---------- */
+  function isToast(msg, ms){
+    var el = document.getElementById("isToast");
+    if(!el){
+      el = document.createElement("div");
+      el.id = "isToast";
+      el.setAttribute("role", "alert");
+      el.style.cssText = "position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);max-width:min(92vw,520px);background:#3a2f28;color:#fff;padding:10px 14px;border-radius:10px;font-size:14px;line-height:1.6;z-index:9999;box-shadow:0 6px 20px rgba(0,0,0,.25);display:none";
+      el.addEventListener("click", function(){ el.style.display = "none"; });
+      (document.body || document.documentElement).appendChild(el);
+    }
+    el.textContent = msg; el.style.display = "block";
+    clearTimeout(isToast._t); isToast._t = setTimeout(function(){ el.style.display = "none"; }, ms || 9000);
+  }
+  var storeWarnAt = 0;
+  function storeWarn(){
+    if(Date.now() - storeWarnAt < 10 * 60 * 1000) return;   // 続けて出さない（10分に1回）
+    storeWarnAt = Date.now();
+    setTimeout(function(){ isToast("端末の保存容量がいっぱいで、記録を保存できませんでした。このまま閉じると消えることがあります（Googleドライブに同期できていれば残ります）。日記帳・気になり帳の画像や不要なデータを減らしてください。", 12000); }, 0);
+  }
+
   /* ---------- storage (localStorage with safe fallback) ---------- */
   var store = (function(){
     var mem = {}, ok = false;
     try { var k = "__t" + Math.random(); localStorage.setItem(k, "1"); localStorage.removeItem(k); ok = true; } catch(e){ ok = false; }
     return {
       persistent: ok,
-      get: function(key){ try { if(ok) return localStorage.getItem(key); } catch(e){} return (key in mem) ? mem[key] : null; },
-      set: function(key,val){ try { if(ok){ localStorage.setItem(key,val); return; } } catch(e){} mem[key] = val; },
+      // 書けなかった最新の値（mem）を先に読む。以前は書けなかったときも端末の古い値を読んでいて、
+      // 記録したはずの練習が、開き直すと消えていた（v53）
+      get: function(key){ if(key in mem) return mem[key]; try { if(ok) return localStorage.getItem(key); } catch(e){} return null; },
+      set: function(key,val){
+        try { if(ok){ localStorage.setItem(key,val); delete mem[key]; return true; } } catch(e){}
+        mem[key] = val;
+        if(ok) storeWarn();   // 書けるはずの端末で書けなかった＝容量がいっぱい。黙らずに知らせる
+        return false;
+      },
       remove: function(key){ try { if(ok){ localStorage.removeItem(key); return; } } catch(e){} delete mem[key]; }
     };
   })();
@@ -1220,6 +1248,8 @@
       });
     }).then(function(ok){ renderAudioBits(); return ok; }, function(){ return false; });
   }
+  // 録音を置けなかった（空き容量・この端末の制限）ことは知らせる。以前は黙って失われていた（v53）
+  function audioWarn(ok){ if(ok === false) isToast("録音を端末に保存できませんでした（空き容量をご確認ください）。記録そのものは残っています。", 9000); }
   function audioGet(key){
     return adbRun(["clips"], "readonly", function(tx, out){
       var rq = tx.objectStore("clips").get(key);
@@ -1453,7 +1483,7 @@
     var key = S.doneKey, pend = S.pending;
     rec.then(function(parts){
       if(!parts || !parts.length) return;
-      if(key){ if(findRec(key)) audioPut(key, parts, sec); }   // 書き終える前に消した記録には置かない
+      if(key){ if(findRec(key)) audioPut(key, parts, sec).then(audioWarn); }   // 書き終える前に消した記録には置かない
       else if(S.pending === pend) pend.audio = parts;          // 記録していない回は、「記録する」を押したときに置く
     });
   }
@@ -1472,7 +1502,7 @@
     var p = S.pending;
     var key = addRecord({ sec: p.sec, scene: p.scene, vivid: S.rating, note: ($("noteEl").value || "").trim(),
                           image: ($("imgEl").value || "").trim(), meaning: ($("meanEl").value || "").trim() });
-    if(p.audio && p.audio.length) audioPut(key, p.audio, p.sec);
+    if(p.audio && p.audio.length) audioPut(key, p.audio, p.sec).then(audioWarn);
     closeDone();
   }
 

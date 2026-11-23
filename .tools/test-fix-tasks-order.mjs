@@ -115,7 +115,9 @@ async function dragGrip(page, fromTitle, toTitle, { after = false, steps = 8 } =
   const { ctx, page } = await open({ items });
   await dragGrip(page, "G2のタスク", "G1のタスク");
   const st = await stored(page);
-  c.ok(st.every((x) => x.updatedAt === x.gtSyncedAt && x.updatedAt > now - 60000), "並べ替えたタスクも「Googleタスクとそろっている」のまま（送り直さない）", st.map((x) => [x.updatedAt, x.gtSyncedAt]));
+  // v53: 並べ替えは中身の更新時刻（updatedAt）を進めず、並べた時刻（ordAt）だけを記録する
+  // （進めると、まだ取り込んでいないほかの端末での完了・削除を上書きしていた）
+  c.ok(st.every((x) => x.updatedAt === x.gtSyncedAt && x.updatedAt < now - 60000 && typeof x.ordAt === "number" && x.ordAt > now - 60000), "並べ替えても中身の更新時刻は変えず（Googleタスクとそろっている印もそのまま）、並べた時刻だけを記録する", st.map((x) => [x.updatedAt, x.gtSyncedAt, x.ordAt]));
   await ctx.close();
 }
 

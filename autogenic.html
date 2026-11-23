@@ -375,8 +375,12 @@ var store=(function(){
       return null;
     },
     set:function(k,v){
-      try{ if(ok){ localStorage.setItem(k,v); delete mem[k]; return; } }catch(e){}
+      try{ if(ok){ localStorage.setItem(k,v); delete mem[k]; return true; } }catch(e){}
       mem[k]=v;
+      // 書けるはずの端末で書けなかった＝容量がいっぱい。黙らずに知らせる（v53。以前は、記録や
+      // 「練習中」の控えが書けなくても何も出ず、開き直すと記録が消え、消去動作の案内も出なかった）
+      if(ok)setTimeout(storeWarn,0);
+      return false;
     },
     del:function(k){ try{ if(ok)localStorage.removeItem(k); }catch(e){} delete mem[k]; }
   };
@@ -384,6 +388,12 @@ var store=(function(){
 // 属性値にもそのまま差し込めるよう " と ' も潰す。
 // 台本は取り込み・同期で外から入ってくるので、id や文もエスケープが要る。
 function esc(t){return String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
+var storeWarnAt=0;
+function storeWarn(){
+  if(Date.now()-storeWarnAt<10*60*1000)return;   // 続けて出さない（10分に1回）
+  storeWarnAt=Date.now();
+  try{ toast("端末の保存容量がいっぱいで、記録を保存できませんでした。このまま閉じると消えることがあります（Googleドライブに同期できていれば残ります）。日記帳・気になり帳の画像や不要なデータを減らしてください。",12000); }catch(e){}
+}
 function toast(m,ms){var e=$("toast");e.textContent=m;e.style.display="block";clearTimeout(toast._t);toast._t=setTimeout(function(){e.style.display="none";},ms||3800);}
 
 /* ══════ 台本 ══════
@@ -967,7 +977,8 @@ var SOUND_FILE={brown:"audio/brown.wav",pink:"audio/pink.wav",rain:"audio/rain.w
 var SOUND_NAME={brown:"ブラウンノイズ",pink:"ピンクノイズ",rain:"雨・シャワー"};
 var embedded=(function(){try{return window.top!==window.self;}catch(e){return true;}})();
 var bgA=$("bgAudio");
-function bgPost(m){try{parent.postMessage({nkSound:m},"*");}catch(e){}}
+// 宛先は同じサイトの入口だけにする（"*" だと、ほかのサイトに埋め込まれたとき合図がそちらへ漏れる。v53）
+function bgPost(m){try{parent.postMessage({nkSound:m},location.origin);}catch(e){}}
 /* くつろぎ自身が鳴らした音か。シェルの再生器は「音」タブと共用なので、止める・音量を変えるのは
    自分で鳴らした音のときだけにする。でないと、背景の音を「なし」にしていても、練習の終わりや
    試聴をやめたときに、音タブで流している音楽まで止めてしまう。 */
