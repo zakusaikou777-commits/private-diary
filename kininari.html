@@ -706,8 +706,17 @@ function normalizeMemo(m) {
   // Recall と最後に合わせた分類の名前（"" は未分類）。無い＝まだ一度も合わせていない。
   // 文字列でないもの（他端末から来た変な値）は「無い」として扱う（recallPlan の判断が狂わないように）
   if (typeof m.rc === "string") o.rc = m.rc.trim().slice(0, 100);else delete o.rc;
+  // 「自分で並べた順」での位置（小さいほど上。v52）。数でないもの（他端末から来た変な値）は持たない
+  if (typeof m.ord === "number" && Number.isFinite(m.ord)) o.ord = m.ord;else delete o.ord;
   return o;
 }
+/** 「自分で並べた順」の並びの値（小さいほど上）。まだ並べていないメモは、新しいものほど上に来るよう
+ *  作った時刻から決める（あとから書いたメモは、並べた一覧のいちばん上に入る） */
+function memoOrdKey(m) {
+  return typeof m.ord === "number" && Number.isFinite(m.ord) ? m.ord : -(Number(m.createdAt) || 0);
+}
+/** 並べ替えのドラッグ中（ノート表示のページは、左のフォルダへ動かすドラッグも持っているので、そちらを始めない） */
+let knRoDragging = false;
 function normalizeFolder(f, i) {
   f = f && typeof f === "object" && !Array.isArray(f) ? f : {};
   const o = {
@@ -2675,8 +2684,20 @@ function MemoCard({
   onTagClick,
   onSetGcal,
   onToast,
-  onOpenNote
+  onOpenNote,
+  rank,
+  onRank
 }) {
+  // 「自分で並べた順」の番号（優先順位）。押すと番号を打ち込んで動かせる
+  const [rankEdit, setRankEdit] = useState(false);
+  const rankDone = useRef(false);
+  const commitRank = v => {
+    if (rankDone.current) return;
+    rankDone.current = true;
+    setRankEdit(false);
+    const n = parseInt(String(v || "").replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0) - 0xFEE0)), 10);
+    if (Number.isFinite(n) && n !== rank && onRank) onRank(n);
+  };
   const [editing, setEditing] = useState(false);
   const [t, setT] = useState(memo.title);
   const [b, setB] = useState(memo.body);
@@ -2894,6 +2915,7 @@ function MemoCard({
   }
   return wrapFull(React.createElement("div", {
     className: "card" + (memo.done ? " done" : "") + (memo.pinned ? " pinned" : "") + (fresh ? " fresh" : "") + (full ? " in-full" : ""),
+    "data-ro-id": rank != null && !full ? memo.id : undefined,
     style: {
       "--c": catColor(memo.category)
     },
@@ -2902,7 +2924,7 @@ function MemoCard({
     onClick: e => {
       if (full) return;
       const t2 = e.target;
-      if (t2.closest && t2.closest("button,a,input,label,select,textarea,img,.check,.pin,.lightbox,[contenteditable]")) return;
+      if (t2.closest && t2.closest("button,a,input,label,select,textarea,img,.check,.pin,.lightbox,.ro-grip,[contenteditable]")) return;
       // 文字をなぞってコピーしようとしただけで開いてしまわないように。
       // ドラッグで選んだ直後は click も飛んでくるので、選択が残っていたら開かない。
       try {
@@ -2913,7 +2935,35 @@ function MemoCard({
     }
   }, React.createElement("div", {
     className: "card-top"
-  }, React.createElement("button", {
+  }, rank != null && !full && React.createElement("span", {
+    className: "ro-grip",
+    role: "button",
+    tabIndex: 0,
+    title: "つかんで動かすと並べ替えます（矢印キーでも動かせます）",
+    "aria-label": rank + "番目。つかんで動かすか、矢印キーで並べ替えます"
+  }, "\u283F"), rank != null && !full && (rankEdit ? React.createElement("input", {
+    className: "ro-num-in",
+    // type="number" だと、日本語入力の全角数字（１２３）を受け付けない。文字の欄にして数字のキーボードを出す
+    type: "text",
+    inputMode: "numeric",
+    pattern: "[0-9０-９]*",
+    maxLength: 5,
+    defaultValue: rank,
+    autoFocus: true,
+    "aria-label": "何番目にするか",
+    onFocus: e => { try { e.target.select(); } catch (x) {} },
+    onClick: e => e.stopPropagation(),
+    onKeyDown: e => {
+      if (e.key === "Enter") { e.preventDefault(); commitRank(e.target.value); }
+      else if (e.key === "Escape") { e.preventDefault(); rankDone.current = true; setRankEdit(false); }
+    },
+    onBlur: e => commitRank(e.target.value)
+  }) : React.createElement("button", {
+    className: "ro-num",
+    title: "優先順位の番号。押すと番号を変えて、その位置へ動かします",
+    "aria-label": rank + "番目。押すと番号を変えます",
+    onClick: e => { e.stopPropagation(); rankDone.current = false; setRankEdit(true); }
+  }, rank)), React.createElement("button", {
     className: "check" + (memo.done ? " on" : ""),
     onClick: () => onToggleDone(memo.id),
     "aria-label": "\u5B8C\u4E86"
@@ -6316,7 +6366,7 @@ function NoteSections({ folders, counts, sel, expanded, onToggle, onSelect, onAc
       }, "＋ 新しいノートブック")));
 }
 /* ── 中: ページの一覧 ─────────────────────────────────────── */
-function NotePages({ pages, selId, folders, showFolder, onSelect, onAdd, searchEl, filtersEl, filterOn }) {
+function NotePages({ pages, selId, folders, showFolder, onSelect, onAdd, searchEl, filtersEl, filterOn, ranked }) {
   const [fOpen, setFOpen] = useState(false);
   const fById = useMemo(() => new Map(folders.map(f => [f.id, f])), [folders]);
   return React.createElement("section", { className: "npg", "aria-label": "ページの一覧" },
@@ -6334,23 +6384,31 @@ function NotePages({ pages, selId, folders, showFolder, onSelect, onAdd, searchE
       title: "いま開いているフォルダに新しいページを作る",
       onClick: onAdd
     }, "＋ ページの追加"),
-    React.createElement("div", { className: "npg-list" }, pages.length === 0 ? React.createElement("p", { className: "npg-empty" }, "ページがありません。\n「＋ ページの追加」で作れます。") : pages.map(m => {
+    React.createElement("div", { className: "npg-list", "data-ro-list": ranked ? "note" : undefined }, pages.length === 0 ? React.createElement("p", { className: "npg-empty" }, "ページがありません。\n「＋ ページの追加」で作れます。") : pages.map((m, i) => {
       const f = showFolder && m.notebookId ? fById.get(m.notebookId) : null;
       return React.createElement("button", {
         key: m.id,
         type: "button",
         className: "npg-item" + (m.id === selId ? " on" : "") + (m.done ? " done" : ""),
         "aria-current": m.id === selId ? "page" : undefined,
+        "data-ro-id": ranked ? m.id : undefined,
         draggable: true,
-        title: "押すと開きます。左のフォルダへドラッグすると移動します",
+        title: ranked ? "押すと開きます。⠿ をつかむと並べ替え（Alt＋↑↓でも）、ほかの所をつかんで左のフォルダへ動かすと移動します" : "押すと開きます。左のフォルダへドラッグすると移動します",
         onDragStart: e => {
+          // ⠿ で並べ替えている最中は、フォルダへ動かすドラッグを始めない
+          if (knRoDragging) { e.preventDefault(); return; }
           try {
             e.dataTransfer.setData(KN_PAGE_DND, m.id);
             e.dataTransfer.effectAllowed = "move";
           } catch (x) {}
         },
-        onClick: () => onSelect(m.id)
+        onClick: e => {
+          if (e.target && e.target.closest && e.target.closest(".ro-grip")) return;
+          onSelect(m.id);
+        }
       }, React.createElement("span", { className: "npg-t" + (m.title ? "" : " untitled") },
+        ranked && React.createElement("span", { className: "ro-grip sm", "aria-hidden": "true", title: "つかんで動かすと並べ替えます" }, "\u283F"),
+        ranked && React.createElement("span", { className: "ro-num sm", "aria-label": (i + 1) + "番目" }, i + 1),
         m.pinned && React.createElement("span", { className: "pinmark sm" }, React.createElement(PinIcon, null)),
         React.createElement("span", { className: "npg-tt" }, m.title || "（無題）")),
       React.createElement("span", { className: "npg-d" }, noteShortDate(m.createdAt),
@@ -6467,7 +6525,7 @@ function ViewSwitch({ mode, onChange }) {
     b("note", "ノート表示", "フォルダ・ページの一覧・ページの中身を並べて見る（OneNote のような表示）"));
 }
 /* ── ノート表示の全体（3つの面）──────────────────────────────── */
-function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpand, onExpand, sel, onSel, pages, page, freshId, searching, h, head, searchEl, filtersEl, filterOn, wide, loading }) {
+function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpand, onExpand, sel, onSel, pages, page, freshId, searching, h, head, searchEl, filtersEl, filterOn, wide, loading, ranked }) {
   const [w, setW] = useState(noteWidthsGet);
   const drag0 = useRef(0);
   const [lc, setLc] = useState(() => noteGet("lc", false) === true);
@@ -6552,7 +6610,8 @@ function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpa
     onAdd: h.addPage,
     searchEl,
     filtersEl,
-    filterOn
+    filterOn,
+    ranked
   });
   const pageEl = page ? React.createElement(NotePage, {
     key: page.id,
@@ -6696,7 +6755,15 @@ function App() {
   const [includeSub, setIncludeSub] = useState(false);
   const [catFilter, setCatFilter] = useState("all");
   const [tagFilter, setTagFilter] = useState(null);
-  const [sort, setSort] = useState("created");
+  // 並べ方は端末に覚えておく（以前は開くたびに「新しい順」へ戻っていた。「自分で並べた順」を選んでも続かない）
+  const [sort, setSortState] = useState(() => {
+    try { const v = localStorage.getItem("kininari:sort"); return v === "date" || v === "manual" ? v : "created"; } catch (e) { return "created"; }
+  });
+  const setSort = v => {
+    const nv = v === "date" || v === "manual" ? v : "created";
+    setSortState(nv);
+    try { localStorage.setItem("kininari:sort", nv); } catch (e) {}
+  };
   const [hideDone, setHideDone] = useState(false);
   // "" = ふつうの一覧 / "due" = 今日の復習 / "learning" = 覚え中（復習に入れているもの全部）
   const [revFilter, setRevFilter] = useState("");
@@ -8184,6 +8251,7 @@ function App() {
       list.sort((a, b) => {
         if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
         if (sort === "date" && dval(a) !== dval(b)) return dval(a) - dval(b);
+        if (sort === "manual") { const ka = memoOrdKey(a), kb = memoOrdKey(b); if (ka !== kb) return ka - kb; }
         return b.createdAt - a.createdAt;
       });
     }
@@ -8315,6 +8383,146 @@ function App() {
   }, [noteMode, memos, folders, noteSel.f, catFilter, tagFilter, hideDone, q, sort, searching, revFilter, reviewTick]);
   // 選んでいたページ（消えていたら一覧の先頭）
   const notePage = noteMode ? (noteSel.p && memos.find(m => m.id === noteSel.p)) || notePages[0] || null : null;
+  /* ── 自分で並べた順（優先順位の番号・v52）──────────────────────────────
+     並べ方で「自分で並べた順（番号）」を選ぶと、カード・ページに 1, 2, 3… の番号が付き、
+     ⠿ をつかんで動かす（マウス・指）、矢印キー、番号を打ち込む、のどれでも並べ替えられる。
+     位置はメモの ord に持つ（小さいほど上）。動かしたメモは updatedAt が進むので、ほかの端末にも同期する。
+     いま見えている一覧（フォルダ・分類・タグ・検索で絞った中）での並べ替えで、見えている分が使っていた
+     ord の値を並べ直すだけにする（見えていないメモとの前後は変えない）。ピン留めは上にまとまったまま
+     （ピンの組をまたいでは動かさない）。復習の一覧は「次にやる順」なので、番号は付けない。 */
+  const manualOn = sort === "manual" && !revFilter;
+  const roLists = useRef({ card: [], note: [] });
+  roLists.current = { card: manualOn ? visible : [], note: manualOn ? notePages : [] };
+  const moveInOrder = (listName, id, toIdx) => {
+    const list = roLists.current[listName] || [];
+    const from = list.findIndex(m => m.id === id);
+    if (from < 0 || !Number.isFinite(toIdx)) return false;
+    const nPin = list.filter(m => m.pinned).length;
+    const pinned = !!list[from].pinned;
+    const lo = pinned ? 0 : nPin, hi = pinned ? nPin - 1 : list.length - 1;
+    const to = Math.max(lo, Math.min(hi, Math.round(toIdx)));
+    if (to !== Math.round(toIdx) && !pinned && toIdx < lo) {
+      setToast({ title: "ピン留めしたメモより上には動かせません", body: "ピンを外すと、いちばん上にも動かせます。" });
+    }
+    if (to === from) return false;
+    const group = list.slice(lo, hi + 1);
+    // 見えている分が使っている値を、上から順に並べ直して割り当てる（同じ値が並ぶときは1ずつずらす）
+    const slots = group.map(memoOrdKey).sort((a, b) => a - b);
+    for (let k = 1; k < slots.length; k++) if (slots[k] <= slots[k - 1]) slots[k] = slots[k - 1] + 1;
+    const next = group.slice();
+    const [mv] = next.splice(from - lo, 1);
+    next.splice(to - lo, 0, mv);
+    const ordOf = new Map();
+    next.forEach((m, k) => { if (memoOrdKey(m) !== slots[k] || typeof m.ord !== "number") ordOf.set(m.id, slots[k]); });
+    if (!ordOf.size) return false;
+    // ノート表示でページを選んでいない（先頭を出している）ときは、いま出ているページを開いたままにする。
+    // 先頭のページを動かすと、右に出るページが入れ替わってしまうため
+    if (listName === "note" && notePage && noteSel.p !== notePage.id) setNoteSel({ ...noteSel, p: notePage.id });
+    // 画面の state ではなく、いま保存されている内容に当てる（同期やノートの自動保存と食い違わない）
+    const live = readLive();
+    if (!live.ok) return false;
+    return persistRef.current(live.memos.map(m => ordOf.has(m.id) ? { ...m, ord: ordOf.get(m.id) } : m), live.folders);
+  };
+  const moveRef = useRef(null);
+  moveRef.current = moveInOrder;
+  // ⠿ のドラッグ（マウス・ペン・指）と矢印キー。カードの一覧もノートのページ一覧も、ここで受ける
+  useEffect(() => {
+    let drag = null;
+    const clearMarks = () => {
+      document.querySelectorAll(".ro-before,.ro-after,.ro-dragging").forEach(el => el.classList.remove("ro-before", "ro-after", "ro-dragging"));
+      document.querySelectorAll(".ro-x").forEach(el => el.classList.remove("ro-x"));
+    };
+    const idsIn = listEl => Array.from(listEl.querySelectorAll("[data-ro-id]")).map(el => el.getAttribute("data-ro-id"));
+    const onDown = e => {
+      const grip = e.target && e.target.closest && e.target.closest(".ro-grip");
+      if (!grip || (e.pointerType === "mouse" && e.button !== 0)) return;
+      const item = grip.closest("[data-ro-id]"), listEl = grip.closest("[data-ro-list]");
+      if (!item || !listEl) return;
+      e.preventDefault();   // 文字の選択やスクロールを始めない
+      knRoDragging = true;
+      drag = { id: item.getAttribute("data-ro-id"), list: listEl.getAttribute("data-ro-list"), listEl, item, pid: e.pointerId, x0: e.clientX, y0: e.clientY, moved: false, target: null, after: false };
+      try { grip.setPointerCapture(e.pointerId); } catch (x) {}
+    };
+    const onMove = e => {
+      if (!drag || e.pointerId !== drag.pid) return;
+      if (!drag.moved) {
+        if (Math.abs(e.clientX - drag.x0) + Math.abs(e.clientY - drag.y0) < 5) return;
+        drag.moved = true;
+        drag.item.classList.add("ro-dragging");
+        // カードが横にも並んでいる（PC のカード表示）ときは、左右で前後を決める
+        const r0 = drag.item.getBoundingClientRect(), lr = drag.listEl.getBoundingClientRect();
+        drag.grid = r0.width < lr.width * 0.6;
+        if (drag.grid) drag.listEl.classList.add("ro-x");
+      }
+      e.preventDefault();
+      document.querySelectorAll(".ro-before,.ro-after").forEach(el => el.classList.remove("ro-before", "ro-after"));
+      drag.target = null;
+      const hit = document.elementFromPoint(e.clientX, e.clientY);
+      const over = hit && hit.closest && hit.closest("[data-ro-id]");
+      if (over && over !== drag.item && drag.listEl.contains(over)) {
+        const r = over.getBoundingClientRect();
+        const after = drag.grid ? e.clientX > r.left + r.width / 2 : e.clientY > r.top + r.height / 2;
+        over.classList.add(after ? "ro-after" : "ro-before");
+        drag.target = over.getAttribute("data-ro-id");
+        drag.after = after;
+      }
+      // 端に近づいたら送る（ページの一覧は一覧の中、カードは画面）
+      const sc = drag.listEl.classList.contains("npg-list") ? drag.listEl : null;
+      const top = sc ? sc.getBoundingClientRect().top : 0, bottom = sc ? sc.getBoundingClientRect().bottom : window.innerHeight;
+      const dy = e.clientY < top + 48 ? -14 : e.clientY > bottom - 48 ? 14 : 0;
+      if (dy) { if (sc) sc.scrollTop += dy; else window.scrollBy(0, dy); }
+    };
+    const onUp = e => {
+      if (!drag || e.pointerId !== drag.pid) return;
+      const d = drag;
+      drag = null;
+      clearMarks();
+      setTimeout(() => { knRoDragging = false; }, 0);
+      if (e.type === "pointercancel" || !d.moved || !d.target) return;
+      const ids = idsIn(d.listEl);
+      const from = ids.indexOf(d.id);
+      let to = ids.indexOf(d.target);
+      if (from < 0 || to < 0) return;
+      if (d.after) to++;
+      if (to > from) to--;
+      if (moveRef.current) moveRef.current(d.list, d.id, to);
+    };
+    const onKey = e => {
+      const t = e.target;
+      if (!t || !t.closest) return;
+      const dir = e.key === "ArrowUp" || e.key === "ArrowLeft" ? -1 : e.key === "ArrowDown" || e.key === "ArrowRight" ? 1 : 0;
+      if (!dir) return;
+      // カードは ⠿ に移って矢印キー。ノートのページは、選んだページで Alt＋矢印
+      const grip = t.closest(".ro-grip");
+      const item = grip ? grip.closest("[data-ro-id]") : (e.altKey && t.matches && t.matches(".npg-item[data-ro-id]") ? t : null);
+      const listEl = item && item.closest("[data-ro-list]");
+      if (!item || !listEl) return;
+      e.preventDefault();
+      const id = item.getAttribute("data-ro-id");
+      const from = idsIn(listEl).indexOf(id);
+      if (from < 0 || !moveRef.current) return;
+      moveRef.current(listEl.getAttribute("data-ro-list"), id, from + dir);
+      // 動かしたあとも、同じカードの ⠿ に居つづける（React は同じ key の要素を使い回すので、ふつうは自然に残る）
+      requestAnimationFrame(() => {
+        const sel = (grip ? ".ro-grip" : "");
+        const back = document.querySelector('[data-ro-list="' + listEl.getAttribute("data-ro-list") + '"] [data-ro-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
+        const f = back && (sel ? back.querySelector(sel) : back);
+        if (f && document.activeElement !== f) { try { f.focus({ preventScroll: false }); } catch (x) {} }
+      });
+    };
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("pointermove", onMove, { passive: false });
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, []);
   /** ＋ページの追加: 開いているフォルダに、題名の空のページを作って開く（絞り込み中の分類・タグも付ける） */
   const addPage = () => {
     const fid = folders.some(x => x.id === noteSel.f) ? noteSel.f : null;
@@ -8395,7 +8603,8 @@ function App() {
       "aria-label": "検索をやめる",
       onClick: () => setQ("")
     }, "×"));
-  const noteFilterOn = catFilter !== "all" || !!tagFilter || hideDone || sort !== "created";
+  // 「自分で並べた順」は絞り込みではなく、覚えておく並べ方なので「絞り込み中」には数えない
+  const noteFilterOn = catFilter !== "all" || !!tagFilter || hideDone || sort === "date";
   const noteFiltersEl = noteMode && React.createElement("div", { className: "nv-filters" },
     React.createElement("select", {
       value: catFilter,
@@ -8415,7 +8624,7 @@ function App() {
       title: "並べ方",
       "aria-label": "並べ方",
       onChange: e => setSort(e.target.value)
-    }, React.createElement("option", { value: "created" }, "新しい順"), React.createElement("option", { value: "date" }, "日付が近い順")),
+    }, React.createElement("option", { value: "created" }, "新しい順"), React.createElement("option", { value: "date" }, "日付が近い順"), React.createElement("option", { value: "manual" }, "自分で並べた順（番号）")),
     React.createElement("label", { className: "check-toggle" },
       React.createElement("input", { type: "checkbox", checked: hideDone, onChange: e => setHideDone(e.target.checked) }), "完了を隠す"));
   const noteHead = noteMode && React.createElement("header", { className: "nv-head" },
@@ -8472,7 +8681,8 @@ function App() {
     filtersEl: noteFiltersEl,
     filterOn: noteFilterOn,
     wide: noteWide,
-    loading
+    loading,
+    ranked: manualOn
   });
   return React.createElement("div", {
     className: "wrap" + (noteMode ? " nv-mode" : "")
@@ -8695,7 +8905,9 @@ function App() {
     value: "created"
   }, "\u65B0\u3057\u3044\u9806"), React.createElement("option", {
     value: "date"
-  }, "\u65E5\u4ED8\u304C\u8FD1\u3044\u9806")))), subFolders.length > 0 && React.createElement("section", {
+  }, "\u65E5\u4ED8\u304C\u8FD1\u3044\u9806"), React.createElement("option", {
+    value: "manual"
+  }, "自分で並べた順（番号）")))), subFolders.length > 0 && React.createElement("section", {
     className: "folders-list"
   }, subFolders.map(f => React.createElement(FolderRow, {
     key: f.id,
@@ -8704,8 +8916,11 @@ function App() {
     subCount: childrenOf(f.id).length,
     onOpen: () => setActiveFolder(f.id),
     onActions: () => setActionsId(f.id)
-  }))), React.createElement("section", {
-    className: "list"
+  }))), manualOn && visible.length > 1 && React.createElement("p", {
+    className: "ro-hint"
+  }, "⠿ をつかんで動かすか、番号を押して入れ替えます。ピン留めしたメモは上にまとまります。"), React.createElement("section", {
+    className: "list",
+    "data-ro-list": manualOn ? "card" : undefined
   }, loading ? React.createElement("div", {
     className: "empty"
   }, React.createElement("p", null, "\u3088\u307F\u3053\u307F\u4E2D\u2026")) : visible.length === 0 ? React.createElement("div", {
@@ -8732,7 +8947,9 @@ function App() {
       gcalEventId: eid
     }),
     onToast: setToast,
-    onOpenNote: setNoteOverlay
+    onOpenNote: setNoteOverlay,
+    rank: manualOn ? visible.indexOf(m) + 1 : null,
+    onRank: n => moveInOrder("card", m.id, n - 1)
   }))), React.createElement("footer", {
     className: "foot"
   }, "\u30E1\u30E2\u306F\u3053\u306E\u30D6\u30E9\u30A6\u30B6\u5185\u306B\u4FDD\u5B58\u3055\u308C\u3001\u6B21\u306B\u958B\u3044\u305F\u3068\u304D\u3082\u6B8B\u308A\u307E\u3059\u3002"))), !noteMode && drawerOpen && React.createElement(FolderDrawer, {
@@ -9465,6 +9682,21 @@ button.gcal { cursor:pointer; font-family:inherit; }
 .npg-f { display:inline-flex; align-items:center; gap:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .npg-f .dot { width:7px; height:7px; border-radius:50%; background:var(--c); flex:none; }
 .npg-due { color:#7c5aff; font-weight:700; }
+/* 自分で並べた順（v52）: ⠿ のつまみ・番号・ドラッグ中の印 */
+.ro-grip { display:inline-flex; align-items:center; justify-content:center; width:24px; height:28px; margin:-3px 0; border-radius:7px; color:var(--soft); cursor:grab; touch-action:none; user-select:none; -webkit-user-select:none; font-size:16px; line-height:1; flex:none; }
+.ro-grip:hover, .ro-grip:focus-visible { background:rgba(0,0,0,.06); color:var(--ink); outline:none; }
+.ro-grip:focus-visible { box-shadow:0 0 0 2px var(--red); }
+.ro-grip.sm { width:16px; height:20px; margin:0 -2px 0 -4px; font-size:13px; }
+.ro-num { display:inline-flex; align-items:center; justify-content:center; min-width:26px; height:24px; padding:0 7px; border-radius:12px; border:1px solid color-mix(in srgb,var(--red) 40%,var(--line)); background:#fff; color:var(--red-d); font:inherit; font-size:12.5px; font-weight:700; cursor:pointer; flex:none; }
+.ro-num:hover { background:color-mix(in srgb,var(--red) 8%,#fff); }
+.ro-num.sm { min-width:20px; height:18px; padding:0 5px; font-size:11px; cursor:inherit; }
+.ro-num-in { width:62px; height:26px; font:inherit; font-size:14px; padding:0 6px; border:1px solid var(--red); border-radius:8px; background:#fff; color:var(--ink); }
+.ro-hint { margin:0 0 8px; font-size:12px; color:var(--soft); }
+.ro-dragging { opacity:.45; }
+[data-ro-list] .ro-before { box-shadow:0 -3px 0 0 var(--red); }
+[data-ro-list] .ro-after { box-shadow:0 3px 0 0 var(--red); }
+[data-ro-list].ro-x .ro-before { box-shadow:-4px 0 0 0 var(--red); }
+[data-ro-list].ro-x .ro-after { box-shadow:4px 0 0 0 var(--red); }
 .npg-empty { margin:0; padding:24px 14px; font-size:13px; line-height:1.8; color:var(--soft); text-align:center; white-space:pre-line; }
 /* 右: ページ */
 .np-area { flex:1; min-width:0; min-height:0; display:flex; background:#fffdf8; }
