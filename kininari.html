@@ -1287,6 +1287,30 @@ function gdGetToken(interactive) {
     return Promise.reject(e);
   }
 }
+/* 自動同期のスイッチは入口（☁）と全アプリ共通の shared:nksync:auto（はじめは ON。v51）。
+   以前の気になり帳は自分だけのスイッチ（kininari:gd:auto・はじめは OFF）を見ていて、入口の中では
+   その設定画面が隠れているため、入口の「自動同期: ON」でも気になり帳は自動で同期していなかった。 */
+const SHARED_AUTO_KEY = "shared:nksync:auto";
+function readSharedAuto() {
+  try { return localStorage.getItem(SHARED_AUTO_KEY) !== "0"; } catch (e) { return false; }
+}
+/* 同期の中で使うトークン。保存されたものだけを使い、ログイン画面は出さない（v51）。
+   以前は切れていると自動の同期からもログイン画面を頼み、押した直後ではないのでブラウザに止められて
+   「自動サインインできませんでした」になっていた。利用者の操作からの同期（Driveへ保存・取得・接続・
+   入口の「今すぐ全部同期」）は、押した直後にトークンを取ってからここへ来る。
+   切れていたら gdNeedAuth を立て、次に気になり帳の中を押したときにつなぎ直す（App の中）。 */
+let gdNeedAuth = false;
+function gdTokenQuiet() {
+  try {
+    const D = gdNeed();
+    const t = D.tokenRead(D.STD_SCOPE);
+    if (t) { gdNeedAuth = false; return Promise.resolve(t); }
+    gdNeedAuth = true;
+    return Promise.reject(new Error("NOTOKEN"));
+  } catch (e) {
+    return Promise.reject(e);
+  }
+}
 /** ファイルの情報。無い（削除された）ときは null を返す。ゴミ箱に入っているかは trashed で分かる */
 function gdMeta(D, token, id) {
   return D.meta(token, id, "id,modifiedTime,trashed").catch(e => {
@@ -1431,6 +1455,7 @@ const GCAL_BASE = "https://www.googleapis.com/calendar/v3/calendars/primary/even
 function syncErrMsg(e) {
   const m = String(e && e.message || e);
   if (m === GD_STALE_MSG) return m;
+  if (/NOTOKEN/.test(m)) return "Googleのログインが切れています（1時間で切れます）。気になり帳の中を押すと、つなぎ直して同期します。";
   if (/403/.test(m)) return "Driveの権限が不足しています。設定を確認してください。";
   if (/401/.test(m)) return "Googleログインの期限が切れました。もう一度サインインしてください。";
   if (/読み込みが未完了|認証に失敗|ポップアップ|キャンセル/.test(m)) return "自動サインインできませんでした。同期ボタンから手動で接続してください。";
@@ -3856,7 +3881,7 @@ function DataModal({
     type: "checkbox",
     checked: gdAuto,
     onChange: e => onGdSetAuto(e.target.checked)
-  }), "\u81EA\u52D5\u3067\u540C\u671F\u3059\u308B\uFF08\u958B\u3044\u305F\u3068\u304D\u30FB\u753B\u9762\u306B\u623B\u3063\u305F\u3068\u304D\u53D6\u5F97\uFF0F\u5909\u66F4\u6642\u306B\u4FDD\u5B58\uFF09"), React.createElement("p", {
+  }), "\u81EA\u52D5\u3067\u540C\u671F\u3059\u308B\uFF08\u958B\u3044\u305F\u3068\u304D\u30FB\u753B\u9762\u306B\u623B\u3063\u305F\u3068\u304D\u53D6\u5F97\uFF0F\u5909\u66F4\u6642\u306B\u4FDD\u5B58\uFF09", React.createElement("span", { className: "gd-auto-note" }, "（入口の☁「自動同期」と同じスイッチ。ほかのアプリも一緒に変わります）")), React.createElement("p", {
     className: "ai-foot"
   }, "\u5225\u306E\u7AEF\u672B\u3067\u306F\u540C\u3058Google\u30A2\u30AB\u30A6\u30F3\u30C8\u3067\u63A5\u7D9A\u3059\u308B\u3068\u540C\u3058\u30C7\u30FC\u30BF\u306B\u306A\u308A\u307E\u3059\u3002\u540C\u6642\u306B\u4E21\u65B9\u3067\u7DE8\u96C6\u3057\u305F\u5834\u5408\u306F", React.createElement("b", null, "\u6700\u5F8C\u306E\u4FDD\u5B58\u304C\u512A\u5148"), "\u3055\u308C\u307E\u3059\u3002", React.createElement("button", {
     className: "linklike",
@@ -6758,13 +6783,7 @@ function App() {
       return "";
     }
   });
-  const [gdAuto, setGdAuto] = useState(() => {
-    try {
-      return localStorage.getItem("kininari:gd:auto") === "1";
-    } catch (e) {
-      return false;
-    }
-  });
+  const [gdAuto, setGdAuto] = useState(readSharedAuto);
   const [gdLinked, setGdLinkedState] = useState(() => {
     try {
       return localStorage.getItem("kininari:gd:linked") === "1";
@@ -7283,12 +7302,20 @@ function App() {
       localStorage.setItem("kininari:gd:syncfile", id);
     } catch (e) {}
   };
+  // 入口（☁）の「自動同期」と同じスイッチを切り替える（ほかのアプリも一緒に変わる）。旧版のキーにも書いておく
   const gdSetAuto = v => {
     setGdAuto(v);
     try {
+      localStorage.setItem(SHARED_AUTO_KEY, v ? "1" : "0");
       localStorage.setItem("kininari:gd:auto", v ? "1" : "0");
     } catch (e) {}
   };
+  // 入口やほかのタブでスイッチを切り替えたら、ここにもすぐ効かせる
+  useEffect(() => {
+    const onKey = e => { if (e.key === SHARED_AUTO_KEY || e.key === null) setGdAuto(readSharedAuto()); };
+    window.addEventListener("storage", onKey);
+    return () => window.removeEventListener("storage", onKey);
+  }, []);
   const gdConnect = async cid => {
     const id = (cid || gdCid || SHARED_GD_CID).trim();
     if (!id) throw new Error("クライアントIDを入力してください");
@@ -7311,7 +7338,7 @@ function App() {
     setGdCid(SHARED_GD_CID);
     setGdFileId("");
     setGdSync("");
-    setGdAuto(false);
+    // 自動同期のスイッチは全アプリ共通なので、ここでは切らない（連携を外せば、気になり帳は同期しない）
     setGdLinked(false);
     try { gdNeed().tokenClear(); } catch (e) {}
     try {
@@ -7327,7 +7354,7 @@ function App() {
       try {
         parent.postMessage({ nkSyncStatus: {
           app: "kininari", label: "📝 気になり帳",
-          phase: gdLinked && gdSyncInfo().linked ? syncState.phase : "off",
+          phase: gdSyncInfo().linked ? syncState.phase : "off",
           at: gdSync ? new Date(gdSync).getTime() : (syncState.at || 0),
           msg: syncState.msg || ""
         } }, window.location.origin);
@@ -7340,9 +7367,16 @@ function App() {
       if (!d || !d.nkSync) return;
       if (d.nkSync === "status") return report();
       if (d.nkSync === "now") {
-        // 連携していないときは同期しない（「未接続」と返す）。以前はシェルの「すべて同期」で、
-        // 他のアプリのログインに相乗りして勝手に送り、Driveのデータをこの端末の内容で置き換えていた。
-        if (!gdLinked || !gdSyncInfo().linked) return report();
+        // 入口の「今すぐ全部同期」は利用者が押したもの。まだつないでいない端末でも、ここでつなぐ（v51）。
+        // 入口の中では気になり帳の同期ボタンが隠れていて、ほかにつなぐ手立てが無かった（PC で「未接続」のまま）。
+        // 以前ここでつながなかったのは、送るときに Drive をこの端末の内容で置き換えていたため。いまの送信
+        // （gdPushOnce）は、同期したことの無いファイルなら必ず先に取り込んでマージするので、置き換えにはならない。
+        // トークンは入口がクリックの中で取ってある。無ければ（ログインできなかった）つながない
+        if (!gdLinked || !gdSyncInfo().linked) {
+          const D = gdDrive();
+          if (!D || !D.tokenRead(D.STD_SCOPE)) return report();
+          setGdLinked(true);
+        }
         setSyncState({ phase: "syncing" });
         (gdPushRef.current || gdPush)().then(() => setSyncState({ phase: "ok", at: Date.now() }))
                 .catch(er => setSyncState({ phase: "error", at: Date.now(), msg: syncErrMsg(er) }))
@@ -7365,7 +7399,7 @@ function App() {
         sync: localStorage.getItem("kininari:gd:sync") || "",
         syncFile: localStorage.getItem("kininari:gd:syncfile") || "",
         linked: localStorage.getItem("kininari:gd:linked") === "1",
-        auto: localStorage.getItem("kininari:gd:auto") === "1"
+        auto: readSharedAuto()
       };
     } catch (e) {
       return { file: gdFileId, sync: gdSync, syncFile: "", linked: gdLinked, auto: gdAuto };
@@ -7438,7 +7472,7 @@ function App() {
     // 連携していないときは送らない。解除の直前に予約された送信などから呼ばれても、
     // 勝手にDriveへ書いたり、連携済みに戻したりしない。
     if (!gdSyncInfo().linked) return;
-    const token = await gdGetToken(false);
+    const token = await gdTokenQuiet();
     const loc = await gdLocate(D, token);
     let id = loc.id;
     if (loc.dups) {
@@ -7560,7 +7594,7 @@ function App() {
   // 「Driveから取得」＝Driveの内容で置き換える（確認は DataModal で取る）。
   // 送信の途中に割り込むと、置き換えた直後に古い送信結果と食い違うので、同期の列に並べる。
   const gdPull = () => runSync(() => gdLocked(async D => {
-    const token = await gdGetToken(false);
+    const token = await gdTokenQuiet();
     const loc = await gdLocate(D, token);
     const id = loc.id;
     if (!id) throw new Error("Driveにデータが見つかりません。先に「アップロード」してください。");
@@ -7585,7 +7619,7 @@ function App() {
    *  開いたとき・画面に戻ったとき・集中復習を始める前に使う。 */
   const gdPullMerge = () => runSync(() => gdLocked(async D => {
     lastPullAt.current = Date.now();
-    const token = await gdGetToken(false);
+    const token = await gdTokenQuiet();
     const loc = await gdLocate(D, token);
     const id = loc.id;
     if (!id) return false;
@@ -7658,6 +7692,57 @@ function App() {
       alive = false;
     };
   }, [loading, gdLinked]);
+  // 自動同期を ON に戻したら、OFF の間に書いた分も送る（送る前に Drive の分を取り込んで混ぜるので、取り込みも済む）。
+  // 取り込むだけだと、Drive が変わっていなければ何もせず、OFF の間のメモが次に何か書くまで送られなかった
+  const autoWas = useRef(gdAuto);
+  useEffect(() => {
+    const was = autoWas.current;
+    autoWas.current = gdAuto;
+    if (!gdAuto || was || loading || !gdSyncInfo().linked) return;
+    setSyncState({ phase: "syncing" });
+    (gdPushRef.current || gdPush)().then(() => setSyncState({ phase: "ok", at: Date.now() }))
+      .catch(e => setSyncState({ phase: "error", at: Date.now(), msg: syncErrMsg(e) }));
+  }, [gdAuto]);
+  /* ログインが切れていて同期できなかったら（gdNeedAuth）、次に気になり帳の中を押したときにつなぎ直す（v51）。
+     ログイン画面を出せるのは押した直後だけなので、click の中で頼む（pointerdown では、スマホの指はまだ
+     「押した」扱いにならない）。文字を打つ欄を押したときは出さない（打ちはじめを邪魔しない）。
+     閉じられた・開けなかったときは、このページではもう自分からは出さない（入口の「今すぐ全部同期」でつなげる）。
+     1時間に1回、Google の小さな画面が出る。 */
+  const authAsking = useRef(false);
+  const authDeclined = useRef(false);
+  useEffect(() => {
+    const onTap = e => {
+      if (!e.isTrusted || !gdNeedAuth || authAsking.current || authDeclined.current) return;
+      const st = gdSyncInfo();
+      const D = gdDrive();
+      if (!st.linked || !st.auto || !D) return;
+      if (D.tokenRead(D.STD_SCOPE)) { gdNeedAuth = false; return; }
+      const t = e.target;
+      if (t && t.closest && t.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
+      authAsking.current = true;
+      setToast({ title: "Googleにつなぎ直して同期します", body: "ログインは1時間で切れます。小さな画面が出たら、そのままお待ちください。" });
+      gdGetToken(true).then(() => {
+        gdNeedAuth = false;
+        setSyncState({ phase: "syncing" });
+        // 送る前に Drive の分を取り込んで混ぜるので、取り込みもこれで済む
+        return (gdPushRef.current || gdPush)().then(() => setSyncState({ phase: "ok", at: Date.now() }));
+      }).catch(er => {
+        if (/キャンセル|ポップアップ|タイムアウト/.test(String(er && er.message || er))) authDeclined.current = true;
+        setSyncState({ phase: "error", at: Date.now(), msg: syncErrMsg(er) });
+      }).then(() => { authAsking.current = false; });
+    };
+    document.addEventListener("click", onTap, true);
+    return () => document.removeEventListener("click", onTap, true);
+  }, []);
+  // 入口で気になり帳のタブに戻ったとき（iframe は読み込んだまま残るので、入口から知らせてもらう）
+  useEffect(() => {
+    const onShown = e => {
+      if (e.origin !== window.location.origin || !e.data || !e.data.nkShown) return;
+      if (pullOnReturnRef.current) pullOnReturnRef.current();
+    };
+    window.addEventListener("message", onShown);
+    return () => window.removeEventListener("message", onShown);
+  }, []);
   // 開いたままのタブでも、画面に戻ってきたら他端末の変更（スマホでの復習など）を取り込む。
   // 取り込まないと、もう済んだ復習が「今日の復習」に残り、ここで答えると向こうの記録を
   // 上書きしてしまう（メモ単位で新しい方が勝つため）。通信を増やしすぎないよう1分に1回まで。
@@ -9152,7 +9237,8 @@ const CSS = `
 .gd-steps ol { margin:4px 0 10px; padding-left:20px; line-height:1.8; }
 .gd-status { display:flex; align-items:center; gap:8px; font-size:13.5px; color:var(--ink); background:color-mix(in srgb,var(--green) 10%,#fff); border:1px solid color-mix(in srgb,var(--green) 30%,var(--line)); border-radius:10px; padding:10px 13px; }
 .gd-dot { width:9px; height:9px; border-radius:50%; background:var(--green); box-shadow:0 0 0 3px color-mix(in srgb,var(--green) 22%,transparent); flex:none; }
-.gd-auto { margin-top:2px; }
+.gd-auto { margin-top:2px; flex-wrap:wrap; }
+.gd-auto-note { flex-basis:100%; padding-left:21px; font-size:11.5px; color:var(--soft); }
 
 /* rich text editor */
 /* 旧: .rich に overflow:hidden があり、これがスクロールコンテナ扱いになるため

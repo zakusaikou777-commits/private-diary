@@ -62,6 +62,12 @@ async function device({ drive = null, contextOptions = {}, wrapDrive = null } = 
       }
     } catch (e) {}
   });
+  // v51 から自動同期は入口と共通のスイッチ（shared:nksync:auto・はじめはON）になった。この検証は、気になり帳だけの
+  // スイッチ（kininari:gd:auto）がONの端末だけが自動で同期する前提で書いてあるので、その値を共通のスイッチに写す
+  // （手で同期する流れを確かめる端末で、裏の自動同期と競らないように）。共通のスイッチは test-fix-kininari-sync で確かめる
+  await ctx.addInitScript(() => {
+    try { localStorage.setItem("shared:nksync:auto", localStorage.getItem("kininari:gd:auto") === "1" ? "1" : "0"); } catch (e) {}
+  });
   await ctx.route(/\/__blank\.html$/, (r) => r.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>blank</title>" }));
   await ctx.route(/\/__host\.html$/, (r) => r.fulfill({ status: 200, contentType: "text/html", body:
     `<!doctype html><title>host</title><iframe id="f" src="kininari.html" style="width:1000px;height:700px"></iframe>
@@ -110,16 +116,15 @@ async function section(name, fn) {
 }
 
 /* ── 1. 初めて送る端末が Drive を上書きしない ─────────────────────────── */
-await section("1 sync: 初回の送信はマージする（シェルの now / 接続直後の保存 / 再接続）", async () => {
+await section("1 sync: 初回の送信はマージする（シェルの now でつなぐ / 接続直後の保存 / 再接続）", async () => {
   const drive = createFakeDrive();
   const A = [memo("a1", "Aのメモ1"), memo("a2", "Aのメモ2"), memo("a3", "Aのメモ3")].map((m) => ({ ...m, synced: 1 }));
   const f = drive.put(FILE_NAME, backup(A));
   const t0 = f.modifiedTime;
   const aIds = A.map((m) => m.id);
 
-  // 端末B: シェルの中。トークンはあるが、気になり帳は連携していない
+  // 端末B: シェルの中。気になり帳は連携していない（入口の中では気になり帳の同期ボタンが隠れている）
   const ctxB = await device({ drive });
-  await preset(ctxB, tokenLS());
   const host = await ctxB.newPage();
   await host.goto(BASE + "__host.html");
   const frame = () => host.frame({ url: /kininari\.html/ });
@@ -131,20 +136,17 @@ await section("1 sync: 初回の送信はマージする（シェルの now / �
   await sleep(1500);
   const writes = drive.log.slice(nLog).filter((r) => r.method !== "GET");
   const st1 = await host.evaluate(() => window.__st.map((s) => s.phase));
-  ok(writes.length === 0, "未連携のとき now で Drive に書かない", writes);
-  ok(st1.length > 0 && st1.every((p) => p === "off"), "未連携のとき now には off と返す", st1);
+  ok(writes.length === 0, "ログインできていない（トークンが無い）ときは、now でつながず Drive に書かない", writes);
+  ok(st1.length > 0 && st1.every((p) => p === "off"), "そのときは now に off と返す", st1);
   ok(JSON.stringify(driveMemos(drive, f.id).map((m) => m.id)) === JSON.stringify(aIds), "Drive の中身はそのまま");
 
-  // 連携した直後（同期の記録はまだ無い）に now → 取り込んでマージしてから送る
-  await frame().evaluate(() => localStorage.setItem("kininari:gd:linked", "1"));
-  await frame().evaluate(() => location.reload());
-  await sleep(300);
-  await waitFor(() => frame(), { label: "iframe 再読み込み" });
-  await frame().waitForSelector(".capture-input");
+  // 入口の「今すぐ全部同期」がクリックの中でトークンを取った → now で気になり帳もつなぎ、取り込んでマージしてから送る（v51）
+  await preset(ctxB, tokenLS());
   await host.evaluate(() => { window.__st = []; document.getElementById("f").contentWindow.postMessage({ nkSync: "now" }, location.origin); });
   await waitFor(() => host.evaluate(() => window.__st.some((s) => s.phase === "ok" || s.phase === "error")), { label: "now の結果", timeout: 15000 });
   const st2 = await host.evaluate(() => window.__st.map((s) => s.phase + ":" + s.msg));
-  ok(st2.some((p) => p.startsWith("ok")), "連携済みなら now で同期できる", st2);
+  ok(st2.some((p) => p.startsWith("ok")), "未連携でも、入口の now でつないで同期できる", st2);
+  ok((await frame().evaluate(() => localStorage.getItem("kininari:gd:linked"))) === "1", "now でつないだ印が残る（次からは自動で同期する）");
   const dm = driveMemos(drive, f.id);
   ok(aIds.every((id) => dm.some((m) => m.id === id)), "2台目の初回送信で、Drive にあったメモが残る", titlesOf(dm));
   ok(!dm.some((m) => SEED_TITLES.includes(m.title)), "触っていない見本のメモは Drive に持ち込まない", titlesOf(dm));
