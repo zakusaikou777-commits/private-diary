@@ -1554,7 +1554,7 @@ function auAddStream(url,name){
   if(!/^https?:\/\//i.test(url)){ toast("http(s):// で始まるURLを入れてください。",4500); return false; }
   S.tracks.unshift({id:auId(), kind:"stream", name:String(name||"").trim()||url.replace(/^https?:\/\//,"").slice(0,40),
                     url:url, type:"", size:0, addedAt:Date.now(), updatedAt:Date.now()});
-  save(); renderAu();
+  save(); touch(true); renderAu();   // ほかの端末にもすぐ伝える（v53。以前は次に何か変えるまで送らなかった）
   toast("登録しました。",3000);
   return true;
 }
@@ -1567,7 +1567,7 @@ function auRemove(id){
   S.delTracks.push({id:id, at:Date.now()});
   delete S.tvol[id];
   if(t.kind==="file") auDel(id).catch(function(){});
-  save(); renderAu(); auSyncLoop();
+  save(); touch(true); renderAu(); auSyncLoop();
 }
 function auFiles(){ return S.tracks.filter(function(t){ return t.kind==="file"; }); }
 /* 手持ちのファイルが1つだけなら、その曲をくり返す。<audio>のくり返しに任せるので、

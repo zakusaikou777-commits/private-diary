@@ -147,6 +147,11 @@ body.nk-dark .knnew{opacity:.12}
 <button id="knMd" class="knbtn ghost" type="button">📄 日記をMarkdownで書き出す</button>
 <button id="knShare" class="knbtn ghost" type="button">📤 バックアップを共有</button>
 </div>
+<p class="knmodal-note">日記の同期が止まったとき（暗号化された日記を読めない・Drive の日記が壊れた）は、ここから直せます。</p>
+<div class="knmodal-row">
+<button id="knDiaryPull" class="knbtn ghost" type="button">🔑 日記: Driveから読み込み</button>
+<button id="knDiaryRebuild" class="knbtn ghost" type="button">🛠 日記: Driveを作り直す</button>
+</div>
 <p id="knMsg" class="knmodal-msg"></p>
 
 <div class="knsec">セキュリティ</div>
@@ -931,6 +936,22 @@ body.nk-dark .knnew{opacity:.12}
      区切りで音楽を少し下げ、小さなチャイムを鳴らしてから戻す。チャイムは Web Audio で作る（ファイルは持たない）。
      音源・就寝用の音はここで鳴っているので、画面を消しても区切りは知らせられる（端末がタイマーを止めない限り）。 */
   var nkFo={on:false, phase:'work', end:0, work:25, brk:5, round:1}, nkAc=null;
+  /* 集中タイマーも端末に書いておく（v53）。スリープタイマーと違って覚えていなかったため、端末が裏で
+     アプリを読み込み直すと、何も知らせずに止まっていた。いまの区切りがとうに過ぎていたもの（閉じていた）は続けない */
+  var NK_FO_KEY='nk:focusTimer';
+  (function(){
+    try{
+      var o=JSON.parse(localStorage.getItem(NK_FO_KEY)||'null');
+      if(o && o.on && typeof o.end==='number' && o.end > Date.now()-60000){
+        nkFo={on:true, phase:o.phase==='break'?'break':'work', end:o.end,
+              work:[15,25,50].indexOf(+o.work)>=0?+o.work:25, brk:[5,10].indexOf(+o.brk)>=0?+o.brk:5,
+              round:Math.max(1,Math.floor(+o.round)||1)};
+      } else if(o) localStorage.removeItem(NK_FO_KEY);
+    }catch(e){}
+  })();
+  function nkFoSave(){
+    try{ if(nkFo.on) localStorage.setItem(NK_FO_KEY, JSON.stringify(nkFo)); else localStorage.removeItem(NK_FO_KEY); }catch(e){}
+  }
   function nkFoPost(){ knSendTo('bgm',{nkFocus:{on:nkFo.on, phase:nkFo.phase, end:nkFo.end, work:nkFo.work, brk:nkFo.brk, round:nkFo.round}}); }
   function nkFoSet(c){
     var w=+c.work, b=+c.brk;
@@ -941,7 +962,7 @@ body.nk-dark .knnew{opacity:.12}
       nkFo.on=true; nkFo.phase='work'; nkFo.round=1; nkFo.end=Date.now()+nkFo.work*60000;
       nkAcWake();   // 押された流れのうちに音の出口を起こしておく（あとからでは鳴らせない端末がある）
     }
-    nkTickRun(); nkFoPost(); if(nkSndId||nkYt) nkMediaRefresh();
+    nkFoSave(); nkTickRun(); nkFoPost(); if(nkSndId||nkYt) nkMediaRefresh();
   }
   function nkFoStep(){
     if(!nkFo.on) return;
@@ -950,6 +971,7 @@ body.nk-dark .knnew{opacity:.12}
     // 画面を消していて大きく遅れたときは、いまから数え直す（何回ぶんもまとめて鳴らさない）
     nkFo.end=(now-nkFo.end>60000)?now+dur:nkFo.end+dur;
     nkFo.phase=nx; if(nx==='work') nkFo.round++;
+    nkFoSave();
     nkCue(nx);
     nkFoPost();
   }
@@ -1081,7 +1103,8 @@ body.nk-dark .knnew{opacity:.12}
   nkSnd.addEventListener('timeupdate', function(){ if(nkTickT && Date.now()-nkTickAt>=nkTickMs) nkTick(); });
   document.addEventListener('visibilitychange', function(){ if(nkTickT && document.visibilityState!=='hidden') nkTick(); });
   document.addEventListener('resume', function(){ if(nkTickT) nkTick(); });   // 凍結からの復帰
-  nkTickRun();   // 端末に残っていたスリープタイマー（入口ごと読み込み直したとき）
+  nkTickRun();   // 端末に残っていたスリープタイマー・集中タイマー（入口ごと読み込み直したとき）
+  if(nkFo.on) setTimeout(nkFoPost, 1500);   // 音タブの表示も戻す（届かなければ、音タブを開いたときの問い合わせで返す）
   // 音タブが読み込み直された・空にされたら、そこで鳴っていた YouTube はもう無い。ロック画面に残さない
   (function(){
     var fb=document.getElementById('frame-bgm');
@@ -1505,9 +1528,28 @@ body.nk-dark .knnew{opacity:.12}
     knMsg('日記帳からMarkdownを書き出します…');
   });
   document.getElementById('knShare').addEventListener('click', function(){
+    // 日記帳のタブを見せてから頼む。共有の画面を出せなかったときの「共有する」ボタンは日記帳に出るため（v53）
+    knModalOpen(false); show('diary');
     knToDiary('share');
-    knMsg('バックアップの共有を開きます…');
   });
+  /* 日記の同期が止まったときの手立て（v53）。日記帳の設定の「Driveから読み込み」「Driveを作り直す」は、
+     入口の中では隠れていて押せなかった（案内だけが出て行き止まりだった）。
+     ログイン画面はこのクリックの中で頼む（日記帳のタブに命令が届くころには「押した直後」ではないため）。
+     パスフレーズの入力や確認は日記帳が出すので、日記帳のタブを見せてから頼む */
+  function knDiaryDrive(cmd){
+    var D = window.NKSync && NKSync.drive;
+    var tp;
+    try{ tp = (D && knCid() && !D.tokenRead(D.STD_SCOPE)) ? D.getToken({ interactive: true }) : Promise.resolve(); }
+    catch(e){ tp = Promise.reject(e); }
+    knModalOpen(false); show('diary');
+    tp.then(function(){ knToDiary(cmd); }, function(e){
+      var m = String((e && e.message) || e);
+      knModalOpen(true);
+      knMsg(/キャンセル/.test(m) ? 'Googleへのログインがキャンセルされました' : 'Googleにつなげませんでした: ' + m.slice(0, 60), false);
+    });
+  }
+  document.getElementById('knDiaryPull').addEventListener('click', function(){ knDiaryDrive('drivePull'); });
+  document.getElementById('knDiaryRebuild').addEventListener('click', function(){ knDiaryDrive('driveRebuild'); });
   document.getElementById('knSecurity').addEventListener('click', function(){
     // 設定画面は日記帳が持っている（パスフレーズやロック解除と一体のため）
     knModalOpen(false); show('diary');

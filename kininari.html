@@ -435,6 +435,14 @@ function itemSig(o) {
     return JSON.stringify(Object.keys(o).filter(k => k !== "updatedAt").sort().map(k => [k, o[k]]));
   } catch (e) { return Math.random().toString(); }
 }
+// 中身の印。並び（ord・ordAt）は中身に数えない。並びは ordAt で別にマージする（v53）。
+// 以前は並べ替えるだけで updatedAt が進み、並べ替えた範囲のメモが丸ごと「新しい」ことになって、
+// まだ取り込んでいないほかの端末での編集を古い内容で上書きし、消したメモまで生き返らせていた
+function contentSig(o) {
+  try {
+    return JSON.stringify(Object.keys(o).filter(k => k !== "updatedAt" && k !== "ord" && k !== "ordAt").sort().map(k => [k, o[k]]));
+  } catch (e) { return Math.random().toString(); }
+}
 // 変更のあった項目にだけ updatedAt を打つ（全経路をここ1か所で面倒みる）
 function stampUpdated(next, prev) {
   const prevById = new Map((prev || []).map(o => [o.id, o]));
@@ -442,7 +450,7 @@ function stampUpdated(next, prev) {
   return (next || []).map(o => {
     const p = prevById.get(o.id);
     if (!p) return o.updatedAt ? o : { ...o, updatedAt: o.createdAt || now };
-    if (itemSig(o) === itemSig(p)) return o.updatedAt ? o : { ...o, updatedAt: p.updatedAt || p.createdAt || now };
+    if (contentSig(o) === contentSig(p)) return o.updatedAt ? o : { ...o, updatedAt: p.updatedAt || p.createdAt || now };
     return { ...o, updatedAt: now };
   });
 }
@@ -472,7 +480,10 @@ function mergeById(localList, remoteList, lastSync, tombs) {
       if (!o.synced || (t && t < itemTime(o))) byId.set(o.id, o);
       return;
     }
-    if (itemTime(o) > itemTime(r)) byId.set(o.id, o);
+    // 中身は updatedAt の新しい方。並び（ord）は並べた時刻（ordAt）の新しい方を採る（v53）
+    const win = itemTime(o) > itemTime(r) ? o : r;
+    const lose = win === o ? r : o;
+    byId.set(o.id, (lose.ordAt || 0) > (win.ordAt || 0) && typeof lose.ord === "number" ? { ...win, ord: lose.ord, ordAt: lose.ordAt } : win);
   });
   const out = [];
   byId.forEach((o, id) => {
@@ -674,13 +685,26 @@ function srsFmtDue(ts) {
 // オブジェクトが入ると React ごと落ち、そのまま保存されているので再読み込みのたびに同じ所で落ちる。
 const normStr = v => typeof v === "string" ? v : typeof v === "number" && Number.isFinite(v) ? String(v) : "";
 const normStrs = a => (Array.isArray(a) ? a : []).map(normStr).filter(Boolean);
+/* 本文の消毒の結果を覚えておく（v53）。保存されている内容を読み直す（readLive）たびに全メモの本文を
+   消毒し直していて、メモが多い（2000件ほど）と、ノート表示で打つたびに0.5秒ほど固まっていた。
+   消毒は何度かけても同じ結果になるので、結果も鍵にしておく（保存済みの本文はそのまま当たる） */
+const knSanCache = new Map();
+function sanitizeMemoHtmlCached(html) {
+  const hit = knSanCache.get(html);
+  if (hit !== undefined) return hit;
+  const r = sanitizeMemoHtml(html);
+  if (knSanCache.size > 6000) knSanCache.clear();
+  knSanCache.set(html, r);
+  knSanCache.set(r, r);
+  return r;
+}
 function normalizeMemo(m) {
   m = m && typeof m === "object" && !Array.isArray(m) ? m : {};
   const links = normStrs(Array.isArray(m.links) ? m.links : m.link ? [m.link] : []);
   const o = {
     ...m,
     title: typeof m.title === "string" ? m.title : String(m.title == null ? "" : m.title).slice(0, 300),
-    body: typeof m.body === "string" ? sanitizeMemoHtml(m.body) : "",
+    body: typeof m.body === "string" ? sanitizeMemoHtmlCached(m.body) : "",
     category: typeof m.category === "string" && m.category ? m.category : "メモ",
     tags: Array.isArray(m.tags) && m.tags.every(t => typeof t === "string") ? m.tags : normStrs(m.tags),
     links,
@@ -708,6 +732,8 @@ function normalizeMemo(m) {
   if (typeof m.rc === "string") o.rc = m.rc.trim().slice(0, 100);else delete o.rc;
   // 「自分で並べた順」での位置（小さいほど上。v52）。数でないもの（他端末から来た変な値）は持たない
   if (typeof m.ord === "number" && Number.isFinite(m.ord)) o.ord = m.ord;else delete o.ord;
+  // 並べた時刻（並びだけを中身とは別にマージするため。v53）
+  if (typeof m.ordAt === "number" && Number.isFinite(m.ordAt)) o.ordAt = m.ordAt;else delete o.ordAt;
   return o;
 }
 /** 「自分で並べた順」の並びの値（小さいほど上）。まだ並べていないメモは、新しいものほど上に来るよう
@@ -6546,7 +6572,8 @@ function NoteView({ memos, folders, flatFolders, allTags, expanded, onToggleExpa
     let none = 0;
     memos.forEach(m => {
       const k = m.notebookId || null;
-      if (!k) {
+      // 消えたフォルダを指しているメモも「フォルダなし」に数える（一覧の出し方と同じ）
+      if (!k || !byId.has(k)) {
         none++;
         return;
       }
@@ -7164,6 +7191,7 @@ function App() {
           return;
         }
       }
+      let madeFolder = null;   // このクリップのために作ったフォルダ（取り消すときに一緒に片付ける）
       if (fname) {
         let found = findFolderByName(curFolders, fname);
         if (!found) {
@@ -7175,6 +7203,7 @@ function App() {
             createdAt: Date.now()
           }, curFolders.length);
           curFolders = [...curFolders, found];
+          madeFolder = found.id;
         }
         nbId = found.id;
       }
@@ -7234,14 +7263,37 @@ function App() {
       }
       setFreshId(memo.id);
       setTimeout(() => setFreshId(f => f === memo.id ? null : f), 1600);
-      setToast({
+      // 番号の無いクリップ（ブックマークレット・古い拡張、それと、ほかのサイトのリンク）は、
+      // 覚えが無ければその場で取り消せるようにする（v53）。リンクを開かせるだけでメモを足せてしまうため。
+      // 拡張の裏タブ（番号つき）は誰も見ていないので、これまでどおり知らせるだけ
+      const memoId = memo.id;
+      setToast(nonce ? {
         title: "気になり帳に追加しました",
         body: memo.title
+      } : {
+        title: "リンクからメモを追加しました",
+        body: memo.title + (url ? "（" + url.replace(/^https?:\/\//i, "").slice(0, 60) + "）" : "") + "。覚えが無ければ取り消してください。",
+        action: { label: "取り消す", run: () => undoClipRef.current && undoClipRef.current(memoId, madeFolder) }
       });
     } catch (e) {
       failed();
     }
   }, []);
+  /** リンクから足したメモを取り消す（そのとき作ったフォルダも、空なら片付ける）。削除の記録も残す */
+  const undoClipRef = useRef(null);
+  undoClipRef.current = (memoId, folderId) => {
+    const live = readLive();
+    if (!live.ok) return;
+    const ms = live.memos.filter(m => m.id !== memoId);
+    let fs = live.folders;
+    const gone = [memoId];
+    if (folderId && !ms.some(m => m.notebookId === folderId) && !fs.some(f => f.parentId === folderId)) {
+      fs = fs.filter(f => f.id !== folderId);
+      gone.push(folderId);
+    }
+    tombstonesAdd(gone);
+    if (persistRef.current(ms, fs)) setToast({ title: "取り消しました", body: "" });
+  };
   useEffect(() => {
     const onStorage = e => {
       if (e.key !== STORAGE_KEY || !e.newValue) return;
@@ -7335,6 +7387,25 @@ function App() {
     } catch (e) {}
     persist(m, (inb || []).map(normalizeFolder), { stamp: false });
     gcAttachments(m);
+  };
+  /** バックアップからの復元（データの共用の「読み込む」）。いまこの端末に無いメモ・フォルダ（消したもの）は、
+   *  戻した時刻を更新時刻にして「同期済み」の印を外す（v53）。そのままだと、Drive にある削除の記録の方が
+   *  新しいため、戻したメモが次の同期（数秒後）でまた消えていた */
+  const importBackup = data => {
+    const live = readLive();
+    const haveM = new Set((live.ok ? live.memos : memos).map(m => m.id));
+    const haveF = new Set((live.ok ? live.folders : folders).map(f => f.id));
+    const now = Date.now();
+    const revive = (o, have) => {
+      if (!o || typeof o !== "object" || have.has(o.id)) return o;
+      const n = { ...o, updatedAt: now };
+      delete n.synced;
+      return n;
+    };
+    importData({
+      memos: (data.memos || []).map(m => revive(m, haveM)),
+      notebooks: (data.notebooks || []).map(f => revive(f, haveF))
+    });
   };
   /** バックアップの復元など、利用者が明示的に取り込んだときだけ使う。
    *  画面のリセットを含むので、裏で走る自動マージから呼んではいけない
@@ -7986,7 +8057,8 @@ function App() {
   }, [memos, notifyOn, loading]);
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(null), 9000);
+    // 「取り消す」の付いた知らせは、押す間があるよう長めに出す
+    const t = setTimeout(() => setToast(null), toast.action ? 20000 : 9000);
     return () => clearTimeout(t);
   }, [toast]);
   const childrenOf = pid => folders.filter(f => (f.parentId || null) === (pid ?? null)).sort((a, b) => a.createdAt - b.createdAt);
@@ -8221,11 +8293,14 @@ function App() {
   const searching = q.trim().length > 0;
   const showSubRows = !searching && !includeSub;
   const showFolderChip = searching || includeSub;
+  // 消えたフォルダを指しているメモは「フォルダなし」として扱う（v53）。片方の端末でフォルダを消したころに、
+  // 別の端末でそのフォルダにメモを足すと、同期のあとそのメモがどのフォルダにも出ず、検索でしか見つからなかった
+  const folderIdSet = useMemo(() => new Set(folders.map(f => f.id)), [folders]);
   const baseMemos = useMemo(() => {
     if (searching) return memos;
     if (includeSub) return activeFolder == null ? memos : subtreeMemos;
-    return memos.filter(m => (m.notebookId || null) === activeFolder);
-  }, [memos, subtreeMemos, activeFolder, includeSub, searching]);
+    return memos.filter(m => (m.notebookId && folderIdSet.has(m.notebookId) ? m.notebookId : null) === activeFolder);
+  }, [memos, subtreeMemos, activeFolder, includeSub, searching, folderIdSet]);
   // 検索・分類・タグの絞り込み。復習の一覧（今日の復習／覚え中）にも同じように効かせる
   // （以前は復習の一覧では無視され、検索欄やタグが効いているように見えて効いていなかった）
   const passFilters = m => {
@@ -8372,7 +8447,7 @@ function App() {
     const nowMs = reviewTick;
     // ノートブック（中にフォルダのあるフォルダ）を選んだときは、中のセクション（とその中）のページもまとめて並べる
     let list = revFilter || searching || f === "all" || !(f === "none" || folders.some(x => x.id === f)) ? memos
-      : f === "none" ? memos.filter(m => !m.notebookId) : (ids => memos.filter(m => ids.has(m.notebookId)))(new Set([f, ...descendantsOf(f)]));
+      : f === "none" ? memos.filter(m => !m.notebookId || !folderIdSet.has(m.notebookId)) : (ids => memos.filter(m => ids.has(m.notebookId)))(new Set([f, ...descendantsOf(f)]));
     list = list.filter(m => {
       if (revFilter === "due" && !srsIsDue(m, nowMs)) return false;
       if (revFilter === "learning" && !isLearning(m)) return false;
@@ -8383,12 +8458,33 @@ function App() {
   }, [noteMode, memos, folders, noteSel.f, catFilter, tagFilter, hideDone, q, sort, searching, revFilter, reviewTick]);
   // 選んでいたページ（消えていたら一覧の先頭）
   const notePage = noteMode ? (noteSel.p && memos.find(m => m.id === noteSel.p)) || notePages[0] || null : null;
+  // ノート表示でページを選ばずに（先頭のページが出ているまま）書きはじめたら、そのページを選んだことにする（v53）。
+  // 選んでいないと、書いている間に新しいメモが届いて先頭が替わったとき、右のページが別のものに入れ替わっていた
+  const noteSelLive = useRef(null);
+  noteSelLive.current = { mode: noteMode, sel: noteSel, set: setNoteSel };
+  useEffect(() => {
+    const onIn = e => {
+      const L = noteSelLive.current;
+      const t = e.target;
+      const np = L && L.mode && t && t.closest ? t.closest(".nv-mode .np[data-mid]") : null;
+      if (!np) return;
+      const id = np.getAttribute("data-mid");
+      if (id && L.sel.p !== id) L.set({ ...L.sel, p: id });
+    };
+    document.addEventListener("focusin", onIn);
+    document.addEventListener("pointerdown", onIn, true);
+    return () => {
+      document.removeEventListener("focusin", onIn);
+      document.removeEventListener("pointerdown", onIn, true);
+    };
+  }, []);
   /* ── 自分で並べた順（優先順位の番号・v52）──────────────────────────────
      並べ方で「自分で並べた順（番号）」を選ぶと、カード・ページに 1, 2, 3… の番号が付き、
      ⠿ をつかんで動かす（マウス・指）、矢印キー、番号を打ち込む、のどれでも並べ替えられる。
      位置はメモの ord に持つ（小さいほど上）。動かしたメモは updatedAt が進むので、ほかの端末にも同期する。
      いま見えている一覧（フォルダ・分類・タグ・検索で絞った中）での並べ替えで、見えている分が使っていた
-     ord の値を並べ直すだけにする（見えていないメモとの前後は変えない）。ピン留めは上にまとまったまま
+     ord の値を並べ直すだけにする（見えていないメモとの前後は変えない）。並べた時刻は ordAt に持ち、
+     updatedAt は進めない（中身は変わっていないので、ほかの端末での編集・削除に勝たないように。v53）。ピン留めは上にまとまったまま
      （ピンの組をまたいでは動かさない）。復習の一覧は「次にやる順」なので、番号は付けない。 */
   const manualOn = sort === "manual" && !revFilter;
   const roLists = useRef({ card: [], note: [] });
@@ -8421,7 +8517,8 @@ function App() {
     // 画面の state ではなく、いま保存されている内容に当てる（同期やノートの自動保存と食い違わない）
     const live = readLive();
     if (!live.ok) return false;
-    return persistRef.current(live.memos.map(m => ordOf.has(m.id) ? { ...m, ord: ordOf.get(m.id) } : m), live.folders);
+    const at = Date.now();
+    return persistRef.current(live.memos.map(m => ordOf.has(m.id) ? { ...m, ord: ordOf.get(m.id), ordAt: at } : m), live.folders);
   };
   const moveRef = useRef(null);
   moveRef.current = moveInOrder;
@@ -8927,7 +9024,7 @@ function App() {
     className: "empty"
   }, React.createElement("div", {
     className: "empty-mark"
-  }, "\u2205"), React.createElement("p", null, memos.length === 0 ? "まだ何もありません。\n上の欄に気になったことを書いてみましょう。" : subFolders.length > 0 ? "このフォルダの直下にメモはありません。" : "条件に合うメモはありません。")) : visible.map(m => React.createElement(MemoCard, {
+  }, "\u2205"), React.createElement("p", null, memos.length === 0 ? "まだ何もありません。\n上の欄に気になったことを書いてみましょう。" : subFolders.length > 0 ? "このフォルダの直下にメモはありません。" : "条件に合うメモはありません。")) : visible.map((m, i) => React.createElement(MemoCard, {
     key: m.id,
     memo: m,
     folders: folders,
@@ -8948,7 +9045,7 @@ function App() {
     }),
     onToast: setToast,
     onOpenNote: setNoteOverlay,
-    rank: manualOn ? visible.indexOf(m) + 1 : null,
+    rank: manualOn ? i + 1 : null,
     onRank: n => moveInOrder("card", m.id, n - 1)
   }))), React.createElement("footer", {
     className: "foot"
@@ -8988,7 +9085,7 @@ function App() {
     onCreateGroup: createGroup
   }), dataOpen && React.createElement(DataModal, {
     data: backupData,
-    onImport: importData,
+    onImport: importBackup,
     onClose: () => setDataOpen(false),
     gdCid: gdCid,
     gdSync: gdSync,
@@ -9037,7 +9134,16 @@ function App() {
     className: "toast-title"
   }, toast.title), toast.body && React.createElement("div", {
     className: "toast-body"
-  }, toast.body)), React.createElement("button", {
+  }, toast.body)), toast.action && React.createElement("button", {
+    type: "button",
+    className: "toast-act",
+    onClick: e => {
+      e.stopPropagation();
+      const run = toast.action.run;
+      setToast(null);
+      try { run(); } catch (x) {}
+    }
+  }, toast.action.label), React.createElement("button", {
     className: "toast-x",
     onClick: e => {
       e.stopPropagation();
@@ -9403,6 +9509,7 @@ const CSS = `
 .toast-title { font-weight:700; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .toast-body { font-size:12px; color:#d8cdb6; margin-top:1px; }
 .toast-x { flex:none; border:none; background:none; color:#bcae93; font-size:20px; line-height:1; cursor:pointer; padding:0 2px; }
+.toast-act { flex:none; align-self:center; border:1px solid currentColor; background:transparent; color:inherit; font:inherit; font-size:13px; font-weight:700; border-radius:8px; padding:5px 10px; margin-left:4px; cursor:pointer; }
 .data-tabs { display:flex; gap:6px; background:var(--card); border:1px solid var(--line); border-radius:11px; padding:4px; }
 .data-tab { flex:1; border:none; background:none; color:var(--soft); border-radius:8px; padding:9px; font-size:13.5px; font-weight:700; cursor:pointer; font-family:inherit; }
 .data-tab.on { background:#fff; color:var(--ink); box-shadow:0 1px 4px rgba(120,95,55,.12); }

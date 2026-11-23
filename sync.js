@@ -355,11 +355,19 @@
   }
   /** 作るか、中身を置き換える。o: {id, name, space, content(文字列かBlob), mime, appProperties}
    *  返り値 {id, modifiedTime} */
+  /** 送る量に合わせた待ち時間（v53）。60秒で打ち切ると、遅い回線では大きな添付（日記帳は25MBまで）が
+   *  送り切れずに毎回やり直しになり、その間は日記の本文まで送れなかった。1MBあたり20秒（約0.4Mbps）を足す */
+  function uploadTimeout(content) {
+    var n = 0;
+    try { n = typeof content === "string" ? content.length : (content && content.size) || 0; } catch (e) {}
+    return API_TIMEOUT_MS + Math.ceil(n / (1024 * 1024)) * 20000;
+  }
   function upload(tok, o) {
     var mime = o.mime || "application/json";
+    var timeout = uploadTimeout(o.content);
     if (o.id) {
       return api(UPLOAD_FILES + "/" + encodeURIComponent(o.id) + "?uploadType=media&fields=id,modifiedTime", tok,
-        { method: "PATCH", headers: { "Content-Type": mime }, body: o.content });
+        { method: "PATCH", headers: { "Content-Type": mime }, body: o.content, timeout: timeout });
     }
     var boundary = "-------nk" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     var md = { name: o.name, mimeType: mime };
@@ -370,7 +378,7 @@
     var tail = "\r\n--" + boundary + "--";
     var body = typeof o.content === "string" ? head + o.content + tail : new Blob([head, o.content, tail]);
     return api(UPLOAD_FILES + "?uploadType=multipart&fields=id,modifiedTime", tok,
-      { method: "POST", headers: { "Content-Type": "multipart/related; boundary=" + boundary }, body: body });
+      { method: "POST", headers: { "Content-Type": "multipart/related; boundary=" + boundary }, body: body, timeout: timeout });
   }
   /** ゴミ箱へ（完全には消さない。30日は戻せる） */
   function trash(tok, id) {
@@ -711,11 +719,21 @@
         });
       });
     }
+    var needAuth = false;     // ログインが切れていて、自動の同期を待たせている（次に押したときにつなぎ直す）
+    var askDeclined = false;  // このページで、つなぎ直しを閉じられた・開けなかった（自分からはもう出さない）
+    var lastRunAt = 0;
+    var AUTH_MSG = "Googleのログインが切れています（1時間で切れます）。この画面を押すと、つなぎ直して同期します。";
     function run(interactive) {
       if (busy) { again = true; return Promise.resolve(); }   // 走行中の変更は、終わってからもう一度送る
       // まだ一度もつないでいない（トークンも同期の記録も無い）なら、自動では何もしない。
       // ログイン画面を出せないまま「失敗」になり、☁に赤い印が出続けてしまう
       if (!interactive && !tokenRead(SYNC_SCOPE) && !lastSyncISO()) { setStatus("off"); return Promise.resolve(); }
+      // ログインが切れているときは、自動ではログイン画面を頼まない（v53）。押した直後でないとブラウザに
+      // 止められ（「ポップアップをブロックしました」）、開くたび・変えるたびに同期が失敗していた。
+      // 次にこのアプリの画面を押したとき（下の click）か、入口の「今すぐ全部同期」でつなぎ直す
+      if (!interactive && !tokenRead(SYNC_SCOPE)) { needAuth = true; setStatus("error", AUTH_MSG); return Promise.resolve(); }
+      needAuth = false;
+      lastRunAt = Date.now();
       busy = true;
       setStatus("syncing");
       // 認証（ログイン画面を待つことがある）は排他の外で済ませ、ほかのアプリを待たせない。
@@ -742,7 +760,33 @@
     }
 
     // タブを離れる/閉じるときに、溜まった統計を吐き出す
+    // ログインが切れて待たせていたら、このアプリの画面を押したときにつなぎ直して同期する（v53）。
+    // click の中で頼む（押した直後でないとログイン画面を出せない。pointerdown では、スマホの指は
+    // まだ「押した」扱いにならない）。文字を打つ欄を押したときは出さない。1時間に1回、小さな画面が出る
+    document.addEventListener("click", function (e) {
+      if (!needAuth || askDeclined || busy || !e.isTrusted) return;
+      if (!autoOn() || !clientId()) return;
+      if (tokenRead(SYNC_SCOPE)) { needAuth = false; schedule(true); return; }
+      var t = e.target;
+      if (t && t.closest && t.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
+      run(true).catch(function (er) {
+        if (/キャンセル|ポップアップ|タイムアウト/.test(String((er && er.message) || er))) askDeclined = true;
+      });
+    }, true);
+    // 画面に戻ってきた・入口でこのアプリのタブに戻ったときは、ほかの端末の分を取り込む（1分に1回まで。v53）。
+    // 以前は開いたときと自分で変えたときだけで、開きっぱなしのタブは古いまま（その上で並べ替えると
+    // ほかの端末の変更を上書きしていた）。中身が同じなら書き込みはしない（syncLocked）
+    function pullOnReturn() {
+      if (!autoOn() || !clientId() || busy) return;
+      if (Date.now() - lastRunAt < 60000) return;
+      run(false).catch(function () {});
+    }
+    window.addEventListener("message", function (e) {
+      if (e.origin !== location.origin || !e.data || !e.data.nkShown) return;
+      pullOnReturn();
+    });
     document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "visible") pullOnReturn();
       if (document.visibilityState === "hidden" && lazyT) {
         clearTimeout(lazyT); lazyT = null;
         run(false).catch(function () {});

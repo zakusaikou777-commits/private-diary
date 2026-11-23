@@ -265,6 +265,8 @@ function normalize(){
             updatedAt:typeof x.updatedAt==="number"?x.updatedAt:(x.createdAt||now)};
     // 手で並べ替えた順番（同じまとまりの中での位置）。数でなければ持たない＝並べ替えたことが無い
     if(typeof x.ord==="number"&&isFinite(x.ord))o.ord=x.ord;
+    // 並べ替えた時刻。並びは中身（updatedAt）とは別にマージする（pickTask）。v53
+    if(typeof x.ordAt==="number"&&isFinite(x.ordAt))o.ordAt=x.ordAt;
     // id を作り直したものは Drive にはまだ無いので、「同期済み」の印は持ち越さない
     if(id===String(x.id)) SYNC_FIELDS.forEach(function(k){ if(x[k]!==undefined)o[k]=x[k]; });
     return o;
@@ -1112,17 +1114,18 @@ function groupEls(g){
 }
 /* 並びを保存する。並べた順に 1000, 2000, … を振り直す（間を空けるのは、あとで足す余地のため）。
    並べ替えだけでは Googleタスクへ送り直さない（Googleタスクの並びとは別に持つ）。
-   そのため save() ではなく persistOnly() を使い、Googleタスクとそろっていた印（gtSyncedAt）も
-   いっしょに進めて、「こちらで直した」と誤解させない */
+   そのため save() ではなく persistOnly() を使う。
+   ★updatedAt は進めず、並べた時刻（ordAt）だけを進める（v53）。以前は updatedAt を進めていたため、
+   並べ替えたまとまりのタスクが丸ごと「新しい」ことになり、まだ取り込んでいないほかの端末での
+   完了・編集を古い内容で上書きし、ほかの端末で消したタスクまで生き返らせていた。
+   並びは pickTask で ordAt の新しい方を採る（中身は updatedAt の新しい方のまま） */
 function applyOrder(ids){
   var now=Date.now(), changed=false;
   ids.forEach(function(id,i){
     var t=byId(id); if(!t)return;
     var o=(i+1)*1000;
     if(t.ord===o)return;
-    var wasSynced=t.gtSyncedAt&&(t.updatedAt||0)<=t.gtSyncedAt;
-    t.ord=o; t.updatedAt=now; changed=true;
-    if(wasSynced)t.gtSyncedAt=now;
+    t.ord=o; t.ordAt=now; changed=true;
   });
   if(changed)persistOnly(); else render();
   return changed;
@@ -1274,6 +1277,8 @@ window.addEventListener("storage",function(e){
 function pickTask(l,r,win){
   var lose=(win===l)?r:l, o=null;
   var copy=function(){ if(!o){ o={}; for(var k in win) o[k]=win[k]; } return o; };
+  // 並び（ord）は中身とは別に、並べた時刻（ordAt）の新しい方を採る（v53。applyOrder を参照）
+  if((lose.ordAt||0)>(win.ordAt||0)&&typeof lose.ord==="number"){ copy().ord=lose.ord; o.ordAt=lose.ordAt; }
   if(!win.gtaskId&&!win.gtUnlinked&&lose.gtaskId){
     copy(); o.gtaskId=lose.gtaskId; o.gtaskUpdated=lose.gtaskUpdated||""; o.gtSyncedAt=lose.gtSyncedAt||0;
   } else if(win.gtaskId&&win.gtaskId===lose.gtaskId){
@@ -1328,12 +1333,32 @@ $("gtAuto").addEventListener("change",function(e){
   store.set(GT_AUTO_KEY, e.target.checked?"1":"0");
   toast(e.target.checked?"タスクを変えると、少し後にGoogleタスクへ送ります。":"自動送信をやめました。",4000);
 });
-/* 変更から10秒後にまとめて送る（連打で何度も通信しない） */
+/* 変更から10秒後にまとめて送る（連打で何度も通信しない）。
+   ログインが切れていたら、自動ではログイン画面を頼まない（v53）。押した直後でないとブラウザに止められ、
+   直すたびに「Googleタスクと同期できませんでした」が出ていた。次にこの画面を押したときにつなぎ直して送る */
+var gtNeedAuth=false, gtAskDeclined=false;
+function gtTokenOk(){ var D=tokDrive(); return D?!!D.tokenRead(GT_SCOPE):!!tokCached(); }
 function gtTouch(){
   if(!gtAutoOn())return;
   if(gtTimer)clearTimeout(gtTimer);
-  gtTimer=setTimeout(function(){ gtTimer=null; gtSync().then(gtPaint); }, 10000);
+  gtTimer=setTimeout(function(){
+    gtTimer=null;
+    if(!gtTokenOk()){ gtNeedAuth=true; return; }
+    gtSync().then(gtPaint);
+  }, 10000);
 }
+document.addEventListener("click",function(e){
+  if(!gtNeedAuth||gtAskDeclined||!e.isTrusted||!gtAutoOn())return;
+  if(gtTokenOk()){ gtNeedAuth=false; gtTouch(); return; }
+  var t=e.target;
+  if(t&&t.closest&&t.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])"))return;
+  gtNeedAuth=false;
+  // ★押した直後のここで（await を挟まずに）ログイン画面を頼む
+  getToken(true,GT_SCOPE).then(function(){ return gtSync().then(gtPaint); }, function(er){
+    if(/キャンセル|ポップアップ|タイムアウト/.test(String(er&&er.message||er)))gtAskDeclined=true;
+    else gtNeedAuth=true;
+  });
+},true);
 gtPaint();
 
 /* ══════ 期限のお知らせ（気になり帳と同じつくり）══════
@@ -1480,7 +1505,25 @@ function freshCheck(){
 setInterval(function(){ ntfScan(); freshCheck(); },30000);
 document.addEventListener("visibilitychange",function(){ if(document.visibilityState==="visible")freshCheck(); });
 
+/* 完了から半年たったタスクは片付ける（v53）。片付けないと、繰り返しのタスクで年に何百件もたまり、
+   端末の保存容量（日記帳・気になり帳と共有の約5MB）と同期の量を食い、Googleタスクも一覧の上限（2000件）に
+   届いて「Google側で消したタスク」を見分けられなくなる。消すときと同じく削除の記録を残し（ほかの端末で
+   戻らない）、Googleタスクに送っていたものはあちらからも消す（残すと次の連携で取り込み直してしまう） */
+var DONE_KEEP_MS=180*86400000;
+function pruneDone(){
+  var cut=Date.now()-DONE_KEEP_MS, gone=[];
+  T=T.filter(function(t){
+    if(t.done&&typeof t.doneAt==="number"&&t.doneAt>0&&t.doneAt<cut){ gone.push(t); return false; }
+    return true;
+  });
+  if(!gone.length)return 0;
+  var now=Date.now();
+  gone.forEach(function(t){ DEL.push({id:t.id,at:now}); if(t.gtaskId)gtDelAdd(t.gtaskId); });
+  persistOnly();
+  return gone.length;
+}
 receiveTaskAdd();
+(function(){ var n=pruneDone(); if(n)toast("完了から半年たったタスク"+n+"件を片付けました。",5000); })();
 renderQuick(); render();
 // プライベートブラウズなどで最初から保存できない場合も、黙って進めない
 if(!store.persistent()){ saveFailed=true; showStoreWarn(); }
