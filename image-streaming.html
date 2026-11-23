@@ -285,6 +285,20 @@
   .jedit .rating-row{justify-content:flex-start;}
   .jedit .vbtn{width:38px; height:38px; font-size:13px;}
 
+  /* v54: 小さい画面・横向きでも、練習中の時計と「一時停止・終了」が画面に収まるように。
+     操作は画面の下に貼りつけ（sticky）、背の低い画面では練習中だけトレイを小さくする */
+  .controls.run{position:sticky; bottom:10px; z-index:5;}
+  .controls.run .btn.ghost{background:rgba(29,22,31,.94);}
+  @media (max-height:560px){
+    .tray-wrap{margin-bottom:12px;}
+    .tray.phase-running, .tray.phase-paused{width:220px; height:220px;}
+    .tray.phase-running .tray-inner, .tray.phase-paused .tray-inner{padding:14px 14px;}
+    .tray.phase-running .clock, .tray.phase-paused .clock{font-size:44px;}
+    .tray.phase-running .scene-mini, .tray.phase-paused .scene-mini{margin-bottom:6px;}
+    .tray.phase-running .sense-live{margin-top:10px;}
+  }
+  .recover:focus{outline:none; box-shadow:0 0 0 2px rgba(224,122,74,.55);}
+
   @media (prefers-reduced-motion: reduce){
     .glow{animation:none !important;}
     .scene,.sense-live{animation:none !important;}
@@ -294,7 +308,7 @@
 </style>
 </head>
 <body>
-  <div id="darkroom" hidden><div class="dr-hint" id="drHint">練習中 · 触ると操作が出ます · 長押しで一時停止</div></div>
+  <div id="darkroom" role="button" aria-label="練習中 · 触ると操作が出ます · 長押しで一時停止" hidden><div class="dr-hint" id="drHint" aria-hidden="true">練習中 · 触ると操作が出ます · 長押しで一時停止</div></div>
   <div class="console">
     <header class="head">
       <div class="eyebrow">イメージストリーミング · ウェンガー式</div>
@@ -313,7 +327,7 @@
     </header>
 
     <main class="stage">
-      <div class="recover" id="recoverBox" role="alertdialog" aria-labelledby="recoverQ" hidden>
+      <div class="recover" id="recoverBox" role="alertdialog" aria-labelledby="recoverQ" aria-describedby="recoverSub" tabindex="-1" hidden>
         <div class="recover-q" id="recoverQ"></div>
         <div class="recover-sub" id="recoverSub"></div>
         <div class="recover-acts">
@@ -340,6 +354,7 @@
               <div class="sense-live" id="senseLive"></div>
               <div class="paused" id="pausedLbl" hidden>一時停止中</div>
               <div class="rec-live" id="recLive" hidden></div>
+              <div class="rec-live off" id="wakeNote" role="status" hidden></div>
             </div>
             <div id="pDone" hidden>
               <div class="done-mark" id="doneMark"></div>
@@ -367,7 +382,7 @@
           <div class="segmented" id="lengthSeg"></div>
         </div>
 
-        <button class="toggle" id="toggleBtn">
+        <button class="toggle" id="toggleBtn" type="button" role="switch" aria-checked="true">
           <span class="toggle-ico" id="toggleIco"></span>
           <span class="toggle-text">
             <span class="toggle-head">音声ガイド</span>
@@ -380,7 +395,7 @@
           <div class="segmented" id="cueSeg"></div>
           <div class="seg-help" id="cueHelp"></div>
         </div>
-        <button class="toggle" id="dimBtn" type="button">
+        <button class="toggle" id="dimBtn" type="button" role="switch" aria-checked="true">
           <span class="toggle-ico" id="dimIco"></span>
           <span class="toggle-text">
             <span class="toggle-head">練習中は画面を暗くする</span>
@@ -388,7 +403,7 @@
           </span>
           <span class="switch" id="dimSwitch"><span class="knob"></span></span>
         </button>
-        <button class="toggle" id="recBtn" type="button">
+        <button class="toggle" id="recBtn" type="button" role="switch" aria-checked="false">
           <span class="toggle-ico" id="recIco"></span>
           <span class="toggle-text">
             <span class="toggle-head">描写を録音する（この端末だけ）</span>
@@ -402,9 +417,9 @@
           <select id="voiceSel" class="vsel"></select>
           <div class="vnow" id="voiceNow" hidden></div>
           <div class="vpresets" id="vPresets">
-            <button type="button" class="vp" data-vp="calm">おちついた</button>
-            <button type="button" class="vp on" data-vp="soft">やわらかい</button>
-            <button type="button" class="vp" data-vp="bright">明るい</button>
+            <button type="button" class="vp" data-vp="calm" aria-pressed="false">おちついた</button>
+            <button type="button" class="vp on" data-vp="soft" aria-pressed="true">やわらかい</button>
+            <button type="button" class="vp" data-vp="bright" aria-pressed="false">明るい</button>
           </div>
           <div class="vrow"><span class="vlbl">高さ</span><input type="range" id="vPitch" min="0.6" max="1.6" step="0.01"><span class="vnum" id="vPitchN">1.15</span></div>
           <div class="vrow"><span class="vlbl">速さ</span><input type="range" id="vRate" min="0.6" max="1.3" step="0.01"><span class="vnum" id="vRateN">0.90</span></div>
@@ -565,8 +580,10 @@
   function fmtDay(s){ var p = s.split("-"); return Number(p[1]) + "月" + Number(p[2]) + "日"; }
   function esc(t){ return String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
   function $(id){ return document.getElementById(id); }
-  /* 「7分」「45秒」。練習の長さを言葉で */
-  function fmtDur(sec){ sec = Math.max(0, Math.round(+sec || 0)); return sec < 60 ? sec + "秒" : Math.round(sec / 60) + "分"; }
+  /* 「7分」「45秒」。練習の長さを言葉で。
+     v54: 分は切り捨てる（Ten/Ten の「9/10分」と合わせる）。以前は四捨五入で、9分45秒の練習が一覧では
+     「10分」と出るのに、Ten/Ten では10分に届かず数えられていなかった */
+  function fmtDur(sec){ sec = Math.max(0, Math.round(+sec || 0)); return sec < 60 ? sec + "秒" : Math.floor(sec / 60) + "分"; }
   function fmtSize(b){ b = +b || 0; return b < 1048576 ? Math.max(1, Math.round(b / 1024)) + "KB" : (b / 1048576).toFixed(1) + "MB"; }
   /* 残り時間を、耳で聞いて分かる言い方に（30秒きざみ。「あと1分半」） */
   function remainText(sec){
@@ -582,7 +599,11 @@
   }
 
   /* ---------- 知らせ（保存できなかったときなど。v53） ---------- */
+  /* v54: 暗い画面の上には明るい知らせを出さない（目を閉じた練習中に、ふと開けた目に光が入る）。
+     暗いあいだは預かっておき、操作の画面に戻ったとき（一時停止・終了。数秒だけ見せる peek では出さない）に出す */
+  var toastQ = null;
   function isToast(msg, ms){
+    if(darkShown){ toastQ = [msg, ms]; return; }
     var el = document.getElementById("isToast");
     if(!el){
       el = document.createElement("div");
@@ -593,7 +614,19 @@
       (document.body || document.documentElement).appendChild(el);
     }
     el.textContent = msg; el.style.display = "block";
+    el._msg = [msg, ms]; el._at = Date.now();
     clearTimeout(isToast._t); isToast._t = setTimeout(function(){ el.style.display = "none"; }, ms || 9000);
+  }
+  /* 暗くなるときに出ていた知らせは隠す。出てまもないものは、明るく戻ったときに出し直す */
+  function toastHideForDark(){
+    var el = document.getElementById("isToast");
+    if(!el || el.style.display === "none") return;
+    el.style.display = "none"; clearTimeout(isToast._t);
+    if(el._msg && Date.now() - (el._at || 0) < (el._msg[1] || 9000) / 2) toastQ = el._msg;
+  }
+  function toastFlush(){
+    if(!toastQ || darkShown || darkWanted()) return;
+    var q = toastQ; toastQ = null; isToast(q[0], q[1]);
   }
   var storeWarnAt = 0;
   function storeWarn(){
@@ -617,7 +650,8 @@
         if(ok) storeWarn();   // 書けるはずの端末で書けなかった＝容量がいっぱい。黙らずに知らせる
         return false;
       },
-      remove: function(key){ try { if(ok){ localStorage.removeItem(key); return; } } catch(e){} delete mem[key]; }
+      // v54: 書けずに mem に残っていた値も消す。get が mem を先に読むので、残すと消したはずの値が読めてしまう
+      remove: function(key){ delete mem[key]; try { if(ok) localStorage.removeItem(key); } catch(e){} }
     };
   })();
 
@@ -654,12 +688,15 @@
     sid: 0,              // 練習ごとの名札（始めた時刻）
     cueN: 0, cueText: "", qOrder: [], qPos: 0, nPos: 0,
     ann: { half: false, one: false },   // 残り時間の知らせ（済んだか）
+    annWait: { half: false, one: false },   // 残り時間の知らせを、伝えるのを待っているか（v54）
     darkPause: false,    // 暗いまま（長押しで）一時停止した。再開も暗い画面の長押しでできるように
     rating: null,
-    pending: { sec:0, scene:"", audio:null },
+    pending: { sec:0, scene:"", audio:null, start:0 },
     doneKey: "",         // 終わった回の記録の鍵（自動で記録したもの。記録していなければ空）
+    doneGone: false,     // 終了画面の記録が、ほかの端末での削除などで消えた（v54）
     discardAsk: false,
     recover: null,       // 前回、記録されないまま終わった練習の控え
+    recoverHeld: null,   // 始めるときに預かった、まだ聞いていない前の控え（終わってから聞く。v54）
     history: [],
     clearedAt: 0,        // 旧版の全消去（消した時刻）。読むだけで、新しくは作らない（loadCleared の説明）
     clearedKeys: [],     // 消した記録の鍵（recKey）。全消去と、1件ずつの削除の両方
@@ -667,7 +704,7 @@
     journalOpen: false,
     jq: "", jEdit: "", jDraft: null, jDel: "", jDirty: false   // 記録の一覧：検索・直している記録・消す確認
   };
-  var justFlash = false;
+  var justFlash = "";    // 10分に届いて現像したばかりの日（v54: 今日とは限らない。始めた日に数えるため）
   var ttsSupported = ("speechSynthesis" in window);
 
   /* ---------- audio ---------- */
@@ -932,24 +969,54 @@
      wakeLock を見ても null なので誰も解放できず、画面がついたままになる。
      「いま欲しいかどうか」を wakeWanted で持ち、届いた時点で判断する。 */
   var wakeLock = null, wakeReq = null, wakeWanted = false;
-  function reqWake(){
-    try {
-      if(!("wakeLock" in navigator)) return;
-      wakeWanted = true;
-      if(wakeLock || wakeReq) return;                 // 二重取得を防ぐ
-      wakeReq = navigator.wakeLock.request("screen");
-      wakeReq.then(function(w){
-        wakeReq = null;
-        if(!wakeWanted){ try { w.release(); } catch(e){} return; }   // 待っている間に不要になった
-        wakeLock = w;
-        try { w.addEventListener("release", function(){ if(wakeLock === w) wakeLock = null; }); } catch(e){}
-      }, function(){ wakeReq = null; });
-    } catch(e){ wakeReq = null; }
+  /* v54: 取れなかったことを知らせる（くつろぎの paintWake と同じ考え）。以前は黙って失敗し、
+     画面が自動で消えると案内の声が止まっても、理由が分からなかった */
+  var wakeFailed = false;
+  /* v54: 長押しで暗いまま止めたときは、画面を消さないでおく。消えると、目を閉じたままの長押しで再開できず、
+     iPhone では顔認証やパスコードまで要る。ただし止めたまま15分たったら手放す（置き忘れで電池を減らさないように） */
+  var dpWakeT = null, DARK_PAUSE_WAKE = 15 * 60 * 1000;
+  function pageVisible(){ try { return document.visibilityState === "visible"; } catch(e){ return true; } }
+  function paintWake(){
+    var el = $("wakeNote"); if(!el) return;
+    var show = wakeWanted && wakeFailed && !wakeLock && (S.phase === "running" || S.phase === "paused");
+    el.hidden = !show;
+    if(show) el.textContent = "⚠ この端末では、画面が自動で消えるのを止められません。消えると案内の声が止まります（自動ロックを長めにしてお使いください）";
   }
+  function wakeFail(){ if(!wakeWanted) return; wakeFailed = true; paintWake(); }
+  function reqWake(){
+    wakeWanted = true;
+    try {
+      if(!("wakeLock" in navigator) || !navigator.wakeLock){ wakeFail(); return; }
+      if(wakeLock || wakeReq) return;                 // 二重取得を防ぐ
+      var p = navigator.wakeLock.request("screen");
+      wakeReq = p;
+      p.then(function(w){
+        if(wakeReq === p) wakeReq = null;
+        if(!wakeWanted){ try { w.release(); } catch(e){} return; }   // 待っている間に不要になった
+        wakeLock = w; wakeFailed = false; paintWake();
+        try { w.addEventListener("release", function(){
+          if(wakeLock !== w) return;                  // 自分で手放したもの
+          wakeLock = null;
+          // v54: 見えているのに端末の都合（省電力など）で外されたら、少しおいて取り直す
+          if(wakeWanted && pageVisible()) setTimeout(function(){ if(wakeWanted && !wakeLock && pageVisible()) reqWake(); }, 1000);
+        }); } catch(e){}
+      }, function(){
+        if(wakeReq === p) wakeReq = null;
+        // 見えていないあいだの要求は、対応している端末でも断られる。そのときは見えたとき（visibilitychange）に取り直す
+        if(wakeWanted && pageVisible()) wakeFail();
+      });
+    } catch(e){ wakeReq = null; wakeFail(); }
+  }
+  function clearDpWake(){ if(dpWakeT){ clearTimeout(dpWakeT); dpWakeT = null; } }
   function relWake(){
-    wakeWanted = false;
+    wakeWanted = false; wakeFailed = false; clearDpWake();
     try { if(wakeLock){ wakeLock.release(); } } catch(e){}
     wakeLock = null;
+    paintWake();
+  }
+  function holdWakeWhilePaused(){
+    clearDpWake();
+    dpWakeT = setTimeout(function(){ dpWakeT = null; if(S.phase === "paused") relWake(); }, DARK_PAUSE_WAKE);
   }
 
   /* ---------- timers ---------- */
@@ -971,6 +1038,8 @@
   document.addEventListener("visibilitychange", function(){
     // 裏に回ったまま端末に落とされても、練習と書きかけの記録を拾えるように
     if(document.visibilityState !== "visible"){ saveRun(); flushPatch(); return; }
+    // 暗いまま止めている（15分まで）あいだも、外れた画面ロックを取り直す（v54）
+    if(S.phase === "paused" && S.darkPause && dpWakeT){ reqWake(); return; }
     if(S.phase !== "running") return;
     reqWake();
     if(tick) onTick();   // 裏にいるあいだ止まっていた時計を、実時間に合わせ直す
@@ -995,6 +1064,7 @@
     if(cueTick){ clearTimeout(cueTick); cueTick = null; }
     for(var i=0;i<heldTimers.length;i++) clearTimeout(heldTimers[i]);
     heldTimers.length = 0;
+    S.annWait = { half: false, one: false };   // 待っていた残り時間の知らせは捨てた。再開したら伝え直す（v54）
   }
   function holdLater(fn, ms){
     var id = setTimeout(function(){
@@ -1042,16 +1112,20 @@
   }
   /* 残り時間を声で知らせる。目を閉じたままでも、あとどれくらいか分かるように。
      半分の知らせは5分以上の練習だけ（3分だと「あと1分」とすぐ重なるため） */
+  /* v54: 「済んだ」の印は、実際に伝えたとき（apply）に付ける。以前は待ち始めた時点で付けていたので、
+     案内の声が終わるのを待っているあいだに一時停止すると、その回は「あと1分」がもう伝わらなかった */
   function checkTimeAnn(){
     if(S.phase !== "running" || !S.speakCues) return;
-    var left = S.secondsLeft, total = S.durationMin * 60;
-    if(!S.ann.half && total >= 300 && left <= total / 2 && left > 75){
-      S.ann.half = true;
-      deliver({ wait: ANN_WAIT, say: function(){ return "半分が過ぎました。あと" + remainText(S.secondsLeft) + "です。"; } });
+    var left = S.secondsLeft, total = S.durationMin * 60, w = S.annWait;
+    if(!S.ann.half && !w.half && total >= 300 && left <= total / 2 && left > 75){
+      w.half = true;
+      deliver({ wait: ANN_WAIT, apply: function(){ S.ann.half = true; },
+        say: function(){ return "半分が過ぎました。あと" + remainText(S.secondsLeft) + "です。"; } });
     }
-    if(!S.ann.one && left <= 60 && left > 10){
-      S.ann.one = true;
-      deliver({ wait: ANN_WAIT, say: function(){ return "あと" + remainText(S.secondsLeft) + "です。"; } });
+    if(!S.ann.one && !w.one && left <= 60 && left > 10){
+      w.one = true;
+      deliver({ wait: ANN_WAIT, apply: function(){ S.ann.one = true; },
+        say: function(){ return "あと" + remainText(S.secondsLeft) + "です。"; } });
     }
   }
 
@@ -1241,12 +1315,30 @@
         tx.objectStore("meta").put({ key: key, size: size, sec: sec || 0, type: type, at: Date.now() });
       }).then(function(){
         try { store.set(AUDIO_FLAG, "1"); } catch(e){}
-        audioMeta[key] = { size: size, sec: sec || 0 };
+        audioMeta[key] = { size: size, sec: sec || 0, at: Date.now() };
         // 聞き返すときに読み直さなくていいよう、いま手元にある音を控えておく
         cacheClip(key, parts);
+        askPersist();
         return true;
       });
-    }).then(function(ok){ renderAudioBits(); return ok; }, function(){ return false; });
+    }).then(function(ok){ renderAudioBits(); if(ok) checkAudioSize(); return ok; }, function(){ return false; });
+  }
+  /* v54: 録音を置いたら、この端末の保存を「消されにくい」扱いにしてもらう（日記帳などと同じ置き場なので、
+     容量が足りなくなったときにブラウザがまとめて消す対象から外してもらう）。断られても困らないので、黙って頼むだけ */
+  var persistAsked = false;
+  function askPersist(){
+    if(persistAsked) return; persistAsked = true;
+    try { if(navigator.storage && navigator.storage.persist) navigator.storage.persist().then(null, function(){}); } catch(e){}
+  }
+  /* v54: 録音の合計が200MBを超えたら一度だけ知らせる（10分でおよそ2〜5MB。毎日録ると、気づかないうちに増える）。
+     減ったら印を外し、また超えたときに知らせる */
+  var AUDIO_WARN_BYTES = 200 * 1048576, AUDIO_WARN_KEY = "image-streaming:audioWarned";
+  function checkAudioSize(){
+    var t = audioTotal();
+    if(t.bytes < AUDIO_WARN_BYTES){ if(store.get(AUDIO_WARN_KEY)) store.remove(AUDIO_WARN_KEY); return; }
+    if(store.get(AUDIO_WARN_KEY)) return;
+    store.set(AUDIO_WARN_KEY, "1");
+    isToast("この端末の録音が " + t.n + "件・" + fmtSize(t.bytes) + " になりました。空き容量が少なくなると、録音も記録も保存できなくなることがあります。聞き返さない録音は、一覧で記録ごと消すか、設定の「録音を全部消す」で整理してください。", 14000);
   }
   // 録音を置けなかった（空き容量・この端末の制限）ことは知らせる。以前は黙って失われていた（v53）
   function audioWarn(ok){ if(ok === false) isToast("録音を端末に保存できませんでした（空き容量をご確認ください）。記録そのものは残っています。", 9000); }
@@ -1281,17 +1373,25 @@
       var rq = tx.objectStore("meta").getAll();
       rq.onsuccess = function(){ out.v = rq.result || []; };
     }).then(function(list){
-      (list || []).forEach(function(x){ if(x && typeof x.key === "string") audioMeta[x.key] = { size: +x.size || 0, sec: +x.sec || 0 }; });
+      (list || []).forEach(function(x){ if(x && typeof x.key === "string") audioMeta[x.key] = { size: +x.size || 0, sec: +x.sec || 0, at: +x.at || 0 }; });
       purgeGoneAudio();
       renderAudioBits();
+      checkAudioSize();
     }, function(){});
   }
-  /* 消した記録（ほかの端末で消したものも、同期で届く）の録音を片付ける */
+  /* 消した記録（ほかの端末で消したものも、同期で届く）の録音を片付ける。
+     v54: 記録そのものが無い録音も片付ける（バックアップから戻した・容量不足で記録が残らなかった など）。
+     以前は件数と容量に数えられたまま、聞くことも1件ずつ消すこともできずに残っていた。
+     書いたばかりのもの（別のタブで記録した直後など）と、いまの終了画面のものは残す。
+     記録を読めなかった（壊れていた・保存できない環境）ときは、記録が無いとは言えないので触らない */
+  var AUDIO_GRACE = 12 * 3600 * 1000, histOK = false;
   function purgeGoneAudio(){
-    var gone = Object.create(null);
+    var gone = Object.create(null), have = Object.create(null), now = Date.now();
     S.clearedKeys.forEach(function(k){ gone[k] = 1; });
+    S.history.forEach(function(h){ have[recKey(h)] = 1; });
     Object.keys(audioMeta).forEach(function(k){
-      if(gone[k] || (S.clearedAt && /^\d+$/.test(k) && Number(k) <= S.clearedAt)) audioDel(k);
+      if(gone[k] || (S.clearedAt && /^\d+$/.test(k) && Number(k) <= S.clearedAt)){ audioDel(k); return; }
+      if(histOK && store.persistent && !have[k] && k !== S.doneKey && now - (audioMeta[k].at || 0) > AUDIO_GRACE) audioDel(k);
     });
   }
   function audioTotal(){ var n = 0, b = 0; for(var k in audioMeta){ n++; b += audioMeta[k].size || 0; } return { n: n, bytes: b }; }
@@ -1299,12 +1399,22 @@
   /* 聞き返す。iPhone は操作から時間をおいた play() を断ることがあるので、読み込み済みならその場で鳴らす。
      読み込みが要るときは読んでから鳴らし、断られたら「もう一度押す」と出す（2回目は読み込み済み） */
   var clipCache = Object.create(null);   // 記録の鍵 → [objectURL…]
+  /* v54: 手元に控える録音は新しい3件まで。以前は、このページで録った・聞いた録音をすべて
+     控えたままにしていて、開きっぱなしのアプリで何日も使うと、そのぶんメモリを使いつづけていた */
+  var CLIP_CACHE_MAX = 3, clipOrder = [];
   var Play = { el: null, key: "", i: 0, need: "" };
   function cacheClip(key, blobs){
     dropClip(key);
-    try { clipCache[key] = blobs.map(function(b){ return URL.createObjectURL(b); }); } catch(e){}
+    try { clipCache[key] = blobs.map(function(b){ return URL.createObjectURL(b); }); } catch(e){ return; }
+    clipOrder.push(key);
+    for(var i = 0; i < clipOrder.length && clipOrder.length > CLIP_CACHE_MAX; ){
+      var k = clipOrder[i];
+      if(k === key || k === Play.key || k === S.doneKey){ i++; continue; }   // 鳴らしている・終了画面のものは残す
+      dropClip(k);
+    }
   }
   function dropClip(key){
+    var oi = clipOrder.indexOf(key); if(oi >= 0) clipOrder.splice(oi, 1);
     var u = clipCache[key]; if(!u) return;
     if(Play.key === key) stopPlay();
     u.forEach(function(x){ try { URL.revokeObjectURL(x); } catch(e){} });
@@ -1364,6 +1474,7 @@
   function renderDarkHint(){
     var h = $("drHint"); if(!h) return;
     h.textContent = S.phase === "paused" ? "一時停止中 · 長押しで再開 · 触ると操作が出ます" : "練習中 · 触ると操作が出ます · 長押しで一時停止";
+    var d = $("darkroom"); if(d) d.setAttribute("aria-label", h.textContent);   // 読み上げ（スクリーンリーダー）にも同じ説明を（v54）
   }
   /* シェル（index.html）の中では、上のタブ帯はこのフレームの外にあって覆えない。
      そこだけ明るいままだと、ふと目を開けたときにまぶしいので、暗さをシェルにも伝える。 */
@@ -1374,7 +1485,7 @@
   function setDark(on){
     var d = $("darkroom"); if(d) d.hidden = !on;
     on = !!on;
-    if(on) renderDarkHint();
+    if(on){ renderDarkHint(); toastHideForDark(); }
     if(on !== darkShown){ darkShown = on; tellShellDark(on); }
   }
   function undark(){ if(darkT){ clearTimeout(darkT); darkT = null; } setDark(false); }
@@ -1383,7 +1494,30 @@
     if(!darkWanted()){ setDark(false); return; }
     darkT = setTimeout(function(){ darkT = null; if(darkWanted()) setDark(true); }, ms);
   }
-  function peek(){ setDark(false); scheduleDark(PEEK_MS); }
+  function peek(){ setDark(false); scheduleDark(PEEK_MS); showRunArea(); }
+  /* v54: 見せているあいだに触ったり、ページを送ったりしているなら、暗くするのを延ばす（最後に触ってから約6秒）。
+     以前は触ってから6秒で決め打ちに暗くなり、小さい画面で操作を探して送っている途中でも真っ暗になった */
+  var actAt = 0;
+  function onActivity(){
+    if(darkShown || !darkT || !darkWanted()) return;
+    var now = Date.now(); if(now - actAt < 250) return;
+    actAt = now;
+    scheduleDark(PEEK_MS);
+  }
+  /* v54: 練習中の時計と「一時停止・終了」を画面に入れる。「はじめる」は長い設定のいちばん下にあるので、
+     押したあともページが下に送られたままで、小さい画面や横向きでは、時計も操作も画面の外にあった
+     （触って操作を出しても、見えるのは Ten/Ten だけだった） */
+  function showRunArea(){
+    if(!(S.phase === "running" || S.phase === "paused")) return;
+    try {
+      var vh = window.innerHeight || document.documentElement.clientHeight || 0;
+      var t = $("tray").getBoundingClientRect(), c = $("clock").getBoundingClientRect(), b = $("ctlRun").getBoundingClientRect();
+      // トレイごと入るならトレイを（お題と感覚も見えるように）、入らない背の低い画面では時計を真ん中に
+      var whole = t.height + b.height + 24 <= vh, r = whole ? t : c;
+      if(r.top >= 0 && r.bottom <= vh && b.top >= 0 && b.bottom <= vh) return;
+      $(whole ? "tray" : "clock").scrollIntoView({ block: "center" });
+    } catch(e){}
+  }
   /* 暗い画面を長押し（0.8秒）すると、一時停止・再開。目を閉じたまま止められるように。
      短く触ったときは、これまでどおり操作を見せる（peek）。指が大きく動いたら長押しにしない。 */
   var LP_MS = 800, lpT = null, lpFired = false, lpX = 0, lpY = 0;
@@ -1416,13 +1550,14 @@
   function pendingScene(){ return S.run.free ? "（お題なし）" : S.run.scene; }
   function clearDoneFields(){ S.rating = null; $("noteEl").value = ""; $("imgEl").value = ""; $("meanEl").value = ""; }
   function begin(){
+    holdPrevRun();      // 前の練習の控えを、上書きする前に預かる（v54）
     /* この回のお題を控えておく。練習中に別の窓（同じ端末の別タブ）で「お題なし」が
        切り替わっても、練習中の表示や記録が始めたときの内容と食い違わないように */
     S.run = { free: !!S.free, scene: S.scene };
     S.sid = Date.now();
-    clearDoneFields(); S.doneKey = ""; S.discardAsk = false; stopPlay();
+    clearDoneFields(); S.doneKey = ""; S.doneGone = false; S.discardAsk = false; S.confirmClear = false; stopPlay();
     S.activeSense = 0; S.cueN = 0; S.cueText = ""; S.qPos = S.qOrder.length;   // 問いは毎回まぜ直す
-    S.ann = { half: false, one: false }; S.darkPause = false;
+    S.ann = { half: false, one: false }; S.darkPause = false; clearDpWake();
     Mic.bucket = []; Mic.denied = false; Mic.pend = Promise.resolve();
     Vad.lastNudge = 0; Vad.guideAt = 0; Vad.floor = 0.004;
     S.secondsLeft = S.durationMin * 60;
@@ -1434,22 +1569,38 @@
     micOpen();          // 録音するときは、ここ（「はじめる」を押した流れ）でマイクの許可を求める
     saveRun(); beatOn();
     scheduleDark(DARK_AFTER);
+    showRunArea();      // 時計と操作を画面に入れる（v54）
   }
-  /* inDark: 暗い画面の長押しで止めた。目を閉じたまま再開できるよう、暗いままにする */
-  function pause(inDark){
+  /* inDark: 暗い画面の長押し（または暗いときの Space）で止めた。目を閉じたまま再開できるよう、暗いままにする。
+     quiet: 声で「一時停止しました」と言わない（シェルでほかのタブへ移ったとき。v54） */
+  function pause(inDark, quiet){
     S.phase = "paused";
     S.darkPause = !!inDark && darkShown && darkOK();
     if(S.darkPause){ if(darkT){ clearTimeout(darkT); darkT = null; } setDark(true); }
     else undark();
-    renderPhase(); stopTimer(); renderClock(); stopCues(); stopSpeech(); relWake();
+    renderPhase(); stopTimer(); renderClock(); stopCues(); stopSpeech();
+    if(S.darkPause){ holdWakeWhilePaused(); paintWake(); }   // 暗いまま止めたときは画面を消さない（15分まで。v54）
+    else relWake();
     micClose();         // 止めているあいだはマイクを使わない（録音も区切る）
     saveRun();
-    if(S.speakCues) speak("一時停止しました。");
+    if(S.speakCues && !quiet) speak("一時停止しました。");
+  }
+  /* v54: シェル（index.html）でほかのタブへ移ったら、練習を止める（ボタンで止めたときと同じく、明るく戻し、
+     問いかけ・マイク・録音・画面ロックも止める）。以前は見えないフレームの中で練習が続き、日記を書いているあいだも
+     問いかけや呼びかけの声が流れ、マイクは録音しつづけ、終わると時間いっぱいの練習として記録していた。
+     戻ってきても自動では再開しない（本人が「再開」を押す） */
+  function onLeaveTab(){
+    stopPlay();
+    if(S.phase === "running"){ pause(false, true); return; }
+    stopSpeech();       // 読み上げ中の案内（テスト・終わりの声など）も止める
+    if(S.phase === "paused" && S.darkPause){
+      S.darkPause = false; relWake(); undark(); renderPhase(); saveRun();
+    }
   }
   /* 一時停止のあいだに着信などで音が止められると（iOS）、再開しても合図の音が鳴らない。
      再開はタップ（またはキー）から来るので、ここで起こし直す */
   function resume(){
-    ensureAudio(); S.phase = "running"; S.darkPause = false;
+    ensureAudio(); S.phase = "running"; S.darkPause = false; clearDpWake();
     renderPhase(); startTimer(); startCues(); reqWake(); scheduleDark(DARK_AFTER);
     if(S.speakCues) speak("再開します。");
     micOpen();
@@ -1474,17 +1625,21 @@
      30秒に満たない回は、押し間違いのことが多いので自動では記録しない。 */
   function finish(sec){
     stopTimer(); stopCues(); stopSpeech(); relWake(); undark();
-    var rec = micEnd();
+    var rec = micEnd(), start = S.sid || Date.now();
     beatOff(); clearRun();
-    S.pending = { sec: sec, scene: pendingScene(), audio: null };
-    clearDoneFields(); S.discardAsk = false;
-    S.doneKey = sec >= MIN_SAVE_SEC ? addRecord({ sec: sec, scene: S.pending.scene }) : "";
+    S.pending = { sec: sec, scene: pendingScene(), audio: null, start: start };
+    clearDoneFields(); S.discardAsk = false; S.doneGone = false;
+    /* v54: 記録の日付は「始めた日」にする。以前は終えた時刻の日付で、23時52分から10分練習すると
+       翌日の分になり、その日の Ten/Ten のコマ（たとえば先の5分と合わせて15分）が現像されなかった */
+    S.doneKey = sec >= MIN_SAVE_SEC ? addRecord({ sec: sec, scene: S.pending.scene, date: localDate(new Date(start)) }) : "";
     S.phase = "done"; renderPhase(); renderDone();
     var key = S.doneKey, pend = S.pending;
     rec.then(function(parts){
       if(!parts || !parts.length) return;
-      if(key){ if(findRec(key)) audioPut(key, parts, sec).then(audioWarn); }   // 書き終える前に消した記録には置かない
-      else if(S.pending === pend) pend.audio = parts;          // 記録していない回は、「記録する」を押したときに置く
+      if(key && findRec(key)) audioPut(key, parts, sec).then(audioWarn);
+      // 記録していない回・書き終える前に記録が消えた回は、「記録する」を押したときに置く
+      // （閉じたあとは S.pending が入れ替わっているので置かない）
+      else if(S.pending === pend) pend.audio = parts;
     });
   }
   /* 終了画面を閉じる。直した中身はすぐ書き、同期にも早めに知らせる */
@@ -1492,15 +1647,18 @@
     flushPatch();
     if(S.doneKey) touchSync(true);
     stopPlay();
-    S.discardAsk = false; S.pending.audio = null; S.doneKey = "";
+    S.discardAsk = false; S.doneKey = ""; S.doneGone = false;
+    S.pending = { sec: 0, scene: "", audio: null, start: 0 };   // 遅れて届いた録音を、閉じた回に付けない
     S.phase = "idle"; renderPhase();
     S.scene = nextScene(S.scene); renderScene();
     renderTenten(); renderJournal();
+    promoteHeld();      // 始めるときに預かった前の控えがあれば、ここで聞く（v54）
   }
-  /* 30秒に満たず自動では記録しなかった回を、それでも記録する */
+  /* 30秒に満たず自動では記録しなかった回（または終了画面の記録が消えた回）を、それでも記録する */
   function saveShort(){
     var p = S.pending;
     var key = addRecord({ sec: p.sec, scene: p.scene, vivid: S.rating, note: ($("noteEl").value || "").trim(),
+                          date: localDate(new Date(p.start || Date.now())),
                           image: ($("imgEl").value || "").trim(), meaning: ($("meanEl").value || "").trim() });
     if(p.audio && p.audio.length) audioPut(key, p.audio, p.sec).then(audioWarn);
     closeDone();
@@ -1521,6 +1679,8 @@
   }
   function saveRun(dead){
     if(!(S.phase === "running" || S.phase === "paused")) return;
+    // 預かった前の控え（holdPrevRun）の鼓動が、別のタブからまた届いた → 落ちたのではなく、そのタブで続いている
+    if(S.recoverHeld){ var cur = readRun(); if(cur && cur.id === S.recoverHeld.id && cur.beat > S.recoverHeld.beat) S.recoverHeld = null; }
     var o = { id: S.sid, at: S.sid, beat: Date.now(), sec: practisedSec(), paused: S.phase === "paused", scene: pendingScene(), dur: S.durationMin };
     if(dead) o.dead = true;                 // ページを離れた印。開き直したとき、鼓動が止まるのを待たずに聞ける
     try { store.set(RUN_KEY, JSON.stringify(o)); } catch(e){}
@@ -1558,11 +1718,36 @@
     S.recover = o;
     renderRecover();
   }
+  /* 控えの練習を始めた時刻（v54: 記録の日付は始めた日にする）。無い・おかしいときは最後の鼓動 */
+  function runStart(o){
+    return (typeof o.at === "number" && isFinite(o.at) && o.at > 0 && o.at <= o.beat) ? o.at : o.beat;
+  }
   function answerRecover(yes){
     var o = S.recover; if(!o) return;
     S.recover = null;
     clearRun(o.id);
-    if(yes) addRecord({ date: localDate(new Date(o.beat)), ts: o.beat, sec: o.sec, scene: o.scene });
+    if(yes) addRecord({ date: localDate(new Date(runStart(o))), ts: o.beat, sec: o.sec, scene: o.scene });
+    renderRecover();
+    promoteHeld();
+  }
+  /* v54: 「はじめる」で控えを上書きする前に、まだ聞いていない前の控えを預かる。
+     落ちた直後（鼓動が止まって20秒たつまで）は、別のタブで練習中かもしれないので聞くのを待つ。
+     そのあいだに「はじめる」を押すと、控えが上書きされ、落ちた練習が黙って消えていた。
+     預かったものは、この回を終えて閉じたときに聞く（そのあいだに鼓動がまた届いたら、別のタブで続いていたので聞かない） */
+  function holdPrevRun(){
+    var o = readRun();
+    if(!o || o.id === S.sid) return;
+    if(S.recover && S.recover.id === o.id) return;           // もう聞いている（答えるまで残る）
+    if(Date.now() - o.beat > RUN_TTL || o.sec < MIN_SAVE_SEC) return;
+    S.recoverHeld = o;
+  }
+  function promoteHeld(){
+    var h = S.recoverHeld;
+    if(!h || S.recover || S.phase !== "idle") return;
+    S.recoverHeld = null;
+    var cur = readRun();
+    if(cur && cur.id === h.id && cur.beat > h.beat) return;  // 別のタブで続いていた
+    S.recover = h;
     renderRecover();
   }
 
@@ -1579,24 +1764,29 @@
               note: f.note || "", vivid: (typeof f.vivid === "number") ? f.vivid : null,
               image: f.image || "", meaning: f.meaning || "", upd: now };
     while(findRec(String(r.ts))) r.ts++;   // 鍵（ts）は1件ずつ違うように
-    var today = localDate(new Date()), was = (dayTotals()[today] || 0) >= TEN_SEC;
+    var day = r.date, was = (dayTotals()[day] || 0) >= TEN_SEC;
     S.history.push(r);
     S.history.sort(function(a,b){ return (a.ts||0) - (b.ts||0); });
     persist();
     touchSync(true);                       // 練習1回ぶんは「意味のある変更」
-    // 今日の合計が10分に届いた → そのコマを現像する
-    if(!was && r.date === today && (dayTotals()[today] || 0) >= TEN_SEC){
-      justFlash = true; renderTenten(); setTimeout(function(){ justFlash = false; renderTenten(); }, 1200);
+    // その日（v54: 始めた日。日付をまたいだ練習は前の日）の合計が10分に届いた → そのコマを現像する
+    if(!was && (dayTotals()[day] || 0) >= TEN_SEC){
+      justFlash = day; renderTenten(); setTimeout(function(){ justFlash = ""; renderTenten(); }, 1200);
     } else renderTenten();
     renderJournal();
     return recKey(r);
   }
-  /* 記録を直す。直した時刻（upd）を付け、同期ではあとから直した方を残す */
+  /* 記録を直す。直した時刻（upd）を付け、同期ではあとから直した方を残す。
+     v54: 欄ごとにも直した時刻（fu）を持つ。以前は記録まるごとで新しい方を残していたので、スマホで鮮明さを、
+     PC でメモを、同期の前にそれぞれ直すと、片方の変更が消えていた（syncMerge の mergeRec） */
+  var EDIT_F = ["vivid", "image", "meaning", "note"];
   var patchT = null;
   function patchRec(key, f){
     var r = findRec(key); if(!r) return false;
-    for(var k in f){ if(Object.prototype.hasOwnProperty.call(f, k)) r[k] = f[k]; }
-    r.upd = Date.now();
+    var now = Date.now(), fu = fieldTimes(r);   // まだ fu の無い記録は、直していない欄を「これまでの upd」で始める
+    for(var k in f){ if(Object.prototype.hasOwnProperty.call(f, k)){ r[k] = f[k]; if(EDIT_F.indexOf(k) >= 0) fu[k] = now; } }
+    r.fu = fu;
+    r.upd = now;
     if(patchT) clearTimeout(patchT);
     patchT = setTimeout(flushPatch, 500);   // 打つたびには書かない
     return true;
@@ -1648,6 +1838,39 @@
     if("meaning" in o && typeof o.meaning !== "string") o.meaning = o.meaning == null ? "" : String(o.meaning);
     if("vivid" in o && !(typeof o.vivid === "number" && o.vivid >= 1 && o.vivid <= 5)) o.vivid = null;
     if("upd" in o && (typeof o.upd !== "number" || !isFinite(o.upd))) delete o.upd;   // 直した時刻（同期でどちらを残すか）
+    // 欄ごとの直した時刻（v54）。数字だけ残す（知らない欄の時刻も、新しい版のために残す）
+    if("fu" in o){
+      var fu = {}, src = o.fu;
+      if(src && typeof src === "object" && !Array.isArray(src)){
+        for(var f in src){ if(Object.prototype.hasOwnProperty.call(src, f) && f !== "__proto__" && typeof src[f] === "number" && isFinite(src[f])) fu[f] = src[f]; }
+      }
+      o.fu = fu;
+    }
+    return o;
+  }
+  /* 欄ごとの直した時刻。fu の無い記録（旧版・まだ直していない）と、fu より後に旧版で直された記録
+     （upd が fu のどれよりも新しい）は、記録全体の時刻（upd）をどの欄にも使う（旧版と同じ「まるごと新しい方」） */
+  function fieldTimes(r){
+    var base = +r.upd || 0, src = (r.fu && typeof r.fu === "object") ? r.fu : null, mx = 0, o = {}, i, f;
+    if(src){ for(i=0;i<EDIT_F.length;i++){ f = EDIT_F[i]; if(typeof src[f] === "number" && src[f] > mx) mx = src[f]; } }
+    var whole = !src || base > mx;
+    for(i=0;i<EDIT_F.length;i++){ f = EDIT_F[i]; o[f] = (!whole && typeof src[f] === "number" && isFinite(src[f])) ? src[f] : base; }
+    return o;
+  }
+  /* 同じ記録の2つの写しを混ぜる。直せる欄は欄ごとに新しい方、それ以外（お題・秒数・知らない項目）は
+     upd の新しい方。同じ時刻ならこの端末（a）の方 */
+  function mergeRec(a, b){
+    var ua = +a.upd || 0, ub = +b.upd || 0, newer = ub > ua ? b : a, o = {}, k;
+    for(k in newer){ if(Object.prototype.hasOwnProperty.call(newer, k)) o[k] = newer[k]; }
+    var ta = fieldTimes(a), tb = fieldTimes(b), fu = {};
+    if(newer.fu && typeof newer.fu === "object"){ for(k in newer.fu){ if(Object.prototype.hasOwnProperty.call(newer.fu, k)) fu[k] = newer.fu[k]; } }
+    for(var i=0;i<EDIT_F.length;i++){
+      var f = EDIT_F[i], src = tb[f] > ta[f] ? b : a;
+      if(src[f] === undefined) delete o[f]; else o[f] = src[f];
+      fu[f] = Math.max(ta[f], tb[f]);
+    }
+    if(a.fu || b.fu) o.fu = fu;
+    if(ua || ub) o.upd = Math.max(ua, ub);
     return o;
   }
   function cleanHistory(a){
@@ -1690,7 +1913,15 @@
     saveCleared();
     purgeGoneAudio();                              // ほかの端末で消した記録の録音も片付ける
     if(S.jEdit && !findRec(S.jEdit)){ S.jEdit = ""; S.jDraft = null; }
+    checkDoneGone();
     renderTenten(); renderJournal();
+  }
+  /* v54: 終了画面の記録が消えた（ほかの端末で消したものが同期で届いた など）。黙ったままだと、
+     そのあと付けた鮮明さやメモがどこにも残らないので、消えたことを出し、「記録する」で残し直せるようにする */
+  function checkDoneGone(){
+    if(S.phase !== "done" || !S.doneKey || findRec(S.doneKey)) return;
+    S.doneKey = ""; S.doneGone = true; S.discardAsk = false;
+    renderDone();
   }
   function syncMerge(local, remote){
     if(!remote) return local;
@@ -1702,8 +1933,8 @@
       var k = recKey(h);
       if(gone[k]) return;                              // 消した記録（全消去・1件ずつ）は復活させない
       if(cleared && (h.ts || 0) <= cleared) return;   // 旧版の端末の全消去（時刻）より前の記録も
-      // 同じ記録が両方にあれば、あとから直した方（upd が新しい方）を残す。同じならこの端末の方
-      if(k in map){ if((+h.upd || 0) > (+map[k].upd || 0)) map[k] = h; return; }
+      // 同じ記録が両方にあれば、直した欄ごとに新しい方を残す（v54。以前は記録まるごとで upd の新しい方）。同じならこの端末の方
+      if(k in map){ map[k] = mergeRec(map[k], h); return; }
       map[k] = h; order.push(k);
     });
     var out = order.map(function(k){ return map[k]; });
@@ -1762,11 +1993,13 @@
       o.voiceURI = S.voiceURI; o.vPitch = S.vPitch; o.vRate = S.vRate; o.vPreset = S.vPreset;
       o.speakCues = S.speakCues; o.dim = S.dim; o.free = S.free; o.cues2 = 1;
       o.cueSec = S.cueSec; o.rec = S.rec;   // 問いかけの間隔・録音も、この端末だけの好み
+      o.durMin = S.durationMin;             // 練習の長さも覚えておく（v54。以前は開くたびに10分に戻っていた）
       store.set(VOICE_KEY, JSON.stringify(o));
     } catch(e){}
   }
   function loadVoicePrefs(){ var o = readVoicePrefs(store.get(VOICE_KEY)); if(o) applyVoicePrefs(o); }
-  function applyVoicePrefs(o){
+  /* live: 別の窓で変わったのを取り込む。練習中は、その回の長さを途中で変えない（残り時間や記録する秒数が狂うため） */
+  function applyVoicePrefs(o, live){
     try {
       if(typeof o.voiceURI === "string") S.voiceURI = o.voiceURI;
       if(typeof o.vPitch === "number" && isFinite(o.vPitch)) S.vPitch = Math.max(0.6, Math.min(1.6, o.vPitch));
@@ -1780,10 +2013,12 @@
       if(typeof o.free === "boolean") S.free = o.free;
       if(typeof o.cueSec === "number" && CUE_CHOICES.indexOf(o.cueSec) >= 0) S.cueSec = o.cueSec;
       if(typeof o.rec === "boolean") S.rec = o.rec;
+      if(typeof o.durMin === "number" && DURATIONS.indexOf(o.durMin) >= 0 && !(live && (S.phase === "running" || S.phase === "paused"))) S.durationMin = o.durMin;
     } catch(e){}
   }
 
   function clearAll(){
+    if(S.phase !== "idle"){ S.confirmClear = false; renderTenten(); return; }   // 消去は練習の外でだけ（v54。renderClearWrap）
     // 単純に消すだけだと、他端末との同期で復活してしまう。消した記録の鍵を残す。
     // ★消した時刻で区切らない。時計のずれた端末では、ほかの端末が消去のあとに付けた記録まで消える
     var keys = S.history.map(recKey);
@@ -1794,6 +2029,7 @@
     try { store.remove(KEY); } catch(e){}
     saveCleared();
     if (window.__isTouch) window.__isTouch(true);
+    checkDoneGone();
     renderTenten(); renderJournal();
   }
 
@@ -1865,14 +2101,18 @@
       $("pausedLbl").hidden = (p !== "paused");
     }
     renderDarkHint(); renderRecLive(); renderRecover();
+    renderClearWrap(); paintWake(); toastFlush();   // v54
   }
   function renderRecover(){
     var box = $("recoverBox"), o = S.recover; if(!box) return;
+    var was = box.hidden;
     box.hidden = !(o && S.phase === "idle");
     if(!o) return;
     $("recoverQ").textContent = "前回の練習（" + fmtDur(o.sec) + "）を記録しますか";
-    $("recoverSub").textContent = fmtDay(localDate(new Date(o.beat))) + "・" + (o.scene || "お題なし") +
+    $("recoverSub").textContent = fmtDay(localDate(new Date(runStart(o)))) + "・" + (o.scene || "お題なし") +
       "。途中でアプリが閉じたため、まだ記録されていません。";
+    // 出たときは、そこへフォーカスを移す（読み上げ・キーボードでも、聞かれていることが分かるように。v54）
+    if(was && !box.hidden){ try { box.focus(); } catch(e){} }
   }
   function renderRecLive(){
     var el = $("recLive"); if(!el) return;
@@ -1898,10 +2138,13 @@
   }
   function renderDone(){
     $("doneMark").innerHTML = ICON.check(26);
-    var tsec = dayTotals()[localDate(new Date())] || 0;
-    $("doneMeta").textContent = fmtClock(S.pending.sec) + " の練習" + (S.doneKey ? " · 今日 " + todayMin(tsec) : "");
+    // その回を数えた日（v54: 始めた日。日付をまたいだ練習は前の日）の合計
+    var day = localDate(new Date(S.pending.start || Date.now())), tsec = dayTotals()[day] || 0;
+    var dlab = day === localDate(new Date()) ? "今日 " : fmtDay(day) + " ";
+    $("doneMeta").textContent = fmtClock(S.pending.sec) + " の練習" + (S.doneKey ? " · " + dlab + todayMin(tsec) : "");
     $("doneScene").textContent = S.pending.scene;
     $("doneStatus").textContent = S.doneKey ? "記録しました。下の欄は、あとから一覧でも直せます。"
+      : S.doneGone ? "この練習の記録は、ほかの端末で消されたため、なくなりました。下の欄も含めて残すなら「記録する」を押してください。"
       : "30秒に満たない練習なので、記録していません。";
     $("discardBtn").textContent = S.doneKey ? "この記録を消す" : "記録しないで閉じる";
     $("saveBtn").textContent = S.doneKey ? "閉じる" : "記録する";
@@ -1934,7 +2177,7 @@
     var seg = $("cueSeg"); if(!seg) return;
     var html = "";
     for(var i=0;i<CUE_CHOICES.length;i++){ var c = CUE_CHOICES[i];
-      html += '<button class="seg' + (S.cueSec === c ? " on" : "") + '" type="button" data-c="' + c + '">' + (c ? c + "秒" : "なし") + (c === CUE_DEFAULT ? '<span class="seg-tag">既定</span>' : '') + '</button>';
+      html += '<button class="seg' + (S.cueSec === c ? " on" : "") + '" type="button" aria-pressed="' + (S.cueSec === c) + '" data-c="' + c + '">' + (c ? c + "秒" : "なし") + (c === CUE_DEFAULT ? '<span class="seg-tag">既定</span>' : '') + '</button>';
     }
     seg.innerHTML = html;
     Array.prototype.forEach.call(seg.querySelectorAll(".seg"), function(b){
@@ -1950,6 +2193,8 @@
     b.className = "toggle" + (S.rec && can ? " on" : "") + (can ? "" : " muted");
     $("recIco").innerHTML = ICON.mic(16);
     $("recSwitch").className = "switch" + (S.rec && can ? " on" : "");
+    b.setAttribute("aria-checked", (S.rec && can) ? "true" : "false");   // v54: 読み上げにもON/OFFを伝える
+    if(can) b.removeAttribute("aria-disabled"); else b.setAttribute("aria-disabled", "true");
     $("recHelp").textContent = !can ? "この環境では録音できません。"
       : "声に出した描写をこの端末にだけ録音し、あとで聞き返せます（同期も送信もしません。10分でおよそ2〜5MB）。" +
         "問いかけを使うときは、黙ったままなら短く呼びかけ、話している途中は待ちます。" +
@@ -1975,16 +2220,17 @@
     var seg = $("lengthSeg");
     var html = "";
     for(var i=0;i<DURATIONS.length;i++){ var d = DURATIONS[i];
-      html += '<button class="seg' + (S.durationMin === d ? " on" : "") + '" data-d="' + d + '">' + d + '分' + (d === 10 ? '<span class="seg-tag">Ten/Ten</span>' : '') + '</button>';
+      html += '<button class="seg' + (S.durationMin === d ? " on" : "") + '" type="button" aria-pressed="' + (S.durationMin === d) + '" data-d="' + d + '">' + d + '分' + (d === 10 ? '<span class="seg-tag">Ten/Ten</span>' : '') + '</button>';
     }
     seg.innerHTML = html;
     var btns = seg.querySelectorAll(".seg");
-    for(var j=0;j<btns.length;j++){ btns[j].addEventListener("click", function(){ S.durationMin = Number(this.getAttribute("data-d")); renderLength(); }); }
+    for(var j=0;j<btns.length;j++){ btns[j].addEventListener("click", function(){ S.durationMin = Number(this.getAttribute("data-d")); saveVoicePrefs(); renderLength(); }); }
   }
   function renderToggle(){
     $("toggleBtn").className = "toggle" + (S.speakCues ? " on" : "");
     $("toggleIco").innerHTML = S.speakCues ? ICON.volOn(16) : ICON.volOff(16);
     $("toggleSwitch").className = "switch" + (S.speakCues ? " on" : "");
+    $("toggleBtn").setAttribute("aria-checked", S.speakCues ? "true" : "false");   // v54
     var db = $("dimBtn"); if(!db) return;
     // 日本語の声が無いと分かったら（一覧が届ききってから判断する）暗くしないことを伝える
     var noJa = ttsSupported && voicesSettled && !jaVoiceReady();
@@ -1992,6 +2238,7 @@
     db.className = "toggle" + (S.dim ? " on" : "") + (can ? "" : " muted");
     $("dimIco").innerHTML = ICON.moon(16);
     $("dimSwitch").className = "switch" + (S.dim ? " on" : "");
+    db.setAttribute("aria-checked", S.dim ? "true" : "false");   // v54
     $("dimHelp").textContent = !ttsSupported ? "この環境では読み上げが使えないため、暗くしません"
       : noJa ? "日本語の読み上げ音声が無いため、暗くしません（案内が聞き取れないため）"
       : !S.speakCues ? "音声ガイドがOFFのあいだは暗くしません（お題や感覚の切り替えが見えなくなるため）"
@@ -2034,7 +2281,7 @@
       var lab = (isToday ? "今日" : fmtDay(x.d)) + " · " + Math.floor(x.sec / 60) + "分";
       if(x.full){
         n++;
-        html += '<div class="frame dev' + (justFlash && isToday ? " just" : "") + '" title="' + esc(lab) + '"><span class="frame-num">' + n + '</span></div>';
+        html += '<div class="frame dev' + (justFlash === x.d ? " just" : "") + '" title="' + esc(lab) + '"><span class="frame-num">' + n + '</span></div>';
       } else {
         html += '<div class="frame half" title="' + esc(lab + "（10分に届かず、数えません）") + '"><span class="frame-num">' + Math.floor(x.sec / 60) + '′</span></div>';
       }
@@ -2063,8 +2310,14 @@
       sp.innerHTML = '<div class="spark"><div class="spark-head"><span class="spark-label">鮮明さの推移</span><span class="spark-val">平均 ' + avg.toFixed(1) + ' / 5</span></div>' + sparkline(vals) + '</div>';
     } else sp.innerHTML = "";
 
-    var cw = $("clearWrap");
-    if(S.history.length > 0){
+    renderClearWrap();
+  }
+  /* 「履歴を消去」。v54: 練習していないとき（はじめる前）だけ出す。練習中や終了画面で消すと、
+     終了画面は「記録しました」と出たまま、そのあと付けた鮮明さやメモがどこにも残らなかった */
+  function renderClearWrap(){
+    var cw = $("clearWrap"); if(!cw) return;
+    if(S.phase !== "idle") S.confirmClear = false;
+    if(S.history.length > 0 && S.phase === "idle"){
       if(S.confirmClear){
         cw.innerHTML = '<span class="clear-confirm">保存した練習をすべて消去しますか？<button class="link danger" id="clearYes">消去する</button><button class="link" id="clearNo">キャンセル</button></span>';
         $("clearYes").addEventListener("click", clearAll);
@@ -2163,9 +2416,14 @@
     }
     else if(act === "cancel"){ S.jEdit = ""; S.jDraft = null; }
     else if(act === "save"){
-      var d = S.jDraft;
+      var d = S.jDraft, h0 = findRec(k), ch = {}, nch = 0;
       S.jEdit = ""; S.jDraft = null;
-      if(d && patchRec(k, { vivid: d.vivid, image: d.image.trim(), meaning: d.meaning.trim(), note: d.note.trim() })){
+      // 変えた欄だけを直したことにする（v54: 欄ごとの同期。変えていない欄で、ほかの端末の変更を上書きしないように）
+      if(d && h0){
+        if((typeof h0.vivid === "number" ? h0.vivid : null) !== d.vivid){ ch.vivid = d.vivid; nch++; }
+        ["image", "meaning", "note"].forEach(function(f){ var v = String(d[f] || "").trim(); if(String(h0[f] || "") !== v){ ch[f] = v; nch++; } });
+      }
+      if(nch && patchRec(k, ch)){
         if(S.doneKey === k) syncDoneFields();
         flushPatch(); touchSync(true);
       }
@@ -2211,8 +2469,8 @@
     // load history
     /* 配列以外のJSON（"{}" など）でも JSON.parse は通ってしまう。そのまま入れると
        あとの .filter() で init() ごと止まり、ボタンが全部死ぬ。形まで確かめる。 */
-    try { var raw = store.get(KEY), h0 = raw ? JSON.parse(raw) : null; S.history = cleanHistory(h0); }   // 1件ずつの形も確かめる
-    catch(e){ S.history = []; }
+    try { var raw = store.get(KEY), h0 = raw ? JSON.parse(raw) : null; S.history = cleanHistory(h0); histOK = (h0 === null || Array.isArray(h0)); }   // 1件ずつの形も確かめる
+    catch(e){ S.history = []; histOK = false; }   // 読めなかった記録があるときは、録音を「記録の無いもの」として片付けない（v54）
     loadCleared();
     setupSync();
 
@@ -2245,8 +2503,14 @@
        命令はシェル（同じオリジンの親）からだけ受け付ける。 */
     window.addEventListener("message", function(e){
       if(e.origin !== location.origin || e.source !== window.parent || window.parent === window) return;
+      if(e.data && e.data.nkHidden){ onLeaveTab(); return; }   // シェルでほかのタブへ移った（v54）
       if(e.data && e.data.nkPeek && !$("darkroom").hidden) peek();
     });
+    /* 見せているあいだの操作で、暗くするのを延ばす（v54。onActivity） */
+    ["pointerdown", "pointermove", "touchstart", "wheel", "keydown"].forEach(function(ev){
+      try { document.addEventListener(ev, onActivity, { capture: true, passive: true }); } catch(e){}
+    });
+    try { window.addEventListener("scroll", onActivity, { passive: true }); } catch(e){}
     /* フレームごと消える（再読み込み・取り込み）ときは、暗さを解いたとシェルに伝える。
        伝えないと、シェルのタブ帯だけが暗いまま残る。戻ってきたら（bfcache）伝え直す。 */
     window.addEventListener("pagehide", function(){
@@ -2278,7 +2542,9 @@
       $("vPitch").value = S.vPitch; $("vPitchN").textContent = Number(S.vPitch).toFixed(2);
       $("vRate").value  = S.vRate;  $("vRateN").textContent  = Number(S.vRate).toFixed(2);
       Array.prototype.forEach.call(document.querySelectorAll(".vp"), function(b){
-        b.classList.toggle("on", b.getAttribute("data-vp") === S.vPreset);
+        var on = b.getAttribute("data-vp") === S.vPreset;
+        b.classList.toggle("on", on);
+        b.setAttribute("aria-pressed", on ? "true" : "false");   // v54
       });
     }
     function previewVoice(){
@@ -2311,11 +2577,14 @@
       window.addEventListener("storage", function(e){
         if(!e || e.key !== VOICE_KEY) return;
         var o = readVoicePrefs(e.newValue);
-        if(o) applyVoicePrefs(o); else S.voiceURI = "";
+        if(o) applyVoicePrefs(o, true); else S.voiceURI = "";
         try { paintVoice(); } catch(x){}
-        renderToggle(); renderScene(); renderCueSeg(); renderRecToggle();
-        // 練習中に音声ガイドや暗転が切られたら、暗いままにしない
-        if((S.phase === "running" || S.phase === "paused") && !darkWanted()) undark();
+        renderToggle(); renderScene(); renderCueSeg(); renderRecToggle(); renderLength();
+        // 練習中に音声ガイドや暗転が切られたら、暗いままにしない（暗いまま止めていたなら、画面ロックも手放す。v54）
+        if((S.phase === "running" || S.phase === "paused") && !darkWanted()){
+          undark();
+          if(S.phase === "paused" && S.darkPause){ S.darkPause = false; relWake(); renderPhase(); }
+        }
         pickVoice();
       });
     } catch(e){}
@@ -2363,6 +2632,7 @@
     try { paintVoice(); } catch(e){}
     renderToggle();   // 保存してあった音声ガイドのON/OFF・暗転を反映する
     renderScene();    // 保存してあった「お題なし」を反映する
+    renderLength();   // 保存してあった練習の長さ（v54）
     renderCueSeg(); renderRecToggle();   // 問いかけの間隔・録音
     if(ttsSupported){
       pickVoice();
@@ -2383,14 +2653,18 @@
          練習が終わってしまわないようにする（暗転の説明どおり「スペースは一時停止」）。 */
       var darkNow = !$("darkroom").hidden;
       spaceEaten = false;
+      /* v54: 練習していないとき（はじめる前・終了画面）は Space を横取りしない（ページ送りや、押せる部品のため）。
+         以前は長い設定のページを Space で送ろうとしただけで練習が始まり、マイクの許可まで求めていた。
+         始めるのは「はじめる」のボタン（フォーカスして Enter / Space）だけ */
+      if(!(S.phase === "running" || S.phase === "paused")) return;
       if(!darkNow && spaceBelongsTo(e.target)) return;
       e.preventDefault();
       spaceEaten = true;
-      /* 押しっぱなしの自動リピートでは切り替えない。切り替えると、始める→止める→再開…と
+      /* 押しっぱなしの自動リピートでは切り替えない。切り替えると、止める→再開…と
          回り続け、目を閉じたまま一時停止で止まっていることに気づけない */
       if(e.repeat) return;
-      if(S.phase === "idle") begin();
-      else if(S.phase === "running") pause();
+      // 暗いあいだの Space は、長押しと同じ「暗いままの一時停止」（v54。以前は明るく戻っていた）
+      if(S.phase === "running") pause(darkNow);
       else if(S.phase === "paused") resume();
     });
     /* ボタンの Space は、離したとき（keyup）に押されるブラウザがある。keydown だけ止めると、
