@@ -20,7 +20,8 @@ const errsAll = [];
 const now = Date.now();
 const task = (id, title, extra = {}) => ({ id, title, note: "", date: "", time: "", rep: "", done: false, doneAt: 0, gcalEventId: "",
   createdAt: now - Number(id.replace(/\D/g, "")) * 60000, updatedAt: now - 3600e3, ...extra });
-const todayStr = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+// ページは日本時間（timezoneId: Asia/Tokyo）で動くので、「今日」も日本時間で決める（UTC の15時以降は日付が1日ずれていた）
+const todayStr = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
 
 async function open({ items, drive = null, token = false, ctx = null }) {
   if (!ctx) ctx = await newDevice(br, { drive, contextOptions: { viewport: { width: 1100, height: 900 }, timezoneId: "Asia/Tokyo" } });

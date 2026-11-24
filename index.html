@@ -307,6 +307,13 @@ body.nk-dark .knnew{opacity:.12}
   }
   var curApp = '';
   function show(app){
+    // いま見えているタブから離れることを、そのタブに知らせる（v54）。タブは visibility:hidden で隠すだけなので、
+    // 中からは見えなくなったことが分からない。暗室は、別のタブへ移ったまま練習（問いかけの声・録音）が裏で
+    // 続き、最後は練習したことになっていた。知らないタブは受け流す
+    if(curApp && curApp !== app && loaded[curApp]){
+      var prevFr = document.getElementById('frame-'+curApp);
+      try{ if(prevFr && prevFr.contentWindow) prevFr.contentWindow.postMessage({nkHidden:true}, location.origin); }catch(e){}
+    }
     curApp = app;
     var tabs = document.querySelectorAll('.apptab');
     for(var i=0;i<tabs.length;i++){
