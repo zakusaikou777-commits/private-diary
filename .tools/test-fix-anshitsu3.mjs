@@ -549,7 +549,9 @@ await section("UX b. はじめる前の Space で始めない・暗いときの 
   await P.page.evaluate(() => { if (document.activeElement) document.activeElement.blur(); });
   await P.page.keyboard.press("Space"); await P.run(500);
   ok(await P.phase() === "idle", "はじめる前に Space を押しても練習は始まらない（ページ送りのため）", await P.phase());
-  await P.click("beginBtn"); await P.run(15000);
+  await P.click("beginBtn"); await P.run(15000); await P.settle(3);
+  // 暗くなるのは、読み上げ（偽物）の終わりなどを待ってから。負荷が高いと遅れるので、暗くなるまで少しずつ進める
+  for (let i = 0; i < 10 && !(await P.dark()); i++) { await P.run(1000); await P.settle(2); }
   ok(await P.dark(), "（前提）暗い");
   await P.page.keyboard.press("Space"); await P.run(500);
   ok(await P.phase() === "paused" && await P.dark(), "暗いときの Space は、長押しと同じく暗いまま止める", [await P.phase(), await P.dark()]);
@@ -582,7 +584,9 @@ await section("UX d. 画面ロックが取れないときは知らせる", async
 });
 await section("UX e. 容量いっぱいの知らせを、暗い画面の上に出さない", async () => {
   const P = await openPage({ voice: { cueSec: 0 } });
-  await P.click("beginBtn"); await P.run(15000);
+  await P.click("beginBtn"); await P.run(15000); await P.settle(3);
+  // 暗くなるのは、読み上げ（偽物）の終わりなどを待ってから。負荷が高いと遅れるので、暗くなるまで少しずつ進める
+  for (let i = 0; i < 10 && !(await P.dark()); i++) { await P.run(1000); await P.settle(2); }
   ok(await P.dark(), "（前提）暗い");
   await P.ev(() => { window.__full = true; });
   await P.run(6000); await P.settle(2);
